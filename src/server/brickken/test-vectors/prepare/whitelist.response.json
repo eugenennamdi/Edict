@@ -1,0 +1,22 @@
+{
+  "transactions": [
+    {
+      "from": "0x1111111111111111111111111111111111111111",
+      "to": "0x4444444444444444444444444444444444444444",
+      "value": "0x00",
+      "nonce": 3793,
+      "chainId": 11155111,
+      "data": "0xd362e8a70000000000000000000000000000000000000000000000000000000000000040",
+      "type": 2,
+      "maxPriorityFeePerGas": "1150000",
+      "maxFeePerGas": "1156037",
+      "gasLimit": "0xccef"
+    }
+  ],
+  "info": {
+    "tokenizerEmail": "tokenizer@example.com",
+    "tokenSymbol": "EXMPL",
+    "investorEmail": "investor@example.com"
+  },
+  "txId": "0x46adea7bdf49c576a760102e0d6bc9ecd650b3998588cd3d7f576a7973426aad"
+}

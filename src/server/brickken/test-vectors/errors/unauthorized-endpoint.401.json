@@ -1,0 +1,7 @@
+{
+  "errors": {
+    "messages": "API key is required for this endpoint",
+    "status": 401,
+    "name": "Unauthorized Error"
+  }
+}

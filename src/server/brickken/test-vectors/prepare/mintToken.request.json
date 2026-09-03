@@ -1,0 +1,14 @@
+{
+  "method": "mintToken",
+  "chainId": "aa36a7",
+  "signerAddress": "0x1111111111111111111111111111111111111111",
+  "tokenSymbol": "EXMPL",
+  "userToMint": [
+    {
+      "investorEmail": "investor@example.com",
+      "investorAddress": "0x2222222222222222222222222222222222222222",
+      "amount": "100",
+      "needWhitelist": true
+    }
+  ]
+}

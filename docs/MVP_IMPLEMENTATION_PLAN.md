@@ -13,7 +13,7 @@
 | --- | --- | --- | --- |
 | DECISION — 1 | Codex | Scaffold the minimal Next.js/TypeScript project after review; configure strict TypeScript, Vitest, linting, server-only boundaries, and the pinned SDK version. | Build/test commands pass; no UI feature code; lockfile pins `brickken-sdk@0.2.1`. |
 | DECISION — 2 | Codex | **Complete** — Implement versioned manifest schema, canonical JSON, manifest hash, deterministic execution-plan builder, plan hash, and validation errors. See [`CORE_DOMAIN_SPEC.md`](CORE_DOMAIN_SPEC.md). | Golden tests prove identical inputs yield identical plans/hashes and invalid manifests make no network calls; the full production build passed outside the restricted agent sandbox. |
-| DECISION — 3 | Grok | Adversarially review the Brickken wire contract and produce test vectors for the documented contract conflicts, identity constraints, response variants, and retry classification. | Review contains only official citations; disputed claims become failing/skipped contract tests, not guessed code. |
+| DECISION — 3 | Grok | **Complete** — Adversarially reviewed the Brickken wire contract and produced sourced test vectors. See [`BRICKKEN_WIRE_CONTRACT_AUDIT.md`](BRICKKEN_WIRE_CONTRACT_AUDIT.md) and `src/server/brickken/test-vectors/`. | Review cites only official documentation, pinned `brickken-sdk@0.2.1`, official Postman, official npm metadata, and recorded unauthenticated checks; disputed claims are fixtures or omitted gaps, not guessed adapter code. |
 | DECISION — 4 | Codex | Implement application-owned repository interface (with in-memory test implementation; managed DB deferred) for run, operation, event, and receipt records plus the pure state-transition function and optimistic concurrency. | Transition-table tests reject illegal skips, identifier replacement, receipt-before-verification, and replayed broadcasts. |
 | DECISION — 5 | Codex | Build `brickken.server` around pinned SDK prepare/read/status/send methods with sandbox URL allowlist, runtime response schemas, redaction, and single-attempt prepare policy. | Injected-fetch contract tests assert exact method/body/header handling without exposing the key. |
 | DECISION — 6 | Gemini | Independently compare runtime schemas and examples against the current official documentation; focus on field-name drift and produce a concise discrepancy checklist. | Every discrepancy links to an official URL and is classified as verified or open. |
@@ -65,12 +65,13 @@
 ## Phase 1 go/no-go checklist
 
 - **OPEN QUESTION** — Brickken confirms or fixes unauthenticated network-info behavior.
-- **OPEN QUESTION** — Authenticated contract test resolves whitelist boolean/string.
-- **OPEN QUESTION** — Authenticated contract test proves separate whitelist then `needWhitelist: false` mint.
-- **OPEN QUESTION** — Selected browser wallet successfully broadcasts the exact prepared transaction shape.
+- **OPEN QUESTION** — Authenticated contract test confirms live `whitelistStatus` is the documented boolean (current docs no longer show the string schema).
+- **OPEN QUESTION** — Authenticated contract test proves separate whitelist then `needWhitelist: false` mint as a single `client-broadcast` transaction.
+- **OPEN QUESTION** — Selected browser wallet successfully broadcasts a payload normalised per official browser-wallet guidance, and Brickken reconciles the hash.
 - **OPEN QUESTION** — Sandbox account/license, signer approval, native gas, and per-method credits are confirmed without exposing credentials.
+- **OPEN QUESTION** — Live prepare returns a `client-broadcast` encoding Phase 4 schemas accept (string fees and/or BigNumber objects) and `transactions.length === 1` for each Edict write.
 - **DECISION** — If any gate fails, update the integration spec and architecture before changing feature code.
 
 ## Exact next task
 
-**DECISION** — Perform Task 3 only: adversarially review the Brickken wire contract and produce official-source-backed test vectors for documented conflicts, identity constraints, response variants, and retry classification. Do not implement persistence, API routes, wallet behavior, approvals, receipts, or Brickken calls in that task.
+**DECISION** — Perform Task 4 next: implement the application-owned repository interface (in-memory test implementation; managed DB deferred) for run, operation, event, and receipt records plus the pure state-transition function and optimistic concurrency. Then implement Task 5, the smallest safe `brickken.server` adapter specified in [`BRICKKEN_WIRE_CONTRACT_AUDIT.md`](BRICKKEN_WIRE_CONTRACT_AUDIT.md) section 14, using the sourced vectors. Do not implement UI, wallet code, receipts, or Brickken live calls in those tasks.

@@ -1,0 +1,25 @@
+{
+  "uuid": "a5232594-3f97-47d0-b362-491caac9388f",
+  "name": "Example Corp",
+  "tokenName": "Example Token",
+  "tokenSymbol": "EXMPL",
+  "tokenType": "equity",
+  "tokenizerEmail": "tokenizer@example.com",
+  "companyWalletAddress": "0x1111111111111111111111111111111111111111",
+  "tokenLogotype": "https://cdn.example.com/logo.png",
+  "subscriptionAgreement": "ipfs://...",
+  "legalDocs": "ipfs://...",
+  "allowedTokenDecimals": 18,
+  "initialTokenSupply": "1000000",
+  "maxTokenSupply": "10000000",
+  "paymentToken": {
+    "symbol": "USDC",
+    "address": "0x2222222222222222222222222222222222222222",
+    "decimals": 6,
+    "blockchain": {
+      "chainId": "aa36a7",
+      "chainName": "Ethereum Sepolia",
+      "blockExplorerUrl": "https://sepolia.etherscan.io"
+    }
+  }
+}

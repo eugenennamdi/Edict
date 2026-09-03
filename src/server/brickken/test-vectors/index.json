@@ -1,0 +1,280 @@
+{
+  "title": "Edict Phase 3 Brickken sourced test vectors",
+  "accessed": "2026-09-03",
+  "policy": "Fixtures are official examples, minimally normalised official examples, or constructed from official schema/prose. They are not live sandbox observations. No API keys, private keys, or high-entropy secrets.",
+  "audit": "docs/BRICKKEN_WIRE_CONTRACT_AUDIT.md",
+  "vectors": [
+    {
+      "id": "prepare-newTokenization-request",
+      "file": "prepare/newTokenization.request.json",
+      "kind": "prepare-request",
+      "operation": "newTokenization",
+      "origin": "minimally-normalised-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization",
+      "also": [
+        "https://docs.brickken.com/get-started/build-programme/api-hello-world"
+      ],
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C2", "C3", "C4", "C12"],
+      "notes": "Official example used tokenType EQUITY, chainId aa36a7, and signer 0x742d…. Normalised to RWA_TOKEN, decimal chainId 11155111, and 0x1111… to match Edict identities and SDK chainId rules. executionMode added from Send docs, not from the prepare OpenAPI properties."
+    },
+    {
+      "id": "prepare-newTokenization-response",
+      "file": "prepare/newTokenization.response.json",
+      "kind": "prepare-response",
+      "operation": "newTokenization",
+      "origin": "minimally-normalised-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C10", "C19"],
+      "notes": "Encoding A from dedicated 200 property examples. data is the truncated official example string; it is not live calldata."
+    },
+    {
+      "id": "prepare-whitelist-request",
+      "file": "prepare/whitelist.request.json",
+      "kind": "prepare-request",
+      "operation": "whitelist",
+      "origin": "copied-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/prepare-whitelist",
+      "also": [
+        "https://docs.brickken.com/api-reference/guides/tokenize-and-run-an-sto"
+      ],
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C1", "C4", "C12", "C13", "C14"],
+      "notes": "whitelistStatus is the official JSON boolean. investorEmail is required in the current dedicated schema. needKyc is omitted because it is absent from the dedicated OpenAPI properties."
+    },
+    {
+      "id": "prepare-whitelist-response",
+      "file": "prepare/whitelist.response.json",
+      "kind": "prepare-response",
+      "operation": "whitelist",
+      "origin": "minimally-normalised-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/prepare-whitelist",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C10"],
+      "notes": "Same encoding A unsigned transaction example as other prepare 200 schemas."
+    },
+    {
+      "id": "prepare-mintToken-request-official",
+      "file": "prepare/mintToken.request.json",
+      "kind": "prepare-request",
+      "operation": "mintToken",
+      "origin": "copied-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/prepare-mintToken",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C21"],
+      "notes": "Official example sets needWhitelist true, which can return two transactions. Edict must not send this body on the locked path."
+    },
+    {
+      "id": "prepare-mintToken-request-edict",
+      "file": "prepare/mintToken.request.needWhitelist-false.json",
+      "kind": "prepare-request",
+      "operation": "mintToken",
+      "origin": "constructed-from-official-schema",
+      "source": "https://docs.brickken.com/api-reference/endpoint/prepare-mintToken",
+      "accessed": "2026-09-03",
+      "confidence": "INFERENCE",
+      "knownConflicts": ["C21"],
+      "notes": "Constructed from the dedicated schema with needWhitelist explicitly false. Not an official complete sequence example."
+    },
+    {
+      "id": "prepare-mintToken-response-single",
+      "file": "prepare/mintToken.response.single.json",
+      "kind": "prepare-response",
+      "operation": "mintToken",
+      "origin": "constructed-from-official-schema",
+      "source": "https://docs.brickken.com/api-reference/endpoint/prepare-mintToken",
+      "accessed": "2026-09-03",
+      "confidence": "INFERENCE",
+      "knownConflicts": ["C10", "C20"],
+      "notes": "Combines the official single-tx prose shape (string txId, one transaction) with encoding A field examples. Not a live mint prepare."
+    },
+    {
+      "id": "send-client-broadcast-request",
+      "file": "send/client-broadcast.request.json",
+      "kind": "send-request",
+      "operation": "send-transactions",
+      "origin": "copied-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/send",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C6", "C19"]
+    },
+    {
+      "id": "send-pending-response",
+      "file": "send/pending.response.json",
+      "kind": "send-response",
+      "operation": "send-transactions",
+      "origin": "copied-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/send",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C8", "C9"],
+      "notes": "Official success example is { txHash, status: pending }. The truncated 0x1234… example hash was replaced with the complete official client-broadcast request txHash. A confirmed send body is not published for this mode."
+    },
+    {
+      "id": "status-success-response",
+      "file": "status/success.response.json",
+      "kind": "status-response",
+      "operation": "get-transaction-status",
+      "origin": "copied-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/get-transaction-status",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C6"]
+    },
+    {
+      "id": "status-rejected-response",
+      "file": "status/rejected.response.json",
+      "kind": "status-response",
+      "operation": "get-transaction-status",
+      "origin": "copied-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/get-transaction-status",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": []
+    },
+    {
+      "id": "status-pending-response",
+      "file": "status/pending.response.json",
+      "kind": "status-response",
+      "operation": "get-transaction-status",
+      "origin": "constructed-from-official-schema",
+      "source": "https://docs.brickken.com/api-reference/endpoint/get-transaction-status",
+      "accessed": "2026-09-03",
+      "confidence": "INFERENCE",
+      "knownConflicts": ["C8"],
+      "notes": "No official pending JSON example. Constructed from the published enum and the statement that transactionHash may be absent."
+    },
+    {
+      "id": "read-token-info-asset",
+      "file": "reads/token-info.asset.response.json",
+      "kind": "read-response",
+      "operation": "get-token-info",
+      "origin": "copied-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/get-token-info",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C22"]
+    },
+    {
+      "id": "read-token-info-list",
+      "file": "reads/token-info.list.response.json",
+      "kind": "read-response",
+      "operation": "get-token-info",
+      "origin": "copied-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/get-token-info",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C24"]
+    },
+    {
+      "id": "read-tokenizer-info",
+      "file": "reads/tokenizer-info.response.json",
+      "kind": "read-response",
+      "operation": "get-tokenizer-info",
+      "origin": "copied-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/get-tokenizer-info",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C5"]
+    },
+    {
+      "id": "read-whitelist-status-boolean",
+      "file": "reads/whitelist-status.boolean.response.json",
+      "kind": "read-response",
+      "operation": "get-whitelist-status",
+      "origin": "minimally-normalised-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/get-whitelist-status",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C23"],
+      "notes": "Official example address 0x742d… is 39 hex characters. Replaced with the obvious 40-character test address 0x2222…."
+    },
+    {
+      "id": "read-balance-whitelist",
+      "file": "reads/balance-whitelist.response.json",
+      "kind": "read-response",
+      "operation": "get-balance-whitelist",
+      "origin": "copied-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/get-balance-whitelist",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": []
+    },
+    {
+      "id": "error-unauthorized-endpoint-401",
+      "file": "errors/unauthorized-endpoint.401.json",
+      "kind": "error",
+      "operation": "get-network-info",
+      "origin": "copied-official-example",
+      "source": "docs/BRICKKEN_INTEGRATION_SPEC.md",
+      "also": [
+        "https://docs.brickken.com/get-started/authentication"
+      ],
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": ["C16"],
+      "notes": "Phase 0 unauthenticated live sandbox body. No credential was sent."
+    },
+    {
+      "id": "error-send-invalid-signature-400",
+      "file": "errors/send-invalid-signature.400.json",
+      "kind": "error",
+      "operation": "send-transactions",
+      "origin": "minimally-normalised-official-example",
+      "source": "https://docs.brickken.com/api-reference/endpoint/send",
+      "accessed": "2026-09-03",
+      "confidence": "VERIFIED",
+      "knownConflicts": [],
+      "notes": "Official example signer addresses replaced with obvious 0x1111… / 0x2222… test addresses."
+    },
+    {
+      "id": "error-out-of-credits-message",
+      "file": "errors/out-of-credits.message.json",
+      "kind": "error",
+      "operation": "prepare-transactions",
+      "origin": "constructed-from-official-schema",
+      "source": "https://docs.brickken.com/get-started/authentication",
+      "accessed": "2026-09-03",
+      "confidence": "INFERENCE",
+      "knownConflicts": ["C18"],
+      "notes": "Official sources publish the message string, not a JSON envelope. This wrapper is labelled constructed so tests can assert on the message without inventing undocumented success fields."
+    },
+    {
+      "id": "error-unauthorized-token-symbol-message",
+      "file": "errors/unauthorized-token-symbol.message.json",
+      "kind": "error",
+      "operation": "get-token-info",
+      "origin": "constructed-from-official-schema",
+      "source": "https://docs.brickken.com/get-started/authentication",
+      "accessed": "2026-09-03",
+      "confidence": "INFERENCE",
+      "knownConflicts": [],
+      "notes": "Official sources publish the message string, not a JSON envelope."
+    }
+  ],
+  "omitted": [
+    {
+      "id": "whitelist-status-string-variant",
+      "reason": "No current official source shows a string whitelistStatus or string isWhitelisted success body."
+    },
+    {
+      "id": "send-confirmed-client-broadcast-response",
+      "reason": "Official client-broadcast success JSON is status pending. status confirmed is documented only for relayed send prose, without a JSON example for Dapp."
+    },
+    {
+      "id": "send-202-client-broadcast-response",
+      "reason": "HTTP 202 is documented for relayed send only. Send OpenAPI lists 200, 400, and 402."
+    },
+    {
+      "id": "live-prepare-or-send-bodies",
+      "reason": "This phase made no authenticated or write requests."
+    }
+  ]
+}

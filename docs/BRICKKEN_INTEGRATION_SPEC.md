@@ -2,6 +2,8 @@
 
 Checked: 2026-09-03 (Africa/Lagos; live response timestamp 2026-09-03 17:47:30 GMT)
 
+Phase 3 wire-contract audit: [`BRICKKEN_WIRE_CONTRACT_AUDIT.md`](BRICKKEN_WIRE_CONTRACT_AUDIT.md). Sourced fixtures: `src/server/brickken/test-vectors/`. This file remains the owned integration contract; the audit is the adversarial review of the same official sources plus pinned `brickken-sdk@0.2.1`.
+
 ## Claim labels
 
 - **VERIFIED** — Supported directly by the adjacent official Brickken documentation, official Brickken repository, official npm metadata, or the recorded safe live check.
@@ -68,7 +70,11 @@ No request body
 
 **VERIFIED** — Prepared transaction fields shown by Brickken include `from`, `to`, `value`, `nonce`, numeric `chainId`, `data`, `type`, `maxPriorityFeePerGas`, `maxFeePerGas`, and `gasLimit`. [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization)
 
-**VERIFIED** — `POST /send-transactions` in `client-broadcast` mode accepts exactly one string `txId` and one string `txHash`; arrays are rejected for this mode. A successful submission returns a transaction hash and status, commonly `pending`. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send)
+**CONFLICT** — Prepare-page examples encode `value`/`gasLimit` as hex strings and fees as decimal strings, while the send OpenAPI `UnsignedTransaction` schema serialises those fields as `{ type: "BigNumber", hex }`. Runtime schemas must accept both. [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create) [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send)
+
+**VERIFIED** — Prepared transactions are ethers-style unsigned transactions, not EIP-1193 payloads. Official browser-wallet guidance converts numeric fields to hex, renames `gasLimit` to `gas`, and omits `nonce`, `chainId`, `type`, and fee fields before `eth_sendTransaction`. [Browser wallets](https://docs.brickken.com/api-reference/guides/browser-wallets)
+
+**VERIFIED** — `POST /send-transactions` in `client-broadcast` mode accepts exactly one string `txId` and one string `txHash`; arrays are rejected. A successful submission returns a transaction hash and status, commonly `pending`. The pinned SDK also refuses a multi-transaction `client-broadcast` locally. `mintToken` can return two transactions when a recipient still needs whitelisting; those must be signed and broadcast in order, which this mode cannot confirm one hash at a time. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send) [mintToken](https://docs.brickken.com/api-reference/endpoint/prepare-mintToken)
 
 **VERIFIED** — `GET /get-transaction-status` requires at least one of `txId` or `hash`, accepts no request body, and returns `status` as `pending`, `success`, or `rejected`; `transactionHash` appears when known and `error` appears on failure. [Get Transaction Status](https://docs.brickken.com/api-reference/endpoint/get-transaction-status)
 
@@ -86,13 +92,17 @@ No request body
 
 **VERIFIED** — The current dedicated page says `tokenSymbol` must be 2–5 uppercase letters or numbers and unused; `tokenType` defaults to `EQUITY`; `tokenizerEmail` must identify an existing account with an active tokenization license. [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization)
 
-**OPEN QUESTION** — The unified prepare page says a token symbol is 3–5 characters while the dedicated page says 2–5. The MVP validates 3–5 uppercase letters or numbers until an authenticated sandbox contract test resolves the lower bound. [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create) [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization)
+**VERIFIED** — Current dedicated and unified prepare OpenAPI both say `tokenSymbol` must be 2–5 uppercase letters or numbers. The Hello World walkthrough also generates a 2–5 character symbol. The Phase 0 3–5 sentence is not present in the official pages inspected on 2026-09-03. [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization) [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create) [API Hello World](https://docs.brickken.com/get-started/build-programme/api-hello-world)
+
+**DECISION** — Edict core still validates `[A-Z0-9]{3,5}` as the conservative intersection chosen in Phase 2. That core rule is not changed in Phase 3. A 2-character symbol remains an authenticated sandbox question, not an Edict V1 input.
 
 **VERIFIED** — If `preMints` is supplied, `initialHolders` must also be supplied at the same length; each holder may use `walletAddress` or an email resolvable to a DFNS wallet. [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization)
 
 **DECISION** — The MVP omits `preMints`, `initialHolders`, `tokenizerAddress`, `paymentTokenAddress`, private RPC overrides, gas overrides, and nonce overrides. It provides an HTTPS documentation `url` even though the current dedicated schema calls it optional.
 
-**OPEN QUESTION** — Official descriptions disagree on whether `url` is required: the unified prepare summary calls it required, while the current dedicated endpoint schema calls it optional. Edict supplies it and validates it as required until an authenticated sandbox contract test confirms behavior. [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create) [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization)
+**VERIFIED** — Current dedicated and unified prepare schemas both call `url` optional and default it to an empty string. The Phase 0 “unified summary required” wording is not present in the official pages inspected on 2026-09-03. [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create) [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization)
+
+**DECISION** — Edict still supplies and validates an HTTPS documentation URL. Omitting `url` is not part of the locked manifest.
 
 **VERIFIED** — Wait for tokenization `success` before using the symbol for whitelist or mint. [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization)
 
@@ -100,11 +110,15 @@ No request body
 
 ### `whitelist`
 
-**VERIFIED** — Prepare with `POST /prepare-transactions` and `method: "whitelist"`. Required fields are `method`, `chainId`, `signerAddress`, `tokenSymbol`, and `userToWhitelist`; each entry contains `investorAddress` and `whitelistStatus`, with investor email optional. The response contains `transactions` and `txId`. [whitelist](https://docs.brickken.com/api-reference/endpoint/prepare-whitelist)
+**VERIFIED** — Prepare with `POST /prepare-transactions` and `method: "whitelist"`. Required fields on the current dedicated OpenAPI are `method`, `chainId`, `signerAddress`, `tokenSymbol`, and `userToWhitelist`. Each entry requires `investorAddress`, `investorEmail`, and boolean `whitelistStatus`. The response contains `transactions` and `txId`. [whitelist](https://docs.brickken.com/api-reference/endpoint/prepare-whitelist)
 
 **VERIFIED** — The tokenizer wallet signs whitelist management. [Authentication](https://docs.brickken.com/get-started/authentication)
 
-**OPEN QUESTION** — Official schemas conflict on `whitelistStatus`: the dedicated endpoint documents strings (`"true"`/`"false"`), while the unified prepare example uses a JSON boolean. Resolve with an authenticated sandbox contract test before implementation; do not coerce silently. [whitelist](https://docs.brickken.com/api-reference/endpoint/prepare-whitelist) [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create)
+**VERIFIED** — Current dedicated OpenAPI, unified prepare schema, Postman, and HTTP/SDK guides all type `whitelistStatus` as a JSON boolean (`true` / `false`). A string `"true"` / `"false"` schema was not present in official sources inspected on 2026-09-03. [whitelist](https://docs.brickken.com/api-reference/endpoint/prepare-whitelist) [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create)
+
+**OPEN QUESTION** — Live sandbox may still accept or return a string form. Phase 4 must not coerce; an authenticated contract test remains required. The string success fixture is omitted because no current official example exists.
+
+**CONFLICT** — Whitelist prose and the sandbox guide document `needKyc` on each `userToWhitelist` entry (`false` in sandbox only). The dedicated OpenAPI properties do not declare `needKyc`. [whitelist](https://docs.brickken.com/api-reference/endpoint/prepare-whitelist) [Sandbox](https://docs.brickken.com/get-started/sandbox)
 
 **DECISION** — The approved plan contains a standalone whitelist operation before mint. After it reaches `success`, Edict calls `GET /get-whitelist-status` and requires `isWhitelisted === true` before preparing mint.
 
@@ -120,7 +134,9 @@ No request body
 
 **DECISION** — Because the locked MVP requires an explicit whitelist stage, set `needWhitelist: false` only after standalone whitelist read-back succeeds. This avoids hiding a second state change inside mint and yields distinct approval, transaction, and verification evidence.
 
-**OPEN QUESTION** — Confirm in an authenticated sandbox contract test that `needWhitelist: false` succeeds for a previously whitelisted address and that a standalone whitelist does not require a registered investor email in the selected flow.
+**VERIFIED** — Current dedicated whitelist schema requires `investorEmail` on each `userToWhitelist` entry. The Phase 0 “email optional” reading is not present in that schema on 2026-09-03. [whitelist](https://docs.brickken.com/api-reference/endpoint/prepare-whitelist)
+
+**OPEN QUESTION** — Confirm in an authenticated sandbox contract test that standalone whitelist followed by `mintToken` with `needWhitelist: false` prepares exactly one transaction and mints to the already-whitelisted address. Official mint examples still show `needWhitelist: true`; the single-tx shape is documented only as “when no recipient needs whitelisting.” [mintToken](https://docs.brickken.com/api-reference/endpoint/prepare-mintToken)
 
 ## Read-back contract
 
@@ -155,7 +171,11 @@ No request body
 
 **VERIFIED** — `rejected` plus the stored `error` is the Brickken terminal failure signal. [Get Transaction Status](https://docs.brickken.com/api-reference/endpoint/get-transaction-status)
 
-**OPEN QUESTION** — Brickken does not publish finality depth, typical confirmation latency, prepared-transaction expiry, nonce reservation behavior, or a prepare idempotency key for Dapp methods in the reviewed official sources.
+**VERIFIED** — `mintToken` API-key credits are consumed once per mint operation at send time (`Out of credits for minting`). License mint-recipient and invitation counters are separate. [mintToken](https://docs.brickken.com/api-reference/endpoint/prepare-mintToken)
+
+**OPEN QUESTION** — Brickken does not publish finality depth, typical confirmation latency, prepared-transaction expiry, nonce reservation behavior, or a prepare idempotency key for Dapp methods in the reviewed official sources. When `newTokenization` and `whitelist` credits are decremented (prepare vs send) is also unpublished.
+
+**VERIFIED** — The SDK documents a per-wallet outstanding-prepare quota that returns `429` with `Too many outstanding prepared transactions for this wallet`. [`brickken-sdk@0.2.1` README](https://docs.brickken.com/sdk/introduction)
 
 ## Official SDK versus direct REST
 
@@ -163,7 +183,7 @@ No request body
 
 **VERIFIED** — On 2026-09-03, official npm registry metadata reported `brickken-sdk@0.2.1`, Node `>=20`, types, ESM/CJS exports, optional viem/ethers peer adapters, one runtime dependency, and repository metadata pointing to `github.com/Brickken/brickken-sdk`. [Official npm metadata](https://registry.npmjs.org/brickken-sdk/latest)
 
-**OPEN QUESTION** — The npm-declared GitHub repository returned HTTP `404` during Phase 0 and was not listed among the public repositories visible on the official Brickken organization page. Source-level audit and issue tracking are therefore unavailable until Brickken makes the repository public or corrects the metadata. [Brickken GitHub](https://github.com/Brickken) [npm-declared repository](https://github.com/Brickken/brickken-sdk)
+**OPEN QUESTION** — The npm-declared GitHub repository returned HTTP `404` during Phase 0 and again on 2026-09-03. It is not listed among the public repositories visible on the official Brickken organization page. Source-level audit and issue tracking remain unavailable. [Brickken GitHub](https://github.com/Brickken) [npm-declared repository](https://github.com/Brickken/brickken-sdk)
 
 **VERIFIED** — SDK namespace mapping covers `tokenization.create` → `newTokenization`, `.whitelist` → `whitelist`, `.mint` → `mintToken`, `.info` → `/get-token-info`, `.tokenizer` → `/get-tokenizer-info`, `.whitelistStatus` → `/get-whitelist-status`, `.balanceAndWhitelist` → `/get-balance-whitelist`, plus raw `tx` prepare/send/status. [SDK namespaces](https://docs.brickken.com/sdk/namespaces)
 
@@ -188,10 +208,12 @@ No request body
 
 - **OPEN QUESTION** — Obtain a sandbox API key and Brickken approval for the exact tokenizer signer address through the official request process; do not place either in source control. [Request an API key](https://docs.brickken.com/get-started/request-api-key)
 - **OPEN QUESTION** — Ask Brickken to resolve the public `get-network-info` documentation/live `401` conflict.
-- **OPEN QUESTION** — Confirm the JSON type of `userToWhitelist[].whitelistStatus`.
-- **OPEN QUESTION** — Confirm standalone whitelist followed by mint with `needWhitelist: false`.
-- **OPEN QUESTION** — Confirm browser-wallet compatibility with each prepared EIP-1559 field and the `client-broadcast` reconciliation path.
-- **OPEN QUESTION** — Confirm `newTokenization.url` requiredness and the exact active-license failure shape.
-- **OPEN QUESTION** — Confirm whether the accepted `tokenSymbol` lower bound is two or three characters.
-- **OPEN QUESTION** — Confirm prepared transaction expiry, finality expectations, per-tier quotas, and whether prepare consumes a credit before send.
-- **OPEN QUESTION** — Confirm whether API-key Dapp transaction-status polling always requires the key, including after client broadcast.
+- **OPEN QUESTION** — Confirm live `userToWhitelist[].whitelistStatus` JSON type if anything other than boolean is still accepted.
+- **OPEN QUESTION** — Confirm standalone whitelist followed by mint with `needWhitelist: false` returns a single transaction and mints.
+- **OPEN QUESTION** — Confirm the selected browser wallet can broadcast a payload normalised per official browser-wallet guidance, and that Brickken reconciles the resulting hash for a `client-broadcast` prepare.
+- **OPEN QUESTION** — Confirm `newTokenization.url` behaviour when omitted, and the exact active-license failure shape.
+- **OPEN QUESTION** — Confirm whether the accepted `tokenSymbol` lower bound is two or three characters on live sandbox. Current docs say 2–5; Edict V1 still sends 3–5.
+- **OPEN QUESTION** — Confirm prepared transaction expiry, finality expectations, per-tier quotas, and whether `newTokenization`/`whitelist` prepare consumes a credit before send.
+- **OPEN QUESTION** — Confirm whether API-key Dapp transaction-status polling always requires the key, including after client broadcast. Edict will send the key regardless.
+- **OPEN QUESTION** — Confirm live unsigned-transaction encoding (string fees vs BigNumber objects) and whether `executionMode: "client-broadcast"` is accepted on Dapp prepare despite its absence from the prepare OpenAPI properties.
+- **OPEN QUESTION** — Confirm sandbox acceptance of `needKyc: false` on whitelist/mint despite its absence from the dedicated OpenAPI properties.

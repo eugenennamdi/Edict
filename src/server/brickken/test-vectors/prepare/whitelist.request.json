@@ -1,0 +1,14 @@
+{
+  "method": "whitelist",
+  "chainId": "11155111",
+  "signerAddress": "0x1111111111111111111111111111111111111111",
+  "tokenSymbol": "EXMPL",
+  "executionMode": "client-broadcast",
+  "userToWhitelist": [
+    {
+      "investorAddress": "0x2222222222222222222222222222222222222222",
+      "investorEmail": "investor@example.com",
+      "whitelistStatus": true
+    }
+  ]
+}

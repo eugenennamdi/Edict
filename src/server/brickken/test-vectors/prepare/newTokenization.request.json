@@ -1,0 +1,12 @@
+{
+  "method": "newTokenization",
+  "chainId": "11155111",
+  "signerAddress": "0x1111111111111111111111111111111111111111",
+  "tokenizerEmail": "tokenizer@example.com",
+  "name": "Example Token",
+  "tokenSymbol": "EXMPL",
+  "tokenType": "RWA_TOKEN",
+  "supplyCap": "1000000",
+  "url": "https://example.com/token-docs",
+  "executionMode": "client-broadcast"
+}

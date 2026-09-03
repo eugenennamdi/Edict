@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "INVALID_SIGNATURE",
+    "message": "Transaction signature is invalid",
+    "details": {
+      "transactionIndex": 0,
+      "expectedSigner": "0x1111111111111111111111111111111111111111",
+      "actualSigner": "0x2222222222222222222222222222222222222222"
+    }
+  }
+}
