@@ -2,21 +2,21 @@
 
 ## Architecture decision
 
-**DECISION** — Build one Next.js TypeScript application with a server-only Brickken boundary, a browser-wallet boundary, and a file-backed SQLite database for the single-instance sandbox demo. Avoid queues, microservices, custodial signers, and multi-agent runtime components.
+**DECISION** — Build one Next.js TypeScript application with a server-only Brickken boundary, a browser-wallet boundary, and an application-owned repository interface for persistence. SQLite is rejected as the production/deployed persistence implementation because local disk is not durable on Vercel-style hosting; the final managed database choice is deferred, with an in-memory repository implementation used for automated tests. Avoid queues, microservices, custodial signers, and multi-agent runtime components.
 
-**DECISION** — Recommended stack after Phase 0 approval: Next.js App Router on Node 20+, TypeScript strict mode, Zod for manifest and wire schemas, pinned `brickken-sdk@0.2.1` server-only, wagmi/viem for wallet connection and browser broadcasting, Drizzle with SQLite for persistence, and Vitest for domain/contract tests.
+**DECISION** — Recommended stack after Phase 0 approval: Next.js App Router on Node 24+, TypeScript strict mode, Zod for manifest and wire schemas, pinned `brickken-sdk@0.2.1` server-only behind an Edict-owned server adapter, wagmi/viem for wallet connection and browser broadcasting, an application-owned repository interface for persistence, and Vitest for domain/contract tests.
 
-**ASSUMPTION** — The hackathon demo runs as one persistent Node process with writable durable storage. If deployment targets a stateless/serverless platform, replace SQLite with managed PostgreSQL without changing the domain model.
+**DECISION** — Persistence sits behind an application-owned repository interface. Automated tests will use an in-memory repository implementation. SQLite is rejected for production/deployed persistence because local disk is not durable on Vercel-style hosting, and the final managed database choice is deferred.
 
 ## Trust boundaries and responsibilities
 
 | Boundary | Responsibilities | Forbidden data/actions |
 | --- | --- | --- |
 | DECISION — Browser | Render manifest/form and plan; connect wallet; request explicit plan approval; display the prepared transaction; ask the wallet to sign and broadcast; return public address and transaction hash; display progress and receipt. | API key, private key, seed phrase, direct authenticated Brickken requests, hidden auto-approval. |
-| DECISION — Next.js server | Validate/canonicalize; create immutable plan; enforce approvals; call the pinned SDK with sandbox API key; validate SDK payloads; persist run/operation/events; reconcile tx hashes; poll; verify read-back; issue receipt. | Private keys, seed phrases, production endpoint, signing, silently changing an approved plan. |
+| DECISION — Next.js server | Validate/canonicalize; create immutable plan; enforce approvals; call the pinned SDK with sandbox API key through an Edict-owned server adapter; validate SDK payloads; persist run/operation/events; reconcile tx hashes; poll; verify read-back; issue receipt. | Private keys, seed phrases, production endpoint, signing, silently changing an approved plan. |
 | DECISION — Browser wallet | Hold keys; show wallet confirmation; sign and broadcast the prepared Sepolia transaction; return `txHash`. | Revealing key material to Edict. |
-| VERIFIED — Brickken sandbox | Prepare Dapp operations, reconcile client-broadcast hashes, report status, and expose token/whitelist/balance reads. [Dapp API](https://docs.brickken.com/api-reference/introduction) [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send) | DECISION — No production or relayed execution in MVP. |
-| DECISION — SQLite | Persist normalized run state, immutable request/plan snapshots, approvals, prepared IDs/payloads, hashes, poll results, observations, and receipts. | API keys, wallet secrets, seed phrases, full environment dumps. |
+| VERIFIED — Brickken sandbox | Prepare Dapp operations, reconcile client-broadcast hashes, report status, and expose token/whitelist/balance reads. Note: unauthenticated `GET /get-network-info` returned 401; implementation must not depend on it being public. [Dapp API](https://docs.brickken.com/api-reference/introduction) [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send) | DECISION — No production or relayed execution in MVP. |
+| DECISION — Repository interface | Persist normalized run state, immutable request/plan snapshots, approvals, prepared IDs/payloads, hashes, poll results, observations, and receipts behind an application-owned repository interface. In-memory implementation for tests; production managed database choice deferred. | API keys, wallet secrets, seed phrases, full environment dumps. |
 
 ## Minimal component layout
 
@@ -30,9 +30,9 @@ Browser UI
 Next.js route handlers (same origin)
   ├─ domain: validate, canonicalize, plan, hashes
   ├─ orchestrator: approval guards + state transitions
-  ├─ brickken.server: pinned SDK + Zod wire validation
+  ├─ brickken.server: Edict-owned server adapter wrapping pinned SDK + Zod wire validation
   ├─ verifier: requested state vs observed state
-  └─ repository: transactional SQLite writes + event log
+  └─ repository: application-owned repository interface + event log
           │ x-api-key only here
           ▼
 Brickken sandbox API ──► Ethereum Sepolia

@@ -54,7 +54,7 @@ No request body
 
 **OPEN QUESTION** — Official pages conflict with live behavior. The authentication and SDK installation pages say `GET /get-network-info` is public and should return `200` without a key, while the endpoint reference marks `x-api-key` required and the live check returned `401`. Do not build an unauthenticated health check until Brickken resolves this. [Authentication](https://docs.brickken.com/get-started/authentication) [SDK installation](https://docs.brickken.com/sdk/installation) [Get Network Information](https://docs.brickken.com/api-reference/endpoint/get-network-info)
 
-**DECISION** — Until resolved, Edict's readiness check reports the host as reachable but the public network-info contract as incompatible. No authenticated fallback was attempted in Phase 0.
+**DECISION** — The currently anonymous `/get-network-info` request returned `401`; implementation must not depend on that endpoint being public. Until resolved, Edict's readiness check reports the host as reachable but the public network-info contract as incompatible. No authenticated fallback was attempted in Phase 0.
 
 ## Transaction lifecycle
 
@@ -180,7 +180,7 @@ No request body
 | Implementation speed | DECISION — Faster for prepare, reads, send reconciliation, and errors, with a narrow custom wallet bridge. | DECISION — More wire work and more opportunities to drift. |
 | Undocumented behavior | OPEN QUESTION — New package and inaccessible declared source increase supply-chain/change risk; pin and contract-test. | DECISION — Fewer hidden client behaviors, but more exposure to inconsistent docs and response evolution. |
 
-**DECISION** — Use pinned `brickken-sdk@0.2.1` in server-only code for prepare, read, send reconciliation, and status. Use viem/wagmi only in the browser to request wallet signing and broadcasting of the prepared transaction. Do not pass the browser wallet into the SDK, and do not call SDK `execute: true`.
+**DECISION** — Brickken access must remain behind an Edict-owned server adapter so application logic does not depend directly on SDK behavior. Use pinned `brickken-sdk@0.2.1` strictly inside this server-only adapter for prepare, read, send reconciliation, and status. Use viem/wagmi only in the browser to request wallet signing and broadcasting of the prepared transaction. Do not pass the browser wallet into the SDK, and do not call SDK `execute: true`.
 
 **DECISION** — Wrap every SDK response in Edict-owned runtime schemas, persist raw sanitized response snapshots for audit, set `executionMode: "client-broadcast"` explicitly, and keep a single raw REST escape hatch behind the same adapter only if a verified endpoint is missing from the pinned SDK.
 
