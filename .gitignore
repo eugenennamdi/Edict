@@ -1,0 +1,30 @@
+# DECISION: dependencies and generated Next.js output
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+# DECISION: local environment and secret-bearing files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.seed
+
+# DECISION: local databases and runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# DECISION: local tooling, caches, logs, and OS/editor files
+.firecrawl/
+.turbo/
+.vercel/
+*.log
+.DS_Store
+.idea/
+.vscode/
