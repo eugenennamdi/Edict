@@ -10,6 +10,8 @@
 
 **DECISION** — Persistence sits behind an application-owned repository interface. Automated tests will use an in-memory repository implementation. SQLite is rejected for production/deployed persistence because local disk is not durable on Vercel-style hosting, and the final managed database choice is deferred.
 
+**DECISION** — The in-memory repository is test and local-demo infrastructure only. It is not durable across process restarts. Live write execution cannot ship until an application-owned durable managed repository implementation exists.
+
 ## Trust boundaries and responsibilities
 
 | Boundary | Responsibilities | Forbidden data/actions |
@@ -76,7 +78,8 @@ Brickken sandbox API ──► Ethereum Sepolia
 ### Values
 
 - **DECISION** — `phase`: `DRAFT | VALIDATION | PLAN | TOKENIZATION | WHITELIST | MINT | VERIFICATION | RECEIPT`.
-- **DECISION** — `status`: `READY | INVALID | AWAITING_APPROVAL | PREPARING | AWAITING_WALLET | BROADCAST_RECORDED | CONFIRMING | SUCCEEDED | RETRYABLE_FAILURE | TIMED_OUT`.
+- **DECISION** — `status`: `READY | INVALID | AWAITING_APPROVAL | PREPARING | AWAITING_WALLET | BROADCAST_RECORDED | CONFIRMING | SUCCEEDED | RETRYABLE_FAILURE | TIMED_OUT | RECONCILIATION_REQUIRED`.
+- **DECISION** — Each write operation also stores a fine-grained `stage`. Ambiguous prepare or wallet/broadcast outcomes set operation stage `PREPARE_UNKNOWN` or `BROADCAST_UNKNOWN` and run status `RECONCILIATION_REQUIRED`. That status blocks prepare, wallet prompts, broadcast, automatic retry, and advancement. It is not `AWAITING_WALLET`.
 - **DECISION** — terminal outcome: `COMPLETE | CANCELLED | FAILED | VERIFICATION_FAILED`.
 
 ### Allowed happy-path transitions

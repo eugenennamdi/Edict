@@ -24,6 +24,12 @@ describe("Brickken server boundary architecture assertions", () => {
     expect(content.startsWith('import "server-only";')).toBe(true);
   });
 
+  it("ensures src/server/execution/index.ts explicitly imports server-only as its first statement", () => {
+    const filePath = path.resolve(__dirname, "../execution/index.ts");
+    const content = fs.readFileSync(filePath, "utf-8").trim();
+    expect(content.startsWith('import "server-only";')).toBe(true);
+  });
+
   it("ensures getBrickkenServerConfig handles missing API key safely without throwing", () => {
     const originalKey = process.env.BRICKKEN_API_KEY;
     try {
