@@ -1,12 +1,25 @@
-/**
- * Core domain boundary for Edict.
- *
- * This layer contains pure deterministic domain logic:
- * - Manifest validation and canonicalization
- * - Execution plan generation and hashing
- * - Persisted state machine transitions
- * - Requested vs observed verification logic
- *
- * No external network I/O, database drivers, or wallet signing logic belongs here.
- */
-export {};
+export {
+  CanonicalJsonError,
+  canonicalizeJson,
+  type CanonicalJsonErrorCode,
+} from "./canonical-json";
+export {
+  buildExecutionPlanV1,
+  ExecutionPlanBuildError,
+  type ExecutionPlanV1,
+} from "./execution-plan";
+export {
+  CoreHashError,
+  hashAssetManifestV1,
+  hashCanonicalJson,
+  sha256Utf8,
+  type CanonicalHash,
+  type Sha256Digest,
+} from "./hashing";
+export {
+  validateAssetManifestV1,
+  type ManifestValidationError,
+  type ManifestValidationErrorCode,
+  type ManifestValidationResult,
+  type NormalizedAssetManifestV1,
+} from "./manifest";

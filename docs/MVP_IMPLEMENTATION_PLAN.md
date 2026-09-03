@@ -12,7 +12,7 @@
 | Order | Owner recommendation | Task | Acceptance evidence |
 | --- | --- | --- | --- |
 | DECISION — 1 | Codex | Scaffold the minimal Next.js/TypeScript project after review; configure strict TypeScript, Vitest, linting, server-only boundaries, and the pinned SDK version. | Build/test commands pass; no UI feature code; lockfile pins `brickken-sdk@0.2.1`. |
-| DECISION — 2 | Codex | Implement versioned manifest schema, canonical JSON, manifest hash, deterministic execution-plan builder, plan hash, and validation errors. | Golden tests prove identical inputs yield identical plans/hashes and invalid manifests make no network calls. |
+| DECISION — 2 | Codex | **Complete** — Implement versioned manifest schema, canonical JSON, manifest hash, deterministic execution-plan builder, plan hash, and validation errors. See [`CORE_DOMAIN_SPEC.md`](CORE_DOMAIN_SPEC.md). | Golden tests prove identical inputs yield identical plans/hashes and invalid manifests make no network calls; the full production build passed outside the restricted agent sandbox. |
 | DECISION — 3 | Grok | Adversarially review the Brickken wire contract and produce test vectors for the documented contract conflicts, identity constraints, response variants, and retry classification. | Review contains only official citations; disputed claims become failing/skipped contract tests, not guessed code. |
 | DECISION — 4 | Codex | Implement application-owned repository interface (with in-memory test implementation; managed DB deferred) for run, operation, event, and receipt records plus the pure state-transition function and optimistic concurrency. | Transition-table tests reject illegal skips, identifier replacement, receipt-before-verification, and replayed broadcasts. |
 | DECISION — 5 | Codex | Build `brickken.server` around pinned SDK prepare/read/status/send methods with sandbox URL allowlist, runtime response schemas, redaction, and single-attempt prepare policy. | Injected-fetch contract tests assert exact method/body/header handling without exposing the key. |
@@ -71,6 +71,6 @@
 - **OPEN QUESTION** — Sandbox account/license, signer approval, native gas, and per-method credits are confirmed without exposing credentials.
 - **DECISION** — If any gate fails, update the integration spec and architecture before changing feature code.
 
-## Exact next implementation task
+## Exact next task
 
-**DECISION** — After Phase 0 approval, perform Task 1 only: scaffold the minimal strict Next.js/TypeScript/Vitest project, pin `brickken-sdk@0.2.1`, and add an automated assertion that the Brickken adapter is server-only. Do not call Brickken or build UI in that task.
+**DECISION** — Perform Task 3 only: adversarially review the Brickken wire contract and produce official-source-backed test vectors for documented conflicts, identity constraints, response variants, and retry classification. Do not implement persistence, API routes, wallet behavior, approvals, receipts, or Brickken calls in that task.

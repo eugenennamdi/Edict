@@ -83,6 +83,18 @@ describe("Brickken server boundary architecture assertions", () => {
     checkDir(path.resolve(rootDir, "src/components"));
   });
 
+  it("ensures core imports no server, Brickken, Node crypto, or network modules", () => {
+    const coreDir = path.resolve(rootDir, "src/core");
+    const forbiddenImport = /(?:from\s+|import\s*)["'](?:@\/server(?:\/|["'])|\.\.?\/server(?:\/|["'])|brickken-sdk(?:\/|["'])|(?:node:)?crypto["']|node:(?:http|https|net|tls)["']|axios["']|got["']|ky["']|undici["'])/;
+
+    for (const entry of fs.readdirSync(coreDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+      const content = fs.readFileSync(path.join(coreDir, entry.name), "utf-8");
+      expect(content, entry.name).not.toMatch(forbiddenImport);
+      expect(content, entry.name).not.toMatch(/\bfetch\s*\(/);
+    }
+  });
+
   it("ensures tracked source files do not contain high-entropy credentials or private keys", () => {
     const scanDir = (dirPath: string) => {
       const entries = fs.readdirSync(dirPath, { withFileTypes: true });
@@ -107,4 +119,3 @@ describe("Brickken server boundary architecture assertions", () => {
     scanDir(path.resolve(rootDir, "docs"));
   });
 });
-

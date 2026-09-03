@@ -40,4 +40,5 @@ Inspect `.env.example` for approved environment variables. For local development
 
 - **Phase 0: Discovery & Architecture** — Completed and verified.
 - **Phase 1: Application Foundation** — Complete. Scaffolding, strict TypeScript App Router, Tailwind CSS, Vitest, pinned `brickken-sdk@0.2.1`, and server-only boundaries established.
-- **Next Task:** Task 2 (Domain logic: versioned manifest schema, canonical JSON, manifest hash, execution plan builder, and validation errors).
+- **Phase 2: Deterministic Core Domain** — Complete. The versioned normalized manifest, strict validation, canonical JSON, SHA-256 identities, immutable execution plan, and golden tests are specified in [`docs/CORE_DOMAIN_SPEC.md`](docs/CORE_DOMAIN_SPEC.md).
+- **Next Task:** Task 3 (adversarial review and test vectors for the Brickken wire-contract conflicts; no integration implementation yet).

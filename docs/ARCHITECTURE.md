@@ -6,6 +6,8 @@
 
 **DECISION** — Recommended stack after Phase 0 approval: Next.js App Router on Node 24+, TypeScript strict mode, Zod for manifest and wire schemas, pinned `brickken-sdk@0.2.1` server-only behind an Edict-owned server adapter, wagmi/viem for wallet connection and browser broadcasting, an application-owned repository interface for persistence, and Vitest for domain/contract tests.
 
+**DECISION** — The implemented manifest, canonicalization, hashing, immutability, and execution-plan contracts are owned by [`CORE_DOMAIN_SPEC.md`](CORE_DOMAIN_SPEC.md).
+
 **DECISION** — Persistence sits behind an application-owned repository interface. Automated tests will use an in-memory repository implementation. SQLite is rejected for production/deployed persistence because local disk is not durable on Vercel-style hosting, and the final managed database choice is deferred.
 
 ## Trust boundaries and responsibilities
@@ -141,4 +143,3 @@ Brickken sandbox API ──► Ethereum Sepolia
 
 - **DECISION** — No mainnet, production configuration, agentic/x402 payments, server-held signer, KYC automation, STO, transfers, dividends, secondary trading, portfolio screens, AI plan decisions, or generalized workflow engine.
 - **DECISION** — No receipt is generated for partial success, timed-out confirmation, or verification mismatch.
-
