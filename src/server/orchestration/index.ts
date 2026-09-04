@@ -1,6 +1,7 @@
 import "server-only";
 
 export { OrchestrationError, type OrchestrationErrorCode } from "./errors";
+export { deriveWalletPromptEnvelopeFromRun } from "./wallet-intent";
 export {
   ExecutionOrchestrator,
   type ExecutionOrchestratorDependencies,

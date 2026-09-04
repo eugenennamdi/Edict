@@ -133,6 +133,7 @@ function projectRun(run: ExecutionRun) {
     terminalOutcome: run.terminalOutcome,
     approved: run.approval !== null,
     operations: run.operations.map((operation) => ({
+      id: operation.id,
       kind: operation.kind,
       stage: operation.stage,
       preparedTxId: operation.preparedTxId,

@@ -42,6 +42,16 @@ export interface AuthorizedRunProjection {
   readonly revision: number;
 }
 
+export interface AuthorizedExecutionRunProjection extends AuthorizedRunProjection {
+  readonly operations: readonly {
+    readonly id: string;
+    readonly kind: "TOKENIZE" | "WHITELIST" | "MINT";
+    readonly stage: string;
+    readonly preparedTxId: string | null;
+    readonly blockchainTxHash: string | null;
+  }[];
+}
+
 export type WalletReadiness = Readonly<{
   state:
     | "PROVIDER_UNAVAILABLE"
