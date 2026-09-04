@@ -117,6 +117,10 @@ describe("EOA wallet approval", () => {
     const challenge = await wallet.issueChallenge(run, run.revision);
     expect(challenge.typedData.message.manifestHash).toBe(`0x${vector.manifestHash.slice(7)}`);
     expect(challenge.typedData.message.planHash).toBe(`0x${vector.planHash.slice(7)}`);
+    expect(challenge.typedDataDigest).toBe(vector.typedDataDigest);
+    expect(challenge.signingRequest.method).toBe("eth_signTypedData_v4");
+    expect(challenge.signingRequest.params[0]).toBe(vector.signer);
+    expect(JSON.parse(challenge.signingRequest.params[1])).toEqual(challenge.typedData);
     now += 1;
     const proof = await wallet.verify(
       run,

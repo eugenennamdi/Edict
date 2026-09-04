@@ -2,32 +2,19 @@ import "server-only";
 
 import { hashTypedData, recoverTypedDataAddress, type Hex } from "viem";
 import { z } from "zod";
+import {
+  createApprovalRpcMaterial,
+  EDICT_APPROVAL_CHALLENGE_TTL_SECONDS,
+  EDICT_APPROVAL_DOMAIN,
+  EDICT_APPROVAL_TYPES,
+  type EdictApprovalTypedDataV1,
+} from "@/shared/wallet";
 import type { ApprovalProofV1, ExecutionRun } from "../execution/types";
 import type { NonceSource, TokenClock } from "./tokens";
 import { bytesToHex, DomainSeparatedTokenMac, SecurityTokenError } from "./tokens";
 
-export const APPROVAL_CHALLENGE_TTL_SECONDS = 5 * 60;
-export const EDICT_APPROVAL_DOMAIN = Object.freeze({
-  name: "Edict",
-  version: "1",
-  chainId: 11155111,
-});
-
-export const EDICT_APPROVAL_TYPES = Object.freeze({
-  ApproveExecutionPlan: [
-    { name: "runId", type: "string" },
-    { name: "manifestHash", type: "bytes32" },
-    { name: "planHash", type: "bytes32" },
-    { name: "environment", type: "string" },
-    { name: "chainId", type: "uint256" },
-    { name: "approvalVersion", type: "string" },
-    { name: "approvalRevision", type: "uint256" },
-    { name: "requiredSigner", type: "address" },
-    { name: "issuedAt", type: "uint64" },
-    { name: "expiresAt", type: "uint64" },
-    { name: "nonce", type: "bytes32" },
-  ],
-} as const);
+export const APPROVAL_CHALLENGE_TTL_SECONDS = EDICT_APPROVAL_CHALLENGE_TTL_SECONDS;
+export { EDICT_APPROVAL_DOMAIN, EDICT_APPROVAL_TYPES };
 
 const SHA256 = /^sha256:([0-9a-f]{64})$/;
 const challengePayloadSchema = z.strictObject({
@@ -55,23 +42,11 @@ export interface WalletApprovalDependencies {
 
 export interface ApprovalChallenge {
   readonly challengeToken: string;
-  readonly typedData: {
-    readonly domain: typeof EDICT_APPROVAL_DOMAIN;
-    readonly types: typeof EDICT_APPROVAL_TYPES;
-    readonly primaryType: "ApproveExecutionPlan";
-    readonly message: {
-      readonly runId: string;
-      readonly manifestHash: Hex;
-      readonly planHash: Hex;
-      readonly environment: "sandbox";
-      readonly chainId: string;
-      readonly approvalVersion: "1.0";
-      readonly approvalRevision: string;
-      readonly requiredSigner: Hex;
-      readonly issuedAt: string;
-      readonly expiresAt: string;
-      readonly nonce: Hex;
-    };
+  readonly typedData: EdictApprovalTypedDataV1;
+  readonly typedDataDigest: Hex;
+  readonly signingRequest: {
+    readonly method: "eth_signTypedData_v4";
+    readonly params: readonly [string, string];
   };
 }
 
@@ -102,20 +77,6 @@ function internalTypedData(payload: z.infer<typeof challengePayloadSchema>) {
       issuedAt: BigInt(payload.issuedAt),
       expiresAt: BigInt(payload.expiresAt),
       nonce: payload.nonce as Hex,
-    },
-  };
-}
-
-function publicTypedData(payload: z.infer<typeof challengePayloadSchema>): ApprovalChallenge["typedData"] {
-  const typed = internalTypedData(payload);
-  return {
-    ...typed,
-    message: {
-      ...typed.message,
-      chainId: typed.message.chainId.toString(),
-      approvalRevision: typed.message.approvalRevision.toString(),
-      issuedAt: typed.message.issuedAt.toString(),
-      expiresAt: typed.message.expiresAt.toString(),
     },
   };
 }
@@ -156,9 +117,15 @@ export class WalletApprovalService {
       expiresAt: issuedAt + APPROVAL_CHALLENGE_TTL_SECONDS,
       nonce: bytesToHex(this.#deps.nonces.bytes(32)),
     });
+    const material = createApprovalRpcMaterial(internalTypedData(payload));
     return Object.freeze({
       challengeToken: await this.#deps.mac.sign("approval-challenge", payload),
-      typedData: publicTypedData(payload),
+      typedData: material.typedData,
+      typedDataDigest: material.typedDataDigest,
+      signingRequest: Object.freeze({
+        method: "eth_signTypedData_v4" as const,
+        params: Object.freeze([payload.requiredSigner, material.serialized] as const),
+      }),
     });
   }
 
