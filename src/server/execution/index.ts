@@ -21,6 +21,17 @@ export {
 } from "./infrastructure";
 export { InMemoryExecutionRunRepository, type ExecutionRunRepository } from "./repository";
 export { ExecutionRunService, type ExecutionRunServiceDeps } from "./run-service";
+export {
+  compareWalletRequestToRpcTransaction,
+  createTransactionReceiptEvidence,
+  comparisonResultSchema,
+  onchainTransactionEvidenceV1Schema,
+  rpcTransactionReceiptV1Schema,
+  rpcTransactionV1Schema,
+  transactionReceiptEvidenceV1Schema,
+  type OnchainTransactionEvidenceV1,
+  type TransactionReceiptEvidenceV1,
+} from "./onchain-evidence";
 export { applyRunEvent, persistedConfirmationPair } from "./transitions";
 export type {
   ApprovalRecord,
@@ -32,6 +43,7 @@ export type {
   ExecutionRun,
   ExecutionRunV1,
   ExecutionRunV2,
+  ExecutionRunV3,
   IsoUtcTimestamp,
   OperationKind,
   OperationStage,
@@ -39,4 +51,5 @@ export type {
   RunStatus,
   TerminalOutcome,
   WriteOperation,
+  WriteOperationV3,
 } from "./types";

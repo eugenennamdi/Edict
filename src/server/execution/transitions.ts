@@ -1,5 +1,9 @@
 import { IllegalStateTransitionError, InvalidApprovalError } from "./errors";
 import { jsonClone } from "./infrastructure";
+import {
+  onchainTransactionEvidenceV1Schema,
+  transactionReceiptEvidenceV1Schema,
+} from "./onchain-evidence";
 import type {
   AuditEvent,
   EventActor,
@@ -7,6 +11,8 @@ import type {
   ExecutionRun,
   OperationKind,
   WriteOperation,
+  WriteOperationV3,
+  ExecutionRunV3,
 } from "./types";
 
 type ExecutionRunV1 = ExecutionRun;
@@ -39,6 +45,15 @@ function replaceOperation(
   const index = operationIndex(kind);
   const current = run.operations[index];
   const nextOp: WriteOperation = { ...current, ...patch, kind: current.kind, id: current.id };
+  if (run.schemaVersion === "3.0") {
+    const nextV3 = nextOp as WriteOperationV3;
+    const operations: ExecutionRunV3["operations"] = [
+      index === 0 ? nextV3 : run.operations[0],
+      index === 1 ? nextV3 : run.operations[1],
+      index === 2 ? nextV3 : run.operations[2],
+    ];
+    return { ...run, operations };
+  }
   const operations: ExecutionRunV1["operations"] = [
     index === 0 ? nextOp : run.operations[0],
     index === 1 ? nextOp : run.operations[1],
@@ -386,6 +401,119 @@ function recordBroadcastUnknown(
   );
 }
 
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor && "value" in descriptor) deepFreeze(descriptor.value);
+  }
+  return Object.freeze(value);
+}
+
+function evidenceOperation(operation: WriteOperation | WriteOperationV3): WriteOperationV3 {
+  const transaction = "onchainTransactionEvidence" in operation
+    ? operation.onchainTransactionEvidence
+    : null;
+  const receipt = "transactionReceiptEvidence" in operation
+    ? operation.transactionReceiptEvidence
+    : null;
+  return {
+    ...operation,
+    onchainTransactionEvidence: transaction === null
+      ? null
+      : deepFreeze(jsonClone(transaction)),
+    transactionReceiptEvidence: receipt === null
+      ? null
+      : deepFreeze(jsonClone(receipt)),
+  };
+}
+
+function recordOnchainTransactionEvidence(
+  run: ExecutionRunV1,
+  event: Extract<ExecutionRunEvent, { type: "RECORD_ONCHAIN_TRANSACTION_EVIDENCE" }>,
+): ExecutionRunV1 {
+  assertNotTerminal(run);
+  const kind = event.operationKind;
+  const current = op(run, kind);
+  if (current.stage !== "BROADCAST_HASH_PERSISTED" || current.blockchainTxHash === null) {
+    throw new IllegalStateTransitionError();
+  }
+  const evidence = deepFreeze(onchainTransactionEvidenceV1Schema.parse(jsonClone(event.evidence)));
+  if (
+    evidence.observedAt !== event.at ||
+    evidence.requestedHash !== current.blockchainTxHash ||
+    ("onchainTransactionEvidence" in current && current.onchainTransactionEvidence !== null)
+  ) {
+    throw new IllegalStateTransitionError();
+  }
+  const index = operationIndex(kind);
+  const operations = run.operations.map(evidenceOperation) as [
+    WriteOperationV3,
+    WriteOperationV3,
+    WriteOperationV3,
+  ];
+  operations[index] = {
+    ...operations[index],
+    onchainTransactionEvidence: evidence,
+  };
+  const mismatch =
+    evidence.returnedHash !== current.blockchainTxHash ||
+    evidence.comparisonStatus !== "MATCH" ||
+    evidence.reconciliationStatus !== "CLEAR";
+  const next: ExecutionRunV3 = {
+    ...run,
+    schemaVersion: "3.0",
+    operations,
+    status: mismatch ? "RECONCILIATION_REQUIRED" : run.status,
+  };
+  return appendEvent(next, event, kind) as ExecutionRunV3;
+}
+
+function recordTransactionReceiptEvidence(
+  run: ExecutionRunV1,
+  event: Extract<ExecutionRunEvent, { type: "RECORD_TRANSACTION_RECEIPT_EVIDENCE" }>,
+): ExecutionRunV1 {
+  assertNotTerminal(run);
+  if (run.schemaVersion !== "3.0") throw new IllegalStateTransitionError();
+  const kind = event.operationKind;
+  const current = op(run, kind) as WriteOperationV3;
+  if (
+    !["BROADCAST_HASH_PERSISTED", "CONFIRMATION_SUBMITTED", "PENDING", "CONFIRMED"].includes(current.stage) ||
+    current.blockchainTxHash === null ||
+    current.onchainTransactionEvidence === null
+  ) {
+    throw new IllegalStateTransitionError();
+  }
+  const evidence = deepFreeze(transactionReceiptEvidenceV1Schema.parse(jsonClone(event.evidence)));
+  if (evidence.observedAt !== event.at) {
+    throw new IllegalStateTransitionError();
+  }
+  if (current.transactionReceiptEvidence !== null) {
+    const prior = current.transactionReceiptEvidence;
+    const sameInclusion = prior.transactionHash === evidence.transactionHash &&
+      prior.blockHash === evidence.blockHash && prior.blockNumber === evidence.blockNumber &&
+      prior.transactionIndex === evidence.transactionIndex;
+    if (!sameInclusion || prior.finalityStatus === "FINALIZED" || evidence.finalityStatus !== "FINALIZED") {
+      throw new IllegalStateTransitionError();
+    }
+  }
+  const index = operationIndex(kind);
+  const operations = [...run.operations] as [WriteOperationV3, WriteOperationV3, WriteOperationV3];
+  operations[index] = { ...current, transactionReceiptEvidence: evidence };
+  const mismatch = evidence.identityStatus !== "MATCH" || evidence.reconciliationStatus !== "CLEAR";
+  const reverted = evidence.executionStatus === "REVERTED";
+  return appendEvent(
+    {
+      ...run,
+      operations,
+      status: mismatch ? "RECONCILIATION_REQUIRED" : reverted ? "FAILED" : run.status,
+      terminalOutcome: reverted ? "FAILED" : run.terminalOutcome,
+    },
+    event,
+    kind,
+  );
+}
+
 function submitConfirmation(
   run: ExecutionRunV1,
   event: Extract<ExecutionRunEvent, { type: "SUBMIT_CONFIRMATION" }>,
@@ -401,6 +529,15 @@ function submitConfirmation(
   }
   if (current.preparedTxId === null || current.blockchainTxHash === null) {
     throw new IllegalStateTransitionError();
+  }
+  if (run.schemaVersion === "3.0") {
+    const evidence = (current as WriteOperationV3).onchainTransactionEvidence;
+    if (
+      evidence === null || evidence.comparisonStatus !== "MATCH" ||
+      evidence.reconciliationStatus !== "CLEAR" || evidence.returnedHash !== current.blockchainTxHash
+    ) {
+      throw new IllegalStateTransitionError();
+    }
   }
   return appendEvent(
     replaceOperation(
@@ -550,8 +687,19 @@ function recordReadBackVerified(
 ): ExecutionRunV1 {
   assertNotBlocked(run);
   const kind = event.operationKind;
-  if (op(run, kind).stage !== "CONFIRMED") {
+  const current = op(run, kind);
+  if (current.stage !== "CONFIRMED") {
     throw new IllegalStateTransitionError();
+  }
+  if (run.schemaVersion === "3.0") {
+    const receipt = (current as WriteOperationV3).transactionReceiptEvidence;
+    if (
+      receipt === null || receipt.executionStatus !== "SUCCESS" ||
+      receipt.identityStatus !== "MATCH" || receipt.finalityStatus !== "FINALIZED" ||
+      receipt.reconciliationStatus !== "CLEAR"
+    ) {
+      throw new IllegalStateTransitionError();
+    }
   }
   let next: ExecutionRunV1 = replaceOperation(run, kind, {
     stage: "READ_BACK_VERIFIED",
@@ -638,6 +786,10 @@ export function applyRunEvent(run: ExecutionRunV1, event: ExecutionRunEvent): Ex
       return recordBroadcastHash(current, event);
     case "RECORD_BROADCAST_UNKNOWN":
       return recordBroadcastUnknown(current, event);
+    case "RECORD_ONCHAIN_TRANSACTION_EVIDENCE":
+      return recordOnchainTransactionEvidence(current, event);
+    case "RECORD_TRANSACTION_RECEIPT_EVIDENCE":
+      return recordTransactionReceiptEvidence(current, event);
     case "SUBMIT_CONFIRMATION":
       return submitConfirmation(current, event);
     case "RECORD_PENDING":

@@ -3,10 +3,14 @@ import "server-only";
 import { canonicalizeJson, validateAssetManifestV1 } from "@/core";
 import { z } from "zod";
 import { InvalidRunSnapshotError, PersistenceDataError } from "../execution/errors";
+import {
+  onchainTransactionEvidenceV1Schema,
+  transactionReceiptEvidenceV1Schema,
+} from "../execution/onchain-evidence";
 import type { ExecutionRun } from "../execution/types";
 
-export const EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSIONS = ["1.0", "2.0"] as const;
-export const EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSION = "2.0" as const;
+export const EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSIONS = ["1.0", "2.0", "3.0"] as const;
+export const EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSION = "3.0" as const;
 export type ExecutionRunPersistenceSchemaVersion =
   (typeof EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSIONS)[number];
 
@@ -107,6 +111,11 @@ const operationSchema = z.object({
   verifiedAt: isoUtc.nullable(),
 }).strict();
 
+const operationV3Schema = operationSchema.extend({
+  onchainTransactionEvidence: onchainTransactionEvidenceV1Schema.nullable(),
+  transactionReceiptEvidence: transactionReceiptEvidenceV1Schema.nullable(),
+}).strict();
+
 const approvalV1Schema = z.object({
   planHash: hash,
   approvedByWallet: wallet,
@@ -175,7 +184,6 @@ const executionRunCommonShape = {
     "RECONCILIATION_REQUIRED",
   ]),
   terminalOutcome: z.enum(["FAILED", "VERIFICATION_FAILED", "CANCELLED"]).nullable(),
-  operations: z.tuple([operationSchema, operationSchema, operationSchema]),
   observations: z.array(observationSchema),
   events: z.array(eventSchema),
   receiptEligible: z.boolean(),
@@ -188,17 +196,27 @@ const executionRunV1Schema = z.object({
   schemaVersion: z.literal("1.0"),
   ...executionRunCommonShape,
   approval: approvalV1Schema.nullable(),
+  operations: z.tuple([operationSchema, operationSchema, operationSchema]),
 }).strict();
 
 const executionRunV2Schema = z.object({
   schemaVersion: z.literal("2.0"),
   ...executionRunCommonShape,
   approval: approvalV2Schema.nullable(),
+  operations: z.tuple([operationSchema, operationSchema, operationSchema]),
+}).strict();
+
+const executionRunV3Schema = z.object({
+  schemaVersion: z.literal("3.0"),
+  ...executionRunCommonShape,
+  approval: z.union([approvalV1Schema, approvalV2Schema]).nullable(),
+  operations: z.tuple([operationV3Schema, operationV3Schema, operationV3Schema]),
 }).strict();
 
 const executionRunSchema = z.discriminatedUnion("schemaVersion", [
   executionRunV1Schema,
   executionRunV2Schema,
+  executionRunV3Schema,
 ]);
 
 const FORBIDDEN_PROPERTY_NAMES = new Set([
@@ -280,7 +298,7 @@ function parseSnapshot(value: unknown): ExecutionRun {
       (parsed.approval.planHash !== parsed.planHash ||
         parsed.approval.approvedByWallet !== parsed.requiredSigner.walletAddress ||
         parsed.approval.approvalRevision > parsed.revision)) ||
-    (parsed.schemaVersion === "2.0" && parsed.approval !== null &&
+    (parsed.schemaVersion !== "1.0" && parsed.approval !== null && "proof" in parsed.approval &&
       (parsed.approval.proof.runId !== parsed.id ||
         parsed.approval.proof.manifestHash !== parsed.manifestHash ||
         parsed.approval.proof.planHash !== parsed.planHash ||
@@ -299,6 +317,39 @@ function parseSnapshot(value: unknown): ExecutionRun {
     parsed.updatedAt < parsed.createdAt
   ) {
     throw new TypeError("Persistence snapshot invariants failed.");
+  }
+
+
+  if (parsed.schemaVersion === "3.0") {
+    const hasTransactionEvidence = parsed.operations.some(
+      (operation) => operation.onchainTransactionEvidence !== null,
+    );
+    const evidenceInvalid = parsed.operations.some((operation) => {
+      const transaction = operation.onchainTransactionEvidence;
+      const receipt = operation.transactionReceiptEvidence;
+      if (receipt !== null && transaction === null) return true;
+      if (transaction !== null && (
+        operation.blockchainTxHash === null ||
+        transaction.requestedHash !== operation.blockchainTxHash ||
+        (transaction.comparisonStatus === "MISMATCH" && parsed.status !== "RECONCILIATION_REQUIRED") ||
+        (transaction.reconciliationStatus === "REQUIRED" && parsed.status !== "RECONCILIATION_REQUIRED")
+      )) return true;
+      if (receipt !== null && (
+        (receipt.identityStatus === "MATCH" && (
+          receipt.transactionHash !== operation.blockchainTxHash ||
+          receipt.transactionHash !== transaction?.returnedHash
+        )) ||
+        (receipt.identityStatus === "MISMATCH" && parsed.status !== "RECONCILIATION_REQUIRED") ||
+        (receipt.reconciliationStatus === "REQUIRED" && parsed.status !== "RECONCILIATION_REQUIRED") ||
+        (operation.stage === "READ_BACK_VERIFIED" && (
+          receipt.executionStatus !== "SUCCESS" || receipt.finalityStatus !== "FINALIZED"
+        ))
+      )) return true;
+      return false;
+    });
+    if (!hasTransactionEvidence || evidenceInvalid) {
+      throw new TypeError("Persistence snapshot evidence invariants failed.");
+    }
   }
 
   return deepFreeze(parsed);

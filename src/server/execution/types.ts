@@ -1,3 +1,8 @@
+import type {
+  OnchainTransactionEvidenceV1,
+  TransactionReceiptEvidenceV1,
+} from "./onchain-evidence";
+
 export type IsoUtcTimestamp = string;
 
 export type RunPhase =
@@ -126,6 +131,11 @@ export interface WriteOperation {
   readonly verifiedAt: IsoUtcTimestamp | null;
 }
 
+export interface WriteOperationV3 extends WriteOperation {
+  readonly onchainTransactionEvidence: OnchainTransactionEvidenceV1 | null;
+  readonly transactionReceiptEvidence: TransactionReceiptEvidenceV1 | null;
+}
+
 export interface AuditEvent {
   readonly id: string;
   readonly sequence: number;
@@ -172,7 +182,13 @@ export interface ExecutionRunV2 extends Omit<ExecutionRunV1, "schemaVersion" | "
   readonly approval: ApprovalRecordV2 | null;
 }
 
-export type ExecutionRun = ExecutionRunV1 | ExecutionRunV2;
+export interface ExecutionRunV3 extends Omit<ExecutionRunV1, "schemaVersion" | "approval" | "operations"> {
+  readonly schemaVersion: "3.0";
+  readonly approval: ApprovalRecord | null;
+  readonly operations: readonly [WriteOperationV3, WriteOperationV3, WriteOperationV3];
+}
+
+export type ExecutionRun = ExecutionRunV1 | ExecutionRunV2 | ExecutionRunV3;
 
 export type ExecutionRunEvent =
   | {
@@ -238,6 +254,20 @@ export type ExecutionRunEvent =
       readonly id: string;
       readonly at: IsoUtcTimestamp;
       readonly operationKind: OperationKind;
+    }
+  | {
+      readonly type: "RECORD_ONCHAIN_TRANSACTION_EVIDENCE";
+      readonly id: string;
+      readonly at: IsoUtcTimestamp;
+      readonly operationKind: OperationKind;
+      readonly evidence: OnchainTransactionEvidenceV1;
+    }
+  | {
+      readonly type: "RECORD_TRANSACTION_RECEIPT_EVIDENCE";
+      readonly id: string;
+      readonly at: IsoUtcTimestamp;
+      readonly operationKind: OperationKind;
+      readonly evidence: TransactionReceiptEvidenceV1;
     }
   | {
       readonly type: "SUBMIT_CONFIRMATION";

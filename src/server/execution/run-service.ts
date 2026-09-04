@@ -6,6 +6,10 @@ import {
 import { InvalidRunSnapshotError, RepositoryRevisionConflictError } from "./errors";
 import type { Clock, IdGenerator } from "./infrastructure";
 import { jsonClone } from "./infrastructure";
+import type {
+  OnchainTransactionEvidenceV1,
+  TransactionReceiptEvidenceV1,
+} from "./onchain-evidence";
 import type { ExecutionRunRepository } from "./repository";
 import { applyRunEvent, persistedConfirmationPair } from "./transitions";
 import type {
@@ -252,6 +256,36 @@ export class ExecutionRunService {
       id,
       at,
       operationKind,
+    }));
+  }
+
+  async recordOnchainTransactionEvidence(
+    runId: string,
+    expectedRevision: number,
+    operationKind: OperationKind,
+    evidence: OnchainTransactionEvidenceV1,
+  ): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (_at, id) => ({
+      type: "RECORD_ONCHAIN_TRANSACTION_EVIDENCE",
+      id,
+      at: evidence.observedAt,
+      operationKind,
+      evidence,
+    }));
+  }
+
+  async recordTransactionReceiptEvidence(
+    runId: string,
+    expectedRevision: number,
+    operationKind: OperationKind,
+    evidence: TransactionReceiptEvidenceV1,
+  ): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (_at, id) => ({
+      type: "RECORD_TRANSACTION_RECEIPT_EVIDENCE",
+      id,
+      at: evidence.observedAt,
+      operationKind,
+      evidence,
     }));
   }
 
