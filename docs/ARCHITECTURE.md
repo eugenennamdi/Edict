@@ -24,6 +24,8 @@
 
 **DECISION** — Phase 7 is complete offline. Its vendor-neutral browser boundary performs passive EIP-6963 discovery, explicit EIP-1193 provider selection, server-issued EIP-712 approval, strict transaction projection, canonical wallet-intent verification, and prompt-before-send/hash-handoff ordering. It adds no UI or route, and production transaction authorization remains deny-all. [`WALLET_EXECUTION_SPEC.md`](WALLET_EXECUTION_SPEC.md) owns the detailed wallet contract.
 
+**DECISION** — Phase 8 is complete offline. It hardens hostile provider handling, persists bounded trusted-RPC transaction and receipt evidence in `ExecutionRunV3`, and supplies an isolated loopback operator harness under `tools/phase8-harness/`. The harness is excluded from the production build and route tree. No live action, authenticated write, RPC lookup, migration application or named-wallet verification occurred. [`PHASE_8_OPERATOR_PLAYBOOK.md`](PHASE_8_OPERATOR_PLAYBOOK.md) owns its operating contract.
+
 **VERIFIED** — On 2026-09-04, the Neon migration completed without error and the explicitly opted-in live database test passed create, read, atomic compare-and-swap update, stale-revision refusal, and cleanup of its uniquely created run. Durable persistence is verified. The test made no Brickken request or blockchain operation and emitted no credential.
 
 **VERIFIED** — On 2026-09-04, the opt-in adapter smoke test completed one authenticated `get-network-info` read and identified `Sepolia ETH`; the earlier anonymous request still returned `401`. No authenticated write has occurred. Signer approval, tokenizer licensing, credits, prepared write payloads, browser-wallet compatibility, finality, and write behavior remain unverified.
@@ -47,7 +49,7 @@ Browser UI
   └─ run status / verification / receipt viewer
           │ public run commands and txHash only
           ▼
-Next.js route handlers (same origin; Phase 7 still exposes create/read/approve/cancel only)
+Next.js route handlers (same origin; Phase 8 still exposes create/read/approve/cancel only)
   ├─ domain: validate, canonicalize, plan, hashes
   ├─ orchestrator: internal-only effect methods + approval/CAS/write gates
   ├─ brickken.server: Edict-owned server adapter wrapping pinned SDK + Zod wire validation
@@ -70,13 +72,13 @@ Brickken sandbox API ──► Ethereum Sepolia
 
 ### `execution_runs`
 
-- **DECISION** — Store one complete, explicitly versioned execution-run snapshot in JSONB with duplicated indexed metadata: `run_id` primary key, `schema_version`, non-negative `revision`, `manifest_hash`, `plan_hash`, `status`, `created_at`, and `updated_at`. V1 and V2 decoding are supported; only V2 is created now.
+- **DECISION** — Store one complete, explicitly versioned execution-run snapshot in JSONB with duplicated indexed metadata: `run_id` primary key, `schema_version`, non-negative `revision`, `manifest_hash`, `plan_hash`, `status`, `created_at`, and `updated_at`. V1, V2 and V3 decode strictly; ordinary run creation remains V2, and only a validated onchain-transaction-evidence transition enters V3.
 - **DECISION** — The primary key is the only current access index. No speculative relational tables or analytics indexes are introduced.
 - **DECISION** — Every persisted value crosses an explicit runtime codec. The codec rejects unsupported properties, unsafe JSON values, accessors, sparse arrays, cycles, class instances, secret-bearing fields, invalid timestamps, unknown versions, and inconsistent duplicated values. Decoded values are newly allocated and deeply frozen.
 - **DECISION** — `create` is insert-only. `update` is a single compare-and-swap statement constrained by `run_id` and expected `revision`; it increments the row revision exactly once and atomically replaces the snapshot and duplicated metadata. A zero-row update is classified as not found or stale revision without performing a read-modify-write overwrite.
 - **DECISION** — Application-boundary timestamps are canonical ISO-8601 UTC strings. The adapter alone maps them to and from Postgres timestamp-with-time-zone values.
 - **DECISION** — The snapshot may contain deployment-required emails, public wallet addresses, prepared transaction identifiers, and public transaction hashes. Routine persistence errors and logs must not print them.
-- **DECISION** — Execution snapshot V1 remains backward-decodable. New runs use V2, whose approval record contains bounded public EIP-712 verification evidence: fixed scheme versions and bindings, nonce and timestamps, typed-data digest, recovered signer and public signature. Capabilities, challenge MAC tokens and server secrets are never persisted. The existing JSONB table is retained; its version constraint accepts V1 and V2.
+- **DECISION** — V1 and V2 remain backward-decodable without silent mutation or upgrade. New runs use V2, whose approval record contains bounded public EIP-712 verification evidence. V3 adds operation-local normalized transaction-comparison and receipt/finality evidence; it persists hashes and normalized public fields, not raw RPC/Brickken bodies, credentials, cookies, challenges or browser security material. Migration `0002_gorgeous_squadron_sinister.sql` only expands the existing check constraint to `1.0 | 2.0 | 3.0`; it has been generated and tested offline but not applied.
 
 ## Compositional persisted state machine
 
@@ -100,9 +102,10 @@ Brickken sandbox API ──► Ethereum Sepolia
 | DECISION — `PLAN/AWAITING_APPROVAL` | User approves exact plan/hash and connected wallet matches | `TOKENIZATION/PREPARING` |
 | DECISION — any write `*/PREPARING` | Brickken prepare response validated and persisted | same phase `AWAITING_WALLET` |
 | DECISION — any write `*/AWAITING_WALLET` | User approves wallet prompt; wallet returns hash; hash persisted | same phase `BROADCAST_RECORDED` |
-| DECISION — any write `*/BROADCAST_RECORDED` | Brickken accepts identical `{txId, txHash}` | same phase `CONFIRMING` |
+| DECISION — any write `*/BROADCAST_RECORDED` | Trusted Sepolia RPC returns the identical hash and matching signed transaction fields; evidence enters V3 | same phase `BROADCAST_RECORDED` |
+| DECISION — matching V3 broadcast | Brickken accepts identical `{txId, txHash}` | same phase `CONFIRMING` |
 | DECISION — any write `*/CONFIRMING` | Brickken reports `pending` | same phase `CONFIRMING` |
-| DECISION — `TOKENIZATION/CONFIRMING` | Brickken reports `success`; token read-back identifies expected asset/address | `WHITELIST/PREPARING` |
+| DECISION — `TOKENIZATION/CONFIRMING` | Brickken reports `success`; a matching successful receipt reaches recorded finality; token read-back identifies expected asset/address | `WHITELIST/PREPARING` |
 | DECISION — `WHITELIST/CONFIRMING` | Brickken reports `success`; whitelist read-back is true | `MINT/PREPARING` |
 | DECISION — `MINT/CONFIRMING` | Brickken reports `success` | `VERIFICATION/READY` |
 | DECISION — `VERIFICATION/READY` | All requested/observed assertions pass and evidence persists | `VERIFICATION/SUCCEEDED` |

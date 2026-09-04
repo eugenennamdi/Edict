@@ -60,9 +60,15 @@ No public prepare, wallet-prompt, wallet-result, confirmation, polling, read-bac
 
 **DECISION** — Account/chain revalidation, provider-generation checks, prompt validation, intent mismatch, semantic refusal, or durable prompt failure before invocation cause zero send calls and are not labeled potentially broadcast. A durable prompt may remain as the replay lock; local validation failure is not falsely recorded as user rejection.
 
-**DECISION** — After invocation, only provider code `4001` is a definite user rejection. A valid nonzero transaction hash is handed to durable storage immediately. A malformed hash, timeout, disconnect, provider event race, unexpected error, or unresolved durable handoff is potentially broadcast and requires reconciliation.
+**DECISION** — Once the provider method has been invoked, every rejected, timed-out, malformed, disconnected or otherwise unsuccessful result is potentially broadcast, including provider code `4001`. A `4001` is definite cancellation only when Edict proves invocation never began; an error returned by the provider is not that proof. A valid nonzero transaction hash is handed to durable storage immediately. Every other post-invocation outcome requires reconciliation and cannot authorize another prompt or resend.
 
 **DECISION** — Failed hash handoff triggers a read of durable state only. A matching stored hash is accepted; otherwise the run remains blocked for reconciliation. The coordinator never sends again, prepares a replacement, or creates a replacement transaction automatically.
+
+**DECISION** — Phase 8 captures the provider object and descriptor-backed `request`, `on`, and `removeListener` methods once; accessor-backed methods, later mutation, partial listener registration, stale generations, duplicate initialization and collision races fail closed. Provider snapshot generation spans the complete account/chain read pair. A hostile `Proxy` can still execute its own reflection traps in the same JavaScript realm; Edict catches and sanitizes failures but does not claim those traps are harmless.
+
+**DECISION** — Provider deadlines are 10 seconds for passive account/chain reads, 120 seconds for account access, chain switching and typed-data signing, and 180 seconds for transaction sending. Timeout never cancels a provider promise and never triggers automatic retry. A timed-out send is potentially broadcast; late settlement cannot revive the invalidated attempt.
+
+**DECISION** — Phase 8 resource ceilings are: provider name 100 code units, RDNS 255, icon data URI 65,536, 64 accounts, chain response 66 code units, challenge 4,096, typed-data serialization 16,384, signature 132, transaction hash 66, transaction object 16 properties, calldata 131,072 bytes, 256 access-list entries, 256 storage keys per entry and 4,096 total, 256-bit unsigned quantities, external depth 16 and 10,000 nodes, Brickken and trusted-RPC responses 1,048,576 code units each, compatibility evidence 262,144 code units, and harness bodies 65,536 bytes. Values are refused, never truncated.
 
 ## Evidence still required
 

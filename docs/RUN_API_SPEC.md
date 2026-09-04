@@ -14,6 +14,8 @@
 
 **DECISION** — Phase 7 does not expand this surface. Its browser coordinator uses an injected gateway contract for offline verification only; no public external-effect route or production gateway composition exists. Brickken writes and transaction semantic authorization remain disabled. See [`WALLET_EXECUTION_SPEC.md`](WALLET_EXECUTION_SPEC.md).
 
+**DECISION** — Phase 8 also leaves this surface unchanged at exactly five routes. `ExecutionRunV3` evidence is persisted only through internal validated transitions; the existing run projection omits raw unsigned transactions and detailed evidence. The compatibility harness lives under `tools/phase8-harness/`, is excluded from the production build, and is not a Next.js route. Production semantic authorization and Brickken writes remain disabled.
+
 ## Deployment and request gates
 
 **DECISION** — The public run API is deny-by-default. An operator must configure deployment-level preview access or rate limiting, set `EDICT_RUN_API_ENABLED=1`, configure an exact `EDICT_TRUSTED_ORIGIN`, supply durable `DATABASE_URL` persistence, and provide a base64url server secret decoding to at least 32 random bytes as `EDICT_RUN_SECURITY_SECRET`. Missing, malformed or partial configuration keeps the API disabled. The creation gate is checked before reading or validating a manifest and before constructing database, security or Brickken dependencies.

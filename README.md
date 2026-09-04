@@ -38,6 +38,8 @@ Inspect `.env.example` for approved environment variables. For local development
 | `npm run db:generate` | Generate reviewable Drizzle SQL migrations without connecting to a database |
 | `npm run db:migrate` | Apply committed migrations using ignored runtime `DATABASE_URL` configuration |
 | `npm run test:database-live` | Opt-in Neon create/read/CAS/cleanup verification; excluded from default tests |
+| `npm run test:phase8` | Run only the offline Phase 8 adversarial and harness tests |
+| `npm run check:phase8-harness` | Compile-check the isolated harness, which is excluded from the production application build |
 | `npm run check` | Run all checks (`lint`, `typecheck`, `test`, `build`) in sequence |
 
 ## Phase Status
@@ -50,7 +52,8 @@ Inspect `.env.example` for approved environment variables. For local development
 - **Phase 5: Durable Execution Persistence** — Complete and verified. Neon Postgres and Drizzle are contained behind the existing server repository interface, with a versioned JSONB run snapshot, strict codec, atomic optimistic concurrency, deterministic SQL migration, and credential-free default tests. On 2026-09-04, the migration and opt-in Neon test passed create, read, compare-and-swap update, stale-revision refusal, and deletion of the unique smoke-test run.
 - **Phase 6: Secure Run APIs and Durable Orchestration** — Complete. The deny-by-default, same-origin API exposes only run creation/read, approval challenge/verification and cancellation. Run capabilities use a hardened HttpOnly cookie; plan approval preserves EIP-712 EOA evidence in versioned V2 snapshots; internal orchestration enforces CAS intent ordering, double write gates and ambiguity blocking with injected Brickken behavior. See [`docs/RUN_API_SPEC.md`](docs/RUN_API_SPEC.md).
 - **Phase 7: Browser Wallet Authorization and Transaction Boundary** — Complete offline. The vendor-neutral EIP-6963/EIP-1193 boundary provides explicit provider selection, exact server-issued EIP-712 approval requests, strict immutable transaction projection, canonical wallet-intent integrity, and durable prompt-before-send/hash-handoff ordering. No named wallet or live write is verified. See [`docs/WALLET_EXECUTION_SPEC.md`](docs/WALLET_EXECUTION_SPEC.md).
-- **Next Task:** Phase 8 should add no write route yet; perform the adversarial execution-boundary review and define the smallest human-authorized sandbox compatibility harness for one explicit wallet/version and the three Brickken prepared operations.
+- **Phase 8: Adversarial Boundary and Compatibility Harness** — Complete offline. Provider hardening, bounded deadlines, exact trusted-RPC transaction/receipt evidence, backward-compatible `ExecutionRunV3`, and an isolated one-action operator harness are implemented. No live action ran, no named wallet is privileged or verified, the V3 migration is generated but unapplied, and production semantic authorization remains deny-all. See [`docs/PHASE_8_OPERATOR_PLAYBOOK.md`](docs/PHASE_8_OPERATOR_PLAYBOOK.md).
+- **Next Task:** With explicit human authorization, perform only the playbook's offline preflight and first read-only eligibility stop; do not prepare or broadcast until account, signer, license, credits, transport and wallet prerequisites are independently evidenced.
 
 ## Durable Database Gate
 
@@ -62,6 +65,6 @@ Server-side EIP-712 approval recovery and the shared browser-compatible primitiv
 
 **VERIFIED — 2026-09-04:** `npm run db:migrate` completed successfully. The explicitly opted-in `npm run test:database-live` then passed against Neon: it created and read a unique run, completed one atomic compare-and-swap update, refused a stale revision, and deleted the run before emitting its sanitized success result.
 
-No Brickken request or blockchain operation occurred. Brickken signer approval, tokenizer licensing, credits, prepared write payloads, browser-wallet compatibility, finality, and write behavior remain unverified; the Phase 7 production semantic policy and Brickken write gate remain disabled.
+No Brickken request or blockchain operation occurred. Brickken signer approval, tokenizer licensing, credits, prepared write payloads, browser-wallet compatibility, finality, and write behavior remain unverified; the Phase 8 production semantic policy and Brickken write gate remain disabled.
 
 The run API remains disabled unless an operator first configures deployment-level preview access or rate limiting and explicitly sets `EDICT_RUN_API_ENABLED=1`, an exact `EDICT_TRUSTED_ORIGIN`, durable database configuration, and the server-only run security secret. Local development keeps the capability cookie's `Secure` attribute; use a browser that treats localhost as a secure context or local HTTPS.

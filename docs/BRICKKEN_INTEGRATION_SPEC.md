@@ -88,7 +88,7 @@ The sanitized adapter projection was:
 
 **VERIFIED** — The API exposes three execution modes. For `client-broadcast`, the user signs and broadcasts, then the client confirms exactly one `{ txId, txHash }` pair to Brickken; this mode works for Dapp methods. Resubmitting the same pair is idempotent. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send)
 
-**DECISION** — Edict intends to use `client-broadcast` for all three on-chain operations. Phase 7 implements only the disabled offline boundary: the server would prepare with the API key, the selected browser wallet would broadcast, and the server would reconcile and poll. No authenticated write or browser broadcast has occurred.
+**DECISION** — Edict intends to use `client-broadcast` for all three on-chain operations. Phase 8 implements the disabled offline wallet/RPC evidence boundary and isolated one-action harness: the server would prepare with the API key, the explicitly selected browser wallet would broadcast, trusted RPC would prove transaction equivalence and finality, and the server would reconcile and poll. Production semantic authorization and Brickken writes remain disabled. No authenticated write, browser broadcast or live RPC comparison has occurred.
 
 **VERIFIED** — A prepared response contains `transactions` (unsigned transaction objects), `txId` (Brickken's internal prepared-batch identifier, not a blockchain hash), and optional `info`. [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create)
 
