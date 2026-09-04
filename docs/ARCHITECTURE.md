@@ -2,17 +2,21 @@
 
 ## Architecture decision
 
-**DECISION** — Build one Next.js TypeScript application with a server-only Brickken boundary, a browser-wallet boundary, and an application-owned repository interface for persistence. SQLite is rejected as the production/deployed persistence implementation because local disk is not durable on Vercel-style hosting; the final managed database choice is deferred, with an in-memory repository implementation used for automated tests. Avoid queues, microservices, custodial signers, and multi-agent runtime components.
+**DECISION** — Build one Next.js TypeScript application with a server-only Brickken boundary, a browser-wallet boundary, and an application-owned repository interface for persistence. The deployment target is Vercel and the durable store is Neon Postgres through Drizzle's official Neon HTTP integration. SQLite and local disk are rejected for deployed persistence because they are not durable on Vercel-style hosting. Avoid queues, microservices, custodial signers, and multi-agent runtime components. [Drizzle Neon integration](https://orm.drizzle.team/docs/connect-neon) [Neon Vercel integration](https://neon.com/docs/guides/vercel-manual)
 
-**DECISION** — Recommended stack after Phase 0 approval: Next.js App Router on Node 24+, TypeScript strict mode, Zod for manifest and wire schemas, pinned `brickken-sdk@0.2.1` server-only behind an Edict-owned server adapter, wagmi/viem for wallet connection and browser broadcasting, an application-owned repository interface for persistence, and Vitest for domain/contract tests.
+**DECISION** — Recommended stack after Phase 0 approval: Next.js App Router on Node 24+, TypeScript strict mode, Zod for manifest and wire schemas, pinned `brickken-sdk@0.2.1` server-only behind an Edict-owned server adapter, wagmi/viem for wallet connection and browser broadcasting, Neon Postgres with exactly pinned Drizzle/Neon packages behind an application-owned repository interface, and Vitest for domain/contract tests.
 
 **DECISION** — The implemented manifest, canonicalization, hashing, immutability, and execution-plan contracts are owned by [`CORE_DOMAIN_SPEC.md`](CORE_DOMAIN_SPEC.md).
 
-**DECISION** — Persistence sits behind an application-owned repository interface. Automated tests will use an in-memory repository implementation. SQLite is rejected for production/deployed persistence because local disk is not durable on Vercel-style hosting, and the final managed database choice is deferred.
+**DECISION** — Persistence sits behind the application-owned `ExecutionRunRepository`; domain and service code do not depend on Neon, Drizzle, SQL, or database types. The deployed implementation is the server-only Neon/Drizzle adapter. Automated tests use an injected offline query boundary, and the in-memory repository remains available for unit tests and local demonstrations.
 
-**DECISION** — The in-memory repository is test and local-demo infrastructure only. It is not durable across process restarts. Live write execution cannot ship until an application-owned durable managed repository implementation exists.
+**DECISION** — The in-memory repository is test and local-demo infrastructure only. It is not durable across process restarts and is forbidden for deployed write execution. The Neon migration and opt-in live database verification must pass before any Brickken live-write path is enabled.
 
 **DECISION** — Phase 4 is complete: Part A provides the application-owned run repository contract and fail-closed state machine; Part B provides the server-only Brickken sandbox adapter, runtime wire schemas, prepared-transaction preservation, safe error mapping, and opt-in read-only smoke test.
+
+**DECISION** — Phase 5 implements durable run persistence as one versioned `execution_runs` JSONB snapshot table. This is an MVP decision: it preserves the complete state-machine aggregate atomically without prematurely creating analytics, user, portfolio, asset, or compliance tables.
+
+**VERIFIED** — On 2026-09-04, the Neon migration completed without error and the explicitly opted-in live database test passed create, read, atomic compare-and-swap update, stale-revision refusal, and cleanup of its uniquely created run. Durable persistence is verified. The test made no Brickken request or blockchain operation and emitted no credential.
 
 **VERIFIED** — On 2026-09-04, the opt-in adapter smoke test completed one authenticated `get-network-info` read and identified `Sepolia ETH`; the earlier anonymous request still returned `401`. No authenticated write has occurred. Signer approval, tokenizer licensing, credits, prepared write payloads, browser-wallet compatibility, finality, and write behavior remain unverified.
 
@@ -24,7 +28,7 @@
 | DECISION — Next.js server | Validate/canonicalize; create immutable plan; enforce approvals; call the pinned SDK with sandbox API key through an Edict-owned server adapter; validate SDK payloads; persist run/operation/events; reconcile tx hashes; poll; verify read-back; issue receipt. | Private keys, seed phrases, production endpoint, signing, silently changing an approved plan. |
 | DECISION — Browser wallet | Hold keys; show wallet confirmation; sign and broadcast the prepared Sepolia transaction; return `txHash`. | Revealing key material to Edict. |
 | VERIFIED — Brickken sandbox | Prepare Dapp operations, reconcile client-broadcast hashes, report status, and expose token/whitelist/balance reads. An authenticated adapter `GET /get-network-info` identified `Sepolia ETH`; an earlier anonymous request returned `401`, so implementation must not depend on it being public. [Dapp API](https://docs.brickken.com/api-reference/introduction) [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send) | DECISION — No production or relayed execution in MVP. No authenticated write has occurred. |
-| DECISION — Repository interface | Persist normalized run state, immutable request/plan snapshots, approvals, prepared IDs/payloads, hashes, poll results, observations, and receipts behind an application-owned repository interface. In-memory implementation for tests; production managed database choice deferred. | API keys, wallet secrets, seed phrases, full environment dumps. |
+| DECISION — Repository interface | Persist complete versioned run snapshots behind an application-owned repository interface. Neon/Drizzle is contained in the server adapter; injected and in-memory implementations support offline tests. Optimistic revision comparison prevents lost updates. | API keys, database URLs, wallet secrets, seed phrases, signed raw transactions, full environment dumps. |
 
 ## Minimal component layout
 
@@ -40,7 +44,9 @@ Next.js route handlers (same origin)
   ├─ orchestrator: approval guards + state transitions
   ├─ brickken.server: Edict-owned server adapter wrapping pinned SDK + Zod wire validation
   ├─ verifier: requested state vs observed state
-  └─ repository: application-owned repository interface + event log
+  └─ repository: application-owned interface
+       ├─ Neon Postgres + Drizzle adapter (deployed)
+       └─ in-memory adapter (tests/local demos only)
           │ x-api-key only here
           ▼
 Brickken sandbox API ──► Ethereum Sepolia
@@ -52,28 +58,16 @@ Brickken sandbox API ──► Ethereum Sepolia
 
 **DECISION** — The server returns only the exact prepared transaction selected for the next operation, a sanitized display projection, and an opaque operation identifier. It never returns headers or server configuration.
 
-## Core data model
+## Durable persistence model
 
-### `deployment_run`
+### `execution_runs`
 
-- **DECISION** — Persist `id` (UUID), `schemaVersion`, canonical `manifestJson`, `manifestHash`, immutable `planJson`, `planHash`, `chainId`, `tokenizerEmail`, `tokenizerWallet`, investor email/address, requested mint amount, `phase`, `status`, `terminalOutcome`, timestamps, and optimistic `version`.
-- **DECISION** — Persist approval evidence as `approvedPlanHash`, `approvedByWallet`, `approvedAt`, and per-operation `approvedAt`; reject approvals when wallet, chain, manifest hash, or plan hash differs.
-- **DECISION** — Persist `verificationJson`, `verificationHash`, and `receiptId` only after all comparisons succeed.
-
-### `deployment_operation`
-
-- **DECISION** — Persist `id`, `runId`, sequence number, kind (`TOKENIZE`, `WHITELIST`, `MINT`), request snapshot and hash, expected signer, `executionMode`, status, attempt counters, `preparedTxId`, sanitized unsigned transaction JSON and hash, `blockchainTxHash`, Brickken confirmation status/error, first/last poll timestamps, timeout marker, and timestamps.
-- **DECISION** — Add uniqueness constraints on `(runId, sequence)`, non-null `preparedTxId`, and non-null `blockchainTxHash` where supported; application guards additionally enforce one prepared operation and one chain hash per sequence.
-- **DECISION** — Never overwrite identifiers. Any contradictory `txId` or `txHash` moves the run to terminal `FAILED` with an audit event.
-
-### `deployment_event`
-
-- **DECISION** — Append `id`, `runId`, optional `operationId`, monotonic sequence, event type, sanitized payload, actor (`USER`, `SERVER`, `WALLET`, `BRICKKEN`), and timestamp for every transition.
-
-### `deployment_receipt`
-
-- **DECISION** — Persist an immutable artifact containing run/manifest/plan/verification hashes, chain, tokenizer and investor public identities, token symbol/address, ordered operation `txId`/`txHash` pairs, requested state, observed state, source endpoints, confirmation timestamps, issued timestamp, and receipt schema version.
-- **DECISION** — A receipt is evidence, not a cryptographic attestation in the MVP. Do not imply legal or compliance guarantees.
+- **DECISION** — Store one complete, versioned `ExecutionRunV1` snapshot in JSONB with duplicated indexed metadata: `run_id` primary key, `schema_version`, non-negative `revision`, `manifest_hash`, `plan_hash`, `status`, `created_at`, and `updated_at`.
+- **DECISION** — The primary key is the only current access index. No speculative relational tables or analytics indexes are introduced.
+- **DECISION** — Every persisted value crosses an explicit runtime codec. The codec rejects unsupported properties, unsafe JSON values, accessors, sparse arrays, cycles, class instances, secret-bearing fields, invalid timestamps, unknown versions, and inconsistent duplicated values. Decoded values are newly allocated and deeply frozen.
+- **DECISION** — `create` is insert-only. `update` is a single compare-and-swap statement constrained by `run_id` and expected `revision`; it increments the row revision exactly once and atomically replaces the snapshot and duplicated metadata. A zero-row update is classified as not found or stale revision without performing a read-modify-write overwrite.
+- **DECISION** — Application-boundary timestamps are canonical ISO-8601 UTC strings. The adapter alone maps them to and from Postgres timestamp-with-time-zone values.
+- **DECISION** — The snapshot may contain deployment-required emails, public wallet addresses, prepared transaction identifiers, and public transaction hashes. Routine persistence errors and logs must not print them.
 
 ## Compositional persisted state machine
 

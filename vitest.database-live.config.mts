@@ -1,19 +1,14 @@
-import { defineConfig } from "vitest/config";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { defineConfig } from "vitest/config";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   test: {
     environment: "node",
-    exclude: [
-      "**/node_modules/**",
-      "**/dist/**",
-      "**/.next/**",
-      "**/live-read.smoke.test.ts",
-      "**/database-live.smoke.test.ts",
-    ],
+    include: ["src/server/persistence/database-live.smoke.test.ts"],
+    testTimeout: 30_000,
   },
   resolve: {
     alias: {

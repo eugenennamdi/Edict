@@ -42,7 +42,7 @@ describe("in-memory execution repository", () => {
     const second = await repository.getById(run.id);
     expect(first).toEqual(second);
     expect(first).not.toBe(second);
-    (first as { status: string }).status = "FAILED";
+    expect(() => ((first as { status: string }).status = "FAILED")).toThrow(TypeError);
     const reread = await repository.getById(run.id);
     expect(reread.status).toBe("AWAITING_APPROVAL");
   });

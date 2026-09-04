@@ -1,3 +1,4 @@
+import { canonicalizeJson } from "@/core";
 import type { IsoUtcTimestamp } from "./types";
 
 export interface Clock {
@@ -33,13 +34,9 @@ export function cryptoIdGenerator(): IdGenerator {
 }
 
 export function jsonClone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
+  return JSON.parse(canonicalizeJson(value)) as T;
 }
 
 export function assertJsonSnapshot(value: unknown): void {
-  const serialized = JSON.stringify(value);
-  if (serialized === undefined) {
-    throw new TypeError("Execution snapshots must be JSON-serializable.");
-  }
-  JSON.parse(serialized);
+  canonicalizeJson(value);
 }

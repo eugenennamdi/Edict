@@ -3,6 +3,8 @@ export type ExecutionErrorCode =
   | "ILLEGAL_STATE_TRANSITION"
   | "INVALID_APPROVAL"
   | "INVALID_RUN_SNAPSHOT"
+  | "PERSISTENCE_DATA_INVALID"
+  | "PERSISTENCE_UNAVAILABLE"
   | "REPOSITORY_NOT_FOUND"
   | "REPOSITORY_REVISION_CONFLICT"
   | "RUN_BLOCKED";
@@ -52,9 +54,30 @@ export class InvalidRunSnapshotError extends ExecutionError {
   constructor() {
     super(
       "INVALID_RUN_SNAPSHOT",
-      "The execution run is not a JSON-serializable snapshot.",
+      "The execution run is not a valid persistence snapshot.",
     );
     this.name = "InvalidRunSnapshotError";
+  }
+}
+
+export class PersistenceConfigurationError extends ExecutionError {
+  constructor() {
+    super("CONFIGURATION_MISSING", "Durable execution persistence is not configured.");
+    this.name = "PersistenceConfigurationError";
+  }
+}
+
+export class PersistenceDataError extends ExecutionError {
+  constructor() {
+    super("PERSISTENCE_DATA_INVALID", "Stored execution data failed validation.");
+    this.name = "PersistenceDataError";
+  }
+}
+
+export class PersistenceUnavailableError extends ExecutionError {
+  constructor() {
+    super("PERSISTENCE_UNAVAILABLE", "Durable execution persistence is unavailable.");
+    this.name = "PersistenceUnavailableError";
   }
 }
 
