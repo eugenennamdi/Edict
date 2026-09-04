@@ -2,9 +2,9 @@ import { validateAssetManifestV1 } from "@/core";
 import { createValidRawManifest } from "@/core/test-fixtures";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
 import { ExecutionRunService } from "../execution/run-service";
-import type { ExecutionRunV1 } from "../execution/types";
+import type { ExecutionRun } from "../execution/types";
 
-export async function createExecutionRunFixture(): Promise<ExecutionRunV1> {
+export async function createExecutionRunFixture(): Promise<ExecutionRun> {
   const validation = validateAssetManifestV1(createValidRawManifest());
   if (!validation.ok) throw new Error("The execution persistence fixture must validate.");
   let operation = 0;

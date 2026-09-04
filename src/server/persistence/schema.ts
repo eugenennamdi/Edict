@@ -15,7 +15,10 @@ export const executionRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull(),
   },
   (table) => [
-    check("execution_runs_schema_version_check", sql`${table.schemaVersion} = '1.0'`),
+    check(
+      "execution_runs_schema_version_check",
+      sql`${table.schemaVersion} in ('1.0', '2.0')`,
+    ),
     check("execution_runs_revision_nonnegative_check", sql`${table.revision} >= 0`),
   ],
 );

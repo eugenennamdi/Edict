@@ -4,10 +4,12 @@ import type {
   AuditEvent,
   EventActor,
   ExecutionRunEvent,
-  ExecutionRunV1,
+  ExecutionRun,
   OperationKind,
   WriteOperation,
 } from "./types";
+
+type ExecutionRunV1 = ExecutionRun;
 
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 const WALLET = /^0x[0-9a-f]{40}$/;
@@ -138,8 +140,26 @@ function approve(run: ExecutionRunV1, event: Extract<ExecutionRunEvent, { type: 
   if (!WALLET.test(wallet) || wallet !== run.requiredSigner.walletAddress) {
     throw new InvalidApprovalError();
   }
+  const proof = event.proof;
+  if (
+    proof.scheme !== "EIP712_EOA" ||
+    proof.proofVersion !== "1.0" ||
+    proof.domainVersion !== "1" ||
+    proof.runId !== run.id ||
+    proof.manifestHash !== run.manifestHash ||
+    proof.planHash !== run.planHash ||
+    proof.environment !== run.environment ||
+    proof.chainId !== run.chainId ||
+    proof.approvalRevision !== run.revision ||
+    proof.requiredSigner !== run.requiredSigner.walletAddress ||
+    proof.recoveredSigner !== wallet ||
+    proof.verifiedAt !== event.at
+  ) {
+    throw new InvalidApprovalError();
+  }
   const next: ExecutionRunV1 = {
     ...run,
+    schemaVersion: "2.0",
     phase: "TOKENIZATION",
     status: "PREPARING",
     approval: {
@@ -147,6 +167,7 @@ function approve(run: ExecutionRunV1, event: Extract<ExecutionRunEvent, { type: 
       approvedByWallet: wallet,
       approvedAt: event.at,
       approvalRevision: run.revision,
+      proof: jsonClone(proof),
     },
   };
   return appendEvent(next, event, null);

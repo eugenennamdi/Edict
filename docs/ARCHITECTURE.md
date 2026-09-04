@@ -16,6 +16,10 @@
 
 **DECISION** — Phase 5 implements durable run persistence as one versioned `execution_runs` JSONB snapshot table. This is an MVP decision: it preserves the complete state-machine aggregate atomically without prematurely creating analytics, user, portfolio, asset, or compliance tables.
 
+**DECISION** — Phase 6 run access uses a 24-hour, one-active-run, server-authenticated bearer capability stored only in the `__Host-edict_run_access` HttpOnly, Secure, SameSite=Strict cookie. Knowledge of a run ID, same-origin checks, email or a claimed wallet address is not authorization. Capability and approval-challenge MACs use purpose-specific keys derived from one server-only secret.
+
+**DECISION** — Plan approval requires an EIP-712 EOA signature over fixed fields binding the run, manifest hash, plan hash, sandbox chain and environment, approval revision, required signer, challenge nonce and bounded timestamps. The server recovers the signer with exactly pinned `viem@2.56.3`; EIP-1271 contract wallets, personal-sign fallback and RPC contract detection are not supported in Phase 6.
+
 **VERIFIED** — On 2026-09-04, the Neon migration completed without error and the explicitly opted-in live database test passed create, read, atomic compare-and-swap update, stale-revision refusal, and cleanup of its uniquely created run. Durable persistence is verified. The test made no Brickken request or blockchain operation and emitted no credential.
 
 **VERIFIED** — On 2026-09-04, the opt-in adapter smoke test completed one authenticated `get-network-info` read and identified `Sepolia ETH`; the earlier anonymous request still returned `401`. No authenticated write has occurred. Signer approval, tokenizer licensing, credits, prepared write payloads, browser-wallet compatibility, finality, and write behavior remain unverified.
@@ -68,6 +72,7 @@ Brickken sandbox API ──► Ethereum Sepolia
 - **DECISION** — `create` is insert-only. `update` is a single compare-and-swap statement constrained by `run_id` and expected `revision`; it increments the row revision exactly once and atomically replaces the snapshot and duplicated metadata. A zero-row update is classified as not found or stale revision without performing a read-modify-write overwrite.
 - **DECISION** — Application-boundary timestamps are canonical ISO-8601 UTC strings. The adapter alone maps them to and from Postgres timestamp-with-time-zone values.
 - **DECISION** — The snapshot may contain deployment-required emails, public wallet addresses, prepared transaction identifiers, and public transaction hashes. Routine persistence errors and logs must not print them.
+- **DECISION** — Execution snapshot V1 remains backward-decodable. New runs use V2, whose approval record contains bounded public EIP-712 verification evidence: fixed scheme versions and bindings, nonce and timestamps, typed-data digest, recovered signer and public signature. Capabilities, challenge MAC tokens and server secrets are never persisted. The existing JSONB table is retained; its version constraint accepts V1 and V2.
 
 ## Compositional persisted state machine
 

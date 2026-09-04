@@ -56,6 +56,8 @@ The deployed repository uses Neon Postgres through Drizzle's Neon HTTP adapter. 
 
 The persistence packages are pinned exactly: [`drizzle-orm@0.45.2`](https://www.npmjs.com/package/drizzle-orm/v/0.45.2), [`@neondatabase/serverless@1.1.0`](https://www.npmjs.com/package/@neondatabase/serverless/v/1.1.0), and [`drizzle-kit@0.31.10`](https://www.npmjs.com/package/drizzle-kit/v/0.31.10).
 
+Server-side EIP-712 approval recovery uses exactly pinned `viem@2.56.3`. Phase 6 supports EOA recovery only; it does not attempt EIP-1271 or make an RPC request to classify the signer.
+
 **VERIFIED — 2026-09-04:** `npm run db:migrate` completed successfully. The explicitly opted-in `npm run test:database-live` then passed against Neon: it created and read a unique run, completed one atomic compare-and-swap update, refused a stale revision, and deleted the run before emitting its sanitized success result.
 
 No Brickken request or blockchain operation occurred. Brickken signer approval, tokenizer licensing, credits, prepared write payloads, browser-wallet compatibility, finality, and write behavior remain unverified; live writes remain disabled.

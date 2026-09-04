@@ -24,9 +24,14 @@ export { ExecutionRunService, type ExecutionRunServiceDeps } from "./run-service
 export { applyRunEvent, persistedConfirmationPair } from "./transitions";
 export type {
   ApprovalRecord,
+  ApprovalProofV1,
+  ApprovalRecordV1,
+  ApprovalRecordV2,
   AuditEvent,
   ExecutionRunEvent,
+  ExecutionRun,
   ExecutionRunV1,
+  ExecutionRunV2,
   IsoUtcTimestamp,
   OperationKind,
   OperationStage,

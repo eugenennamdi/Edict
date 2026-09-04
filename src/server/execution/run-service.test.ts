@@ -5,6 +5,7 @@ import type { Clock, IdGenerator } from "./infrastructure";
 import { InMemoryExecutionRunRepository } from "./repository";
 import { ExecutionRunService } from "./run-service";
 import { IllegalStateTransitionError } from "./errors";
+import { createApprovalProofFixture } from "./test-fixtures";
 
 const UNSIGNED = {
   from: TOKENIZER_ADDRESS,
@@ -34,9 +35,11 @@ async function createApproved() {
   if (!validation.ok) throw new Error("Golden manifest must validate.");
   const service = createService();
   const created = await service.createRun(validation.value);
+  const proof = createApprovalProofFixture(created, "2026-09-03T12:00:01.000Z");
   const run = await service.approvePlan(created.id, {
     planHash: created.planHash,
     approvedByWallet: TOKENIZER_ADDRESS,
+    proof,
   });
   return { service, run };
 }

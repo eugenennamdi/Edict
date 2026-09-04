@@ -1,0 +1,13 @@
+/** Public EIP-712 test evidence. No private key is stored or used by the test suite. */
+export const APPROVAL_SIGNATURE_VECTOR = Object.freeze({
+  runId: "11111111-1111-4111-8111-111111111111",
+  signer: "0xb91155113039693456491ac398614bc81fef5ea7",
+  manifestHash: "sha256:7db75c525a9757f6297bd2289c17fa36bb017d8a7ccce5f221eadae638c54baf",
+  planHash: "sha256:09a1af3868ffc532f845c88f324fc4ce404f85ad2a37641e1777a3ccc79013c7",
+  issuedAt: 1788516000,
+  expiresAt: 1788516300,
+  nonce: "0x1111111111111111111111111111111111111111111111111111111111111111",
+  signature:
+    "0x8eb50228f542f3972659507a84b3bf6e4ba1cf6365cf2613ca2306302ca37e6852dc3775b2e9c5a2fa936e847839e5033bcb2a5a15a37b25a31462ff2d9022a31c",
+  typedDataDigest: "0x3e856ea184387f769798c029957bd675344ffb4ae2672a5586bd2a61d0a59642",
+});

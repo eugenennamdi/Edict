@@ -11,7 +11,8 @@ import { InMemoryExecutionRunRepository } from "./repository";
 import { ExecutionRunService } from "./run-service";
 import type { Clock, IdGenerator } from "./infrastructure";
 import { applyRunEvent } from "./transitions";
-import type { ExecutionRunEvent, ExecutionRunV1, OperationKind } from "./types";
+import type { ExecutionRun, ExecutionRunEvent, OperationKind } from "./types";
+import { createApprovalProofFixture } from "./test-fixtures";
 
 const UNSIGNED = {
   from: TOKENIZER_ADDRESS,
@@ -58,9 +59,11 @@ async function newRun() {
 
 async function approvedRun() {
   const { service, run } = await newRun();
+  const proof = createApprovalProofFixture(run, "2026-01-01T00:00:01.000Z");
   const approved = await service.approvePlan(run.id, {
     planHash: run.planHash,
     approvedByWallet: TOKENIZER_ADDRESS,
+    proof,
   });
   return { service, run: approved };
 }
@@ -137,6 +140,7 @@ describe("approval binding", () => {
       service.approvePlan(run.id, {
         planHash: GOLDEN_MANIFEST_HASH,
         approvedByWallet: TOKENIZER_ADDRESS,
+        proof: createApprovalProofFixture(run, "2026-01-01T00:00:01.000Z"),
       }),
     ).rejects.toBeInstanceOf(InvalidApprovalError);
   });
@@ -147,6 +151,11 @@ describe("approval binding", () => {
       service.approvePlan(run.id, {
         planHash: run.planHash,
         approvedByWallet: "0x2222222222222222222222222222222222222222",
+        proof: createApprovalProofFixture(
+          run,
+          "2026-01-01T00:00:01.000Z",
+          "0x2222222222222222222222222222222222222222",
+        ),
       }),
     ).rejects.toBeInstanceOf(InvalidApprovalError);
   });
@@ -157,6 +166,7 @@ describe("approval binding", () => {
       service.approvePlan(run.id, {
         planHash: run.planHash,
         approvedByWallet: TOKENIZER_ADDRESS,
+        proof: createApprovalProofFixture(run, "2026-01-01T00:00:02.000Z"),
       }),
     ).rejects.toBeInstanceOf(InvalidApprovalError);
   });
@@ -249,8 +259,8 @@ describe("permitted transitions", () => {
 describe("forbidden transitions", () => {
   const cases: Array<{
     name: string;
-    setup: () => Promise<{ service: ExecutionRunService; run: ExecutionRunV1 }>;
-    act: (service: ExecutionRunService, run: ExecutionRunV1) => Promise<unknown>;
+    setup: () => Promise<{ service: ExecutionRunService; run: ExecutionRun }>;
+    act: (service: ExecutionRunService, run: ExecutionRun) => Promise<unknown>;
   }> = [
     {
       name: "prepare before approval",
@@ -365,6 +375,7 @@ describe("applyRunEvent isolation", () => {
       at: "2026-01-01T00:00:00.000Z",
       planHash: run.planHash,
       approvedByWallet: TOKENIZER_ADDRESS,
+      proof: createApprovalProofFixture(run, "2026-01-01T00:00:00.000Z"),
     };
     const next = applyRunEvent(run, event);
     expect(run.status).toBe("AWAITING_APPROVAL");

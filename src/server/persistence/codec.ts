@@ -3,17 +3,20 @@ import "server-only";
 import { canonicalizeJson, validateAssetManifestV1 } from "@/core";
 import { z } from "zod";
 import { InvalidRunSnapshotError, PersistenceDataError } from "../execution/errors";
-import type { ExecutionRunV1 } from "../execution/types";
+import type { ExecutionRun } from "../execution/types";
 
-export const EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSION = "1.0" as const;
+export const EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSIONS = ["1.0", "2.0"] as const;
+export const EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSION = "2.0" as const;
+export type ExecutionRunPersistenceSchemaVersion =
+  (typeof EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSIONS)[number];
 
 export interface PersistedExecutionRunRow {
   readonly runId: string;
-  readonly schemaVersion: typeof EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSION;
+  readonly schemaVersion: ExecutionRunPersistenceSchemaVersion;
   readonly revision: number;
   readonly manifestHash: string;
   readonly planHash: string;
-  readonly status: ExecutionRunV1["status"];
+  readonly status: ExecutionRun["status"];
   readonly snapshot: unknown;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -104,11 +107,35 @@ const operationSchema = z.object({
   verifiedAt: isoUtc.nullable(),
 }).strict();
 
-const approvalSchema = z.object({
+const approvalV1Schema = z.object({
   planHash: hash,
   approvedByWallet: wallet,
   approvedAt: isoUtc,
   approvalRevision: z.number().int().safe().nonnegative(),
+}).strict();
+
+const approvalProofV1Schema = z.object({
+  scheme: z.literal("EIP712_EOA"),
+  proofVersion: z.literal("1.0"),
+  domainVersion: z.literal("1"),
+  runId: identifier,
+  manifestHash: hash,
+  planHash: hash,
+  environment: z.literal("sandbox"),
+  chainId: z.literal("11155111"),
+  approvalRevision: z.number().int().safe().nonnegative(),
+  requiredSigner: wallet,
+  recoveredSigner: wallet,
+  challengeNonce: z.string().regex(/^0x[0-9a-f]{64}$/),
+  issuedAt: isoUtc,
+  expiresAt: isoUtc,
+  verifiedAt: isoUtc,
+  typedDataDigest: z.string().regex(/^0x[0-9a-f]{64}$/),
+  publicSignature: z.string().regex(/^0x(?:[0-9a-f]{128}|[0-9a-f]{130})$/),
+}).strict();
+
+const approvalV2Schema = approvalV1Schema.extend({
+  proof: approvalProofV1Schema,
 }).strict();
 
 const eventSchema = z.object({
@@ -126,8 +153,7 @@ const observationSchema = z.object({
   at: isoUtc,
 }).strict();
 
-const executionRunSchema = z.object({
-  schemaVersion: z.literal(EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSION),
+const executionRunCommonShape = {
   id: identifier,
   manifest: manifestSchema,
   manifestHash: hash,
@@ -149,7 +175,6 @@ const executionRunSchema = z.object({
     "RECONCILIATION_REQUIRED",
   ]),
   terminalOutcome: z.enum(["FAILED", "VERIFICATION_FAILED", "CANCELLED"]).nullable(),
-  approval: approvalSchema.nullable(),
   operations: z.tuple([operationSchema, operationSchema, operationSchema]),
   observations: z.array(observationSchema),
   events: z.array(eventSchema),
@@ -157,7 +182,24 @@ const executionRunSchema = z.object({
   createdAt: isoUtc,
   updatedAt: isoUtc,
   revision: z.number().int().safe().nonnegative(),
+};
+
+const executionRunV1Schema = z.object({
+  schemaVersion: z.literal("1.0"),
+  ...executionRunCommonShape,
+  approval: approvalV1Schema.nullable(),
 }).strict();
+
+const executionRunV2Schema = z.object({
+  schemaVersion: z.literal("2.0"),
+  ...executionRunCommonShape,
+  approval: approvalV2Schema.nullable(),
+}).strict();
+
+const executionRunSchema = z.discriminatedUnion("schemaVersion", [
+  executionRunV1Schema,
+  executionRunV2Schema,
+]);
 
 const FORBIDDEN_PROPERTY_NAMES = new Set([
   "apikey",
@@ -180,7 +222,7 @@ function normalizedPropertyName(value: string): string {
   return value.toLowerCase().replaceAll(/[^a-z0-9]/g, "");
 }
 
-function assertNoForbiddenProperties(value: JsonValue): void {
+function assertNoForbiddenProperties(value: JsonValue, path = "$"): void {
   if (typeof value === "string") {
     if (
       /^postgres(?:ql)?:\/\//i.test(value) ||
@@ -192,14 +234,18 @@ function assertNoForbiddenProperties(value: JsonValue): void {
   }
   if (value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
-    for (const item of value) assertNoForbiddenProperties(item);
+    for (let index = 0; index < value.length; index += 1) {
+      assertNoForbiddenProperties(value[index]!, `${path}[${index}]`);
+    }
     return;
   }
   for (const [key, item] of Object.entries(value)) {
-    if (FORBIDDEN_PROPERTY_NAMES.has(normalizedPropertyName(key))) {
+    const propertyPath = `${path}.${key}`;
+    const isApprovedPublicSignature = propertyPath === "$.approval.proof.publicSignature";
+    if (FORBIDDEN_PROPERTY_NAMES.has(normalizedPropertyName(key)) && !isApprovedPublicSignature) {
       throw new TypeError("Persistence snapshots contain a forbidden property.");
     }
-    assertNoForbiddenProperties(item);
+    assertNoForbiddenProperties(item, propertyPath);
   }
 }
 
@@ -212,7 +258,7 @@ function deepFreeze<T>(value: T): T {
   return Object.freeze(value);
 }
 
-function parseSnapshot(value: unknown): ExecutionRunV1 {
+function parseSnapshot(value: unknown): ExecutionRun {
   const canonical = canonicalizeJson(value);
   const json: JsonValue = JSON.parse(canonical);
   assertNoForbiddenProperties(json);
@@ -234,6 +280,17 @@ function parseSnapshot(value: unknown): ExecutionRunV1 {
       (parsed.approval.planHash !== parsed.planHash ||
         parsed.approval.approvedByWallet !== parsed.requiredSigner.walletAddress ||
         parsed.approval.approvalRevision > parsed.revision)) ||
+    (parsed.schemaVersion === "2.0" && parsed.approval !== null &&
+      (parsed.approval.proof.runId !== parsed.id ||
+        parsed.approval.proof.manifestHash !== parsed.manifestHash ||
+        parsed.approval.proof.planHash !== parsed.planHash ||
+        parsed.approval.proof.environment !== parsed.environment ||
+        parsed.approval.proof.chainId !== parsed.chainId ||
+        parsed.approval.proof.approvalRevision !== parsed.approval.approvalRevision ||
+        parsed.approval.proof.requiredSigner !== parsed.requiredSigner.walletAddress ||
+        parsed.approval.proof.recoveredSigner !== parsed.approval.approvedByWallet ||
+        parsed.approval.proof.verifiedAt !== parsed.approval.approvedAt ||
+        parsed.approval.proof.expiresAt <= parsed.approval.proof.issuedAt)) ||
     parsed.operations[0].kind !== "TOKENIZE" ||
     parsed.operations[1].kind !== "WHITELIST" ||
     parsed.operations[2].kind !== "MINT" ||
@@ -252,7 +309,7 @@ export function encodeExecutionRunV1(run: unknown): PersistedExecutionRunRow {
     const snapshot = parseSnapshot(run);
     return deepFreeze({
       runId: snapshot.id,
-      schemaVersion: EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSION,
+      schemaVersion: snapshot.schemaVersion,
       revision: snapshot.revision,
       manifestHash: snapshot.manifestHash,
       planHash: snapshot.planHash,
@@ -266,11 +323,11 @@ export function encodeExecutionRunV1(run: unknown): PersistedExecutionRunRow {
   }
 }
 
-export function decodeExecutionRunV1(row: PersistedExecutionRunRow): ExecutionRunV1 {
+export function decodeExecutionRunV1(row: PersistedExecutionRunRow): ExecutionRun {
   try {
     const snapshot = parseSnapshot(row.snapshot);
     if (
-      row.schemaVersion !== EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSION ||
+      !EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSIONS.includes(row.schemaVersion) ||
       row.runId !== snapshot.id ||
       row.schemaVersion !== snapshot.schemaVersion ||
       row.revision !== snapshot.revision ||

@@ -4,6 +4,15 @@ import { decodeExecutionRunV1, encodeExecutionRunV1 } from "./codec";
 import { createExecutionRunFixture } from "./test-fixtures";
 
 describe("execution run persistence codec", () => {
+  it("backward-decodes legacy V1 snapshots while new runs use V2", async () => {
+    const current = await createExecutionRunFixture();
+    expect(current.schemaVersion).toBe("2.0");
+    const legacy = { ...current, schemaVersion: "1.0" as const, approval: null };
+    const decoded = decodeExecutionRunV1(encodeExecutionRunV1(legacy));
+    expect(decoded.schemaVersion).toBe("1.0");
+    expect(decoded.approval).toBeNull();
+  });
+
   it("round-trips into a newly allocated deeply frozen snapshot", async () => {
     const run = await createExecutionRunFixture();
     const decoded = decodeExecutionRunV1(encodeExecutionRunV1(run));

@@ -6,7 +6,7 @@ import {
   RepositoryNotFoundError,
   RepositoryRevisionConflictError,
 } from "../execution/errors";
-import type { ExecutionRunV1 } from "../execution/types";
+import type { ExecutionRun } from "../execution/types";
 import type { PersistedExecutionRunRow } from "./codec";
 import { readDatabaseConfig } from "./config";
 import { NeonExecutionRunRepository } from "./repository";
@@ -59,7 +59,7 @@ async function setup() {
   return { store, repository, run };
 }
 
-function nextRun(run: ExecutionRunV1, status: ExecutionRunV1["status"] = "PREPARING") {
+function nextRun(run: ExecutionRun, status: ExecutionRun["status"] = "PREPARING") {
   return { ...run, status, updatedAt: "2026-09-04T12:00:01.000Z" };
 }
 
@@ -68,7 +68,7 @@ describe("durable execution run repository", () => {
     const { repository, run } = await setup();
     const mutableInput = structuredClone(run);
     const created = await repository.create(mutableInput);
-    (mutableInput as { status: ExecutionRunV1["status"] }).status = "FAILED";
+    (mutableInput as { status: ExecutionRun["status"] }).status = "FAILED";
     (mutableInput.manifest.asset as { name: string }).name = "mutated after create";
     const read = await repository.getById(run.id);
     expect(read).toEqual(created);
@@ -127,7 +127,7 @@ describe("durable execution run repository", () => {
     store.rows.set(run.id, { ...row, snapshot: { malformed: true } });
     await expect(repository.getById(run.id)).rejects.toBeInstanceOf(PersistenceDataError);
 
-    store.rows.set(run.id, { ...row, schemaVersion: "2.0" as "1.0" });
+    store.rows.set(run.id, { ...row, schemaVersion: "3.0" as "2.0" });
     await expect(repository.getById(run.id)).rejects.toBeInstanceOf(PersistenceDataError);
   });
 

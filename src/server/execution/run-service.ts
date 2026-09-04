@@ -12,11 +12,14 @@ import type {
   ExecutionManifestSnapshot,
   ExecutionPlanSnapshot,
   ExecutionRunEvent,
-  ExecutionRunV1,
+  ExecutionRun,
   IsoUtcTimestamp,
   OperationKind,
+  ApprovalProofV1,
   WriteOperation,
 } from "./types";
+
+type ExecutionRunV1 = ExecutionRun;
 
 export interface ExecutionRunServiceDeps {
   readonly repository: ExecutionRunRepository;
@@ -100,12 +103,12 @@ export class ExecutionRunService {
     this.#ids = deps.ids;
   }
 
-  async createRun(manifest: NormalizedAssetManifestV1): Promise<ExecutionRunV1> {
+  async createRun(manifest: NormalizedAssetManifestV1): Promise<ExecutionRun> {
     const { hash: manifestHash } = await hashAssetManifestV1(manifest);
     const plan = await buildExecutionPlanV1(manifest);
     const createdAt = this.#clock.nowIso();
-    const run: ExecutionRunV1 = {
-      schemaVersion: "1.0",
+    const run: ExecutionRun = {
+      schemaVersion: "2.0",
       id: this.#ids.runId(),
       manifest: snapshotManifest(manifest),
       manifestHash,
@@ -142,14 +145,15 @@ export class ExecutionRunService {
 
   async approvePlan(
     runId: string,
-    input: { planHash: string; approvedByWallet: string },
-  ): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+    input: { planHash: string; approvedByWallet: string; proof: ApprovalProofV1 },
+  ): Promise<ExecutionRun> {
+    return this.#apply(runId, (_at, id) => ({
       type: "APPROVE_PLAN",
       id,
-      at,
+      at: input.proof.verifiedAt,
       planHash: input.planHash,
       approvedByWallet: input.approvedByWallet,
+      proof: input.proof,
     }));
   }
 

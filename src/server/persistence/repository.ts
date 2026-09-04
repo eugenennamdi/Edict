@@ -8,7 +8,7 @@ import {
   RepositoryRevisionConflictError,
 } from "../execution/errors";
 import type { ExecutionRunRepository } from "../execution/repository";
-import type { ExecutionRunV1 } from "../execution/types";
+import type { ExecutionRun } from "../execution/types";
 import { decodeExecutionRunV1, encodeExecutionRunV1 } from "./codec";
 import { readDatabaseConfig } from "./config";
 import { createDrizzleExecutionRunStore, type ExecutionRunStore } from "./store";
@@ -32,7 +32,7 @@ export class NeonExecutionRunRepository implements ExecutionRunRepository {
     this.#store = store;
   }
 
-  async create(run: ExecutionRunV1): Promise<ExecutionRunV1> {
+  async create(run: ExecutionRun): Promise<ExecutionRun> {
     const row = encodeExecutionRunV1(run);
     try {
       const created = await this.#store.insert(row);
@@ -43,7 +43,7 @@ export class NeonExecutionRunRepository implements ExecutionRunRepository {
     }
   }
 
-  async getById(id: string): Promise<ExecutionRunV1> {
+  async getById(id: string): Promise<ExecutionRun> {
     try {
       const row = await this.#store.selectById(id);
       if (row === null) throw new RepositoryNotFoundError();
@@ -56,8 +56,8 @@ export class NeonExecutionRunRepository implements ExecutionRunRepository {
   async update(
     id: string,
     expectedRevision: number,
-    next: ExecutionRunV1,
-  ): Promise<ExecutionRunV1> {
+    next: ExecutionRun,
+  ): Promise<ExecutionRun> {
     if (
       id !== next.id ||
       !Number.isSafeInteger(expectedRevision) ||

@@ -11,6 +11,7 @@ export interface ServerEnv {
   readonly BRICKKEN_BASE_URL: string;
   readonly BRICKKEN_CHAIN_ID: string;
   readonly DATABASE_URL?: string;
+  readonly EDICT_RUN_SECURITY_SECRET?: string;
 }
 
 export function getServerEnv(): ServerEnv {
@@ -28,5 +29,6 @@ export function getServerEnv(): ServerEnv {
     BRICKKEN_BASE_URL: process.env.BRICKKEN_BASE_URL || "https://api.sandbox.brickken.com",
     BRICKKEN_CHAIN_ID: process.env.BRICKKEN_CHAIN_ID || "11155111",
     DATABASE_URL: process.env.DATABASE_URL || undefined,
+    EDICT_RUN_SECURITY_SECRET: process.env.EDICT_RUN_SECURITY_SECRET || undefined,
   };
 }

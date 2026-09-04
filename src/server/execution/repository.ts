@@ -4,16 +4,16 @@ import {
   RepositoryRevisionConflictError,
 } from "./errors";
 import { decodeExecutionRunV1, encodeExecutionRunV1 } from "../persistence/codec";
-import type { ExecutionRunV1 } from "./types";
+import type { ExecutionRun } from "./types";
 
 export interface ExecutionRunRepository {
-  create(run: ExecutionRunV1): Promise<ExecutionRunV1>;
-  getById(id: string): Promise<ExecutionRunV1>;
+  create(run: ExecutionRun): Promise<ExecutionRun>;
+  getById(id: string): Promise<ExecutionRun>;
   update(
     id: string,
     expectedRevision: number,
-    next: ExecutionRunV1,
-  ): Promise<ExecutionRunV1>;
+    next: ExecutionRun,
+  ): Promise<ExecutionRun>;
 }
 
 /**
@@ -25,7 +25,7 @@ export interface ExecutionRunRepository {
 export class InMemoryExecutionRunRepository implements ExecutionRunRepository {
   readonly #runs = new Map<string, string>();
 
-  async create(run: ExecutionRunV1): Promise<ExecutionRunV1> {
+  async create(run: ExecutionRun): Promise<ExecutionRun> {
     const row = encodeExecutionRunV1(run);
     if (this.#runs.has(row.runId)) {
       throw new RepositoryRevisionConflictError();
@@ -34,7 +34,7 @@ export class InMemoryExecutionRunRepository implements ExecutionRunRepository {
     return this.getById(row.runId);
   }
 
-  async getById(id: string): Promise<ExecutionRunV1> {
+  async getById(id: string): Promise<ExecutionRun> {
     const raw = this.#runs.get(id);
     if (raw === undefined) {
       throw new RepositoryNotFoundError();
@@ -45,8 +45,8 @@ export class InMemoryExecutionRunRepository implements ExecutionRunRepository {
   async update(
     id: string,
     expectedRevision: number,
-    next: ExecutionRunV1,
-  ): Promise<ExecutionRunV1> {
+    next: ExecutionRun,
+  ): Promise<ExecutionRun> {
     const current = await this.getById(id);
     if (current.revision !== expectedRevision || next.revision !== expectedRevision) {
       throw new RepositoryRevisionConflictError();

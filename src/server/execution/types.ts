@@ -75,12 +75,38 @@ export interface ExecutionPlanSnapshot {
   readonly planHash: string;
 }
 
-export interface ApprovalRecord {
+export interface ApprovalRecordV1 {
   readonly planHash: string;
   readonly approvedByWallet: string;
   readonly approvedAt: IsoUtcTimestamp;
   readonly approvalRevision: number;
 }
+
+export interface ApprovalProofV1 {
+  readonly scheme: "EIP712_EOA";
+  readonly proofVersion: "1.0";
+  readonly domainVersion: "1";
+  readonly runId: string;
+  readonly manifestHash: string;
+  readonly planHash: string;
+  readonly environment: "sandbox";
+  readonly chainId: "11155111";
+  readonly approvalRevision: number;
+  readonly requiredSigner: string;
+  readonly recoveredSigner: string;
+  readonly challengeNonce: string;
+  readonly issuedAt: IsoUtcTimestamp;
+  readonly expiresAt: IsoUtcTimestamp;
+  readonly verifiedAt: IsoUtcTimestamp;
+  readonly typedDataDigest: string;
+  readonly publicSignature: string;
+}
+
+export interface ApprovalRecordV2 extends ApprovalRecordV1 {
+  readonly proof: ApprovalProofV1;
+}
+
+export type ApprovalRecord = ApprovalRecordV1 | ApprovalRecordV2;
 
 export interface WriteOperation {
   readonly id: string;
@@ -131,7 +157,7 @@ export interface ExecutionRunV1 {
   readonly phase: RunPhase;
   readonly status: RunStatus;
   readonly terminalOutcome: TerminalOutcome | null;
-  readonly approval: ApprovalRecord | null;
+  readonly approval: ApprovalRecordV1 | null;
   readonly operations: readonly [WriteOperation, WriteOperation, WriteOperation];
   readonly observations: readonly ObservationRecord[];
   readonly events: readonly AuditEvent[];
@@ -141,6 +167,13 @@ export interface ExecutionRunV1 {
   readonly revision: number;
 }
 
+export interface ExecutionRunV2 extends Omit<ExecutionRunV1, "schemaVersion" | "approval"> {
+  readonly schemaVersion: "2.0";
+  readonly approval: ApprovalRecordV2 | null;
+}
+
+export type ExecutionRun = ExecutionRunV1 | ExecutionRunV2;
+
 export type ExecutionRunEvent =
   | {
       readonly type: "APPROVE_PLAN";
@@ -148,6 +181,7 @@ export type ExecutionRunEvent =
       readonly at: IsoUtcTimestamp;
       readonly planHash: string;
       readonly approvedByWallet: string;
+      readonly proof: ApprovalProofV1;
     }
   | {
       readonly type: "CANCEL_RUN";
