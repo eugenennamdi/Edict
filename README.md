@@ -34,6 +34,7 @@ Inspect `.env.example` for approved environment variables. For local development
 | `npm run lint` | Run ESLint across the codebase |
 | `npm run typecheck` | Run TypeScript strict compiler checks (`tsc --noEmit`) |
 | `npm run test` | Run Vitest unit and architectural assertion tests |
+| `npm run test:brickken-live-read` | Opt-in authenticated Brickken sandbox network-info read; excluded from default tests |
 | `npm run check` | Run all checks (`lint`, `typecheck`, `test`, `build`) in sequence |
 
 ## Phase Status
@@ -42,4 +43,5 @@ Inspect `.env.example` for approved environment variables. For local development
 - **Phase 1: Application Foundation** — Complete. Scaffolding, strict TypeScript App Router, Tailwind CSS, Vitest, pinned `brickken-sdk@0.2.1`, and server-only boundaries established.
 - **Phase 2: Deterministic Core Domain** — Complete. The versioned normalized manifest, strict validation, canonical JSON, SHA-256 identities, immutable execution plan, and golden tests are specified in [`docs/CORE_DOMAIN_SPEC.md`](docs/CORE_DOMAIN_SPEC.md).
 - **Phase 3: Brickken Wire-Contract Audit** — Complete. The adversarial review, conflict register, retry matrix, and sourced fixtures are in [`docs/BRICKKEN_WIRE_CONTRACT_AUDIT.md`](docs/BRICKKEN_WIRE_CONTRACT_AUDIT.md) and `src/server/brickken/test-vectors/`.
-- **Next Task:** Task 4 (application-owned repository and state transitions), then Task 5 (smallest safe server-only Brickken adapter against the Phase 3 vectors). No live Brickken writes in those tasks.
+- **Phase 4: Execution Safety and Brickken Adapter** — Complete. The application-owned run state machine and in-memory repository are committed, and the server-only sandbox adapter is covered by injected transport tests. An opt-in authenticated network-info read identified `Sepolia ETH`; no authenticated write has occurred. Live writes remain blocked until a durable managed repository exists.
+- **Next Task:** Phase 5, Task 6: independently review the Phase 4 runtime schemas and adapter mappings against current official Brickken documentation and produce a discrepancy checklist. Do not run live writes.

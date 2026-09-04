@@ -7,12 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   test: {
     environment: "node",
-    exclude: [
-      "**/node_modules/**",
-      "**/dist/**",
-      "**/.next/**",
-      "**/live-read.smoke.test.ts",
-    ],
+    include: ["src/server/brickken/live-read.smoke.test.ts"],
   },
   resolve: {
     alias: {

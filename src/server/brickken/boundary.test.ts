@@ -12,6 +12,12 @@ describe("Brickken server boundary architecture assertions", () => {
     expect(content.startsWith('import "server-only";')).toBe(true);
   });
 
+  it("ensures the Brickken SDK adapter explicitly imports server-only as its first statement", () => {
+    const filePath = path.resolve(__dirname, "adapter.ts");
+    const content = fs.readFileSync(filePath, "utf-8").trim();
+    expect(content.startsWith('import "server-only";')).toBe(true);
+  });
+
   it("ensures src/server/index.ts explicitly imports server-only as its first statement", () => {
     const filePath = path.resolve(__dirname, "../index.ts");
     const content = fs.readFileSync(filePath, "utf-8").trim();
@@ -87,6 +93,27 @@ describe("Brickken server boundary architecture assertions", () => {
 
     checkDir(path.resolve(rootDir, "src/core"));
     checkDir(path.resolve(rootDir, "src/components"));
+  });
+
+  it("ensures only the Brickken adapter implementation imports brickken-sdk", () => {
+    const serverDir = path.resolve(rootDir, "src");
+    const offenders: string[] = [];
+    const visit = (dirPath: string) => {
+      for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+        const fullPath = path.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          visit(fullPath);
+          continue;
+        }
+        if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+        const relative = path.relative(rootDir, fullPath);
+        if (relative === path.join("src", "server", "brickken", "adapter.ts")) continue;
+        const content = fs.readFileSync(fullPath, "utf-8");
+        if (/from\s+["']brickken-sdk["']/.test(content)) offenders.push(relative);
+      }
+    };
+    visit(serverDir);
+    expect(offenders).toEqual([]);
   });
 
   it("ensures core imports no server, Brickken, Node crypto, or network modules", () => {

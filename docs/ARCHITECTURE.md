@@ -12,6 +12,10 @@
 
 **DECISION** — The in-memory repository is test and local-demo infrastructure only. It is not durable across process restarts. Live write execution cannot ship until an application-owned durable managed repository implementation exists.
 
+**DECISION** — Phase 4 is complete: Part A provides the application-owned run repository contract and fail-closed state machine; Part B provides the server-only Brickken sandbox adapter, runtime wire schemas, prepared-transaction preservation, safe error mapping, and opt-in read-only smoke test.
+
+**VERIFIED** — On 2026-09-04, the opt-in adapter smoke test completed one authenticated `get-network-info` read and identified `Sepolia ETH`; the earlier anonymous request still returned `401`. No authenticated write has occurred. Signer approval, tokenizer licensing, credits, prepared write payloads, browser-wallet compatibility, finality, and write behavior remain unverified.
+
 ## Trust boundaries and responsibilities
 
 | Boundary | Responsibilities | Forbidden data/actions |
@@ -19,7 +23,7 @@
 | DECISION — Browser | Render manifest/form and plan; connect wallet; request explicit plan approval; display the prepared transaction; ask the wallet to sign and broadcast; return public address and transaction hash; display progress and receipt. | API key, private key, seed phrase, direct authenticated Brickken requests, hidden auto-approval. |
 | DECISION — Next.js server | Validate/canonicalize; create immutable plan; enforce approvals; call the pinned SDK with sandbox API key through an Edict-owned server adapter; validate SDK payloads; persist run/operation/events; reconcile tx hashes; poll; verify read-back; issue receipt. | Private keys, seed phrases, production endpoint, signing, silently changing an approved plan. |
 | DECISION — Browser wallet | Hold keys; show wallet confirmation; sign and broadcast the prepared Sepolia transaction; return `txHash`. | Revealing key material to Edict. |
-| VERIFIED — Brickken sandbox | Prepare Dapp operations, reconcile client-broadcast hashes, report status, and expose token/whitelist/balance reads. Note: unauthenticated `GET /get-network-info` returned 401; implementation must not depend on it being public. [Dapp API](https://docs.brickken.com/api-reference/introduction) [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send) | DECISION — No production or relayed execution in MVP. |
+| VERIFIED — Brickken sandbox | Prepare Dapp operations, reconcile client-broadcast hashes, report status, and expose token/whitelist/balance reads. An authenticated adapter `GET /get-network-info` identified `Sepolia ETH`; an earlier anonymous request returned `401`, so implementation must not depend on it being public. [Dapp API](https://docs.brickken.com/api-reference/introduction) [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send) | DECISION — No production or relayed execution in MVP. No authenticated write has occurred. |
 | DECISION — Repository interface | Persist normalized run state, immutable request/plan snapshots, approvals, prepared IDs/payloads, hashes, poll results, observations, and receipts behind an application-owned repository interface. In-memory implementation for tests; production managed database choice deferred. | API keys, wallet secrets, seed phrases, full environment dumps. |
 
 ## Minimal component layout
@@ -123,7 +127,7 @@ Brickken sandbox API ──► Ethereum Sepolia
 6. **VERIFIED** — Server sends the identical `{txId, txHash}` to Brickken; resubmission of that same pair is idempotent. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send)
 7. **DECISION** — Server polls by persisted identifiers. Refresh loads the run and resumes from `AWAITING_WALLET`, `BROADCAST_RECORDED`, `CONFIRMING`, or `TIMED_OUT` without repeating completed steps.
 
-**OPEN QUESTION** — Injected wallets may normalize or reject some prepared EIP-1559 fields. Phase 1 must contract-test the exact Brickken payload on the selected wallet before the demo path is accepted.
+**OPEN QUESTION** — Injected wallets may normalize or reject some prepared EIP-1559 fields. Contract-test the exact Brickken payload on the selected wallet before any live-write demo path is accepted.
 
 ## Verification strategy
 
