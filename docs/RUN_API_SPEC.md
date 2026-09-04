@@ -12,6 +12,8 @@
 
 **DECISION** — Prepare, wallet prompt/result, confirmation, polling, read-back and final-verification methods exist only on the injected internal orchestration boundary. They are deliberately not public routes in Phase 6.
 
+**DECISION** — Phase 7 does not expand this surface. Its browser coordinator uses an injected gateway contract for offline verification only; no public external-effect route or production gateway composition exists. Brickken writes and transaction semantic authorization remain disabled. See [`WALLET_EXECUTION_SPEC.md`](WALLET_EXECUTION_SPEC.md).
+
 ## Deployment and request gates
 
 **DECISION** — The public run API is deny-by-default. An operator must configure deployment-level preview access or rate limiting, set `EDICT_RUN_API_ENABLED=1`, configure an exact `EDICT_TRUSTED_ORIGIN`, supply durable `DATABASE_URL` persistence, and provide a base64url server secret decoding to at least 32 random bytes as `EDICT_RUN_SECURITY_SECRET`. Missing, malformed or partial configuration keeps the API disabled. The creation gate is checked before reading or validating a manifest and before constructing database, security or Brickken dependencies.

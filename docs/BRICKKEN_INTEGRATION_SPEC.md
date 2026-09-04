@@ -88,7 +88,7 @@ The sanitized adapter projection was:
 
 **VERIFIED** — The API exposes three execution modes. For `client-broadcast`, the user signs and broadcasts, then the client confirms exactly one `{ txId, txHash }` pair to Brickken; this mode works for Dapp methods. Resubmitting the same pair is idempotent. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send)
 
-**DECISION** — Edict uses `client-broadcast` for all three on-chain operations. The server prepares with the API key; the browser wallet signs and broadcasts; the server reconciles the returned hash with Brickken; the server then polls status.
+**DECISION** — Edict intends to use `client-broadcast` for all three on-chain operations. Phase 7 implements only the disabled offline boundary: the server would prepare with the API key, the selected browser wallet would broadcast, and the server would reconcile and poll. No authenticated write or browser broadcast has occurred.
 
 **VERIFIED** — A prepared response contains `transactions` (unsigned transaction objects), `txId` (Brickken's internal prepared-batch identifier, not a blockchain hash), and optional `info`. [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create)
 
@@ -226,7 +226,7 @@ The sanitized adapter projection was:
 | Implementation speed | DECISION — Faster for prepare, reads, send reconciliation, and errors, with a narrow custom wallet bridge. | DECISION — More wire work and more opportunities to drift. |
 | Undocumented behavior | OPEN QUESTION — New package and inaccessible declared source increase supply-chain/change risk; pin and contract-test. | DECISION — Fewer hidden client behaviors, but more exposure to inconsistent docs and response evolution. |
 
-**DECISION** — Brickken access must remain behind an Edict-owned server adapter so application logic does not depend directly on SDK behavior. Use pinned `brickken-sdk@0.2.1` strictly inside this server-only adapter for prepare, read, send reconciliation, and status. Use viem/wagmi only in the browser to request wallet signing and broadcasting of the prepared transaction. Do not pass the browser wallet into the SDK, and do not call SDK `execute: true`.
+**DECISION** — Brickken access must remain behind an Edict-owned server adapter so application logic does not depend directly on SDK behavior. Use pinned `brickken-sdk@0.2.1` strictly inside this server-only adapter for prepare, read, send reconciliation, and status. Use the vendor-neutral injected EIP-1193 boundary and pinned viem primitives in the browser; no wagmi or wallet-vendor dependency is required. Do not pass the browser wallet into the SDK, and do not call SDK `execute: true`.
 
 **DECISION** — Wrap every SDK response in Edict-owned runtime schemas, persist raw sanitized response snapshots for audit, set `executionMode: "client-broadcast"` explicitly, and keep a single raw REST escape hatch behind the same adapter only if a verified endpoint is missing from the pinned SDK.
 

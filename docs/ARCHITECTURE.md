@@ -4,7 +4,7 @@
 
 **DECISION** — Build one Next.js TypeScript application with a server-only Brickken boundary, a browser-wallet boundary, and an application-owned repository interface for persistence. The deployment target is Vercel and the durable store is Neon Postgres through Drizzle's official Neon HTTP integration. SQLite and local disk are rejected for deployed persistence because they are not durable on Vercel-style hosting. Avoid queues, microservices, custodial signers, and multi-agent runtime components. [Drizzle Neon integration](https://orm.drizzle.team/docs/connect-neon) [Neon Vercel integration](https://neon.com/docs/guides/vercel-manual)
 
-**DECISION** — Recommended stack after Phase 0 approval: Next.js App Router on Node 24+, TypeScript strict mode, Zod for manifest and wire schemas, pinned `brickken-sdk@0.2.1` server-only behind an Edict-owned server adapter, wagmi/viem for wallet connection and browser broadcasting, Neon Postgres with exactly pinned Drizzle/Neon packages behind an application-owned repository interface, and Vitest for domain/contract tests.
+**DECISION** — Implemented stack: Next.js App Router on Node 24+, TypeScript strict mode, Zod for manifest and wire schemas, pinned `brickken-sdk@0.2.1` server-only behind an Edict-owned server adapter, injected EIP-1193 providers with pinned `viem@2.56.3` primitives for vendor-neutral browser authorization, Neon Postgres with exactly pinned Drizzle/Neon packages behind an application-owned repository interface, and Vitest for domain/contract tests.
 
 **DECISION** — The implemented manifest, canonicalization, hashing, immutability, and execution-plan contracts are owned by [`CORE_DOMAIN_SPEC.md`](CORE_DOMAIN_SPEC.md).
 
@@ -21,6 +21,8 @@
 **DECISION** — Plan approval requires an EIP-712 EOA signature over fixed fields binding the run, manifest hash, plan hash, sandbox chain and environment, approval revision, required signer, challenge nonce and bounded timestamps. The server recovers the signer with exactly pinned `viem@2.56.3`; EIP-1271 contract wallets, personal-sign fallback and RPC contract detection are not supported in Phase 6.
 
 **DECISION** — Phase 6 is complete. The public surface is limited to run creation/read, approval challenge/verification and pre-broadcast cancellation. It is deny-by-default and constructs no write-capable Brickken adapter. The injected internal orchestrator implements durable CAS intent ordering, gate rechecks, single adapter attempts and manual-reconciliation outcomes for later phases. [`RUN_API_SPEC.md`](RUN_API_SPEC.md) owns the detailed HTTP, capability, approval and orchestration contract.
+
+**DECISION** — Phase 7 is complete offline. Its vendor-neutral browser boundary performs passive EIP-6963 discovery, explicit EIP-1193 provider selection, server-issued EIP-712 approval, strict transaction projection, canonical wallet-intent verification, and prompt-before-send/hash-handoff ordering. It adds no UI or route, and production transaction authorization remains deny-all. [`WALLET_EXECUTION_SPEC.md`](WALLET_EXECUTION_SPEC.md) owns the detailed wallet contract.
 
 **VERIFIED** — On 2026-09-04, the Neon migration completed without error and the explicitly opted-in live database test passed create, read, atomic compare-and-swap update, stale-revision refusal, and cleanup of its uniquely created run. Durable persistence is verified. The test made no Brickken request or blockchain operation and emitted no credential.
 
@@ -45,7 +47,7 @@ Browser UI
   └─ run status / verification / receipt viewer
           │ public run commands and txHash only
           ▼
-Next.js route handlers (same origin; Phase 6 exposes create/read/approve/cancel only)
+Next.js route handlers (same origin; Phase 7 still exposes create/read/approve/cancel only)
   ├─ domain: validate, canonicalize, plan, hashes
   ├─ orchestrator: internal-only effect methods + approval/CAS/write gates
   ├─ brickken.server: Edict-owned server adapter wrapping pinned SDK + Zod wire validation
@@ -122,13 +124,13 @@ Brickken sandbox API ──► Ethereum Sepolia
 
 1. **DECISION** — Server checks the run version, phase, approval record, expected signer, selected Sepolia chain, and absence of an existing `preparedTxId` before prepare.
 2. **DECISION** — Server calls the SDK with `executionMode: "client-broadcast"`, `execute: false`, and the approved `signerAddress`, validates the response, persists `txId` and the exact unsigned transaction, then returns a sanitized transaction view.
-3. **DECISION** — Browser independently compares `from`, chain, `to`, value, and operation summary with the approved plan; mismatch blocks the wallet request.
-4. **DECISION** — The injected wallet confirms, signs, and broadcasts via its native EIP-1193/viem path. Edict never asks for key material or a raw private key.
+3. **DECISION** — Server projects the persisted transaction through the strict Edict-owned DTO and canonical wallet intent. Browser recomputes its integrity, verifies operation identity, signer, chain and prompt revision, and applies the injected semantic policy; production policy remains deny-all.
+4. **DECISION** — The selected injected wallet confirms, signs, and broadcasts the exact frozen DTO through `eth_sendTransaction`. Edict never asks for key material or a raw private key.
 5. **DECISION** — Browser posts `txHash` and operation ID to the server. Server verifies shape and expected phase and persists the hash atomically before external reconciliation.
 6. **VERIFIED** — Server sends the identical `{txId, txHash}` to Brickken; resubmission of that same pair is idempotent. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send)
 7. **DECISION** — Server polls by persisted identifiers. Refresh loads the run and resumes from `AWAITING_WALLET`, `BROADCAST_RECORDED`, `CONFIRMING`, or `TIMED_OUT` without repeating completed steps.
 
-**OPEN QUESTION** — Injected wallets may normalize or reject some prepared EIP-1559 fields. Contract-test the exact Brickken payload on the selected wallet before any live-write demo path is accepted.
+**OPEN QUESTION** — Injected wallets may normalize or reject some prepared EIP-1559 fields. Phase 7 retains nonce/type/fee fields and omits transaction-level chain ID in favor of a revalidated provider precondition, which is not universally atomic. Contract-test the exact Brickken payload and chain behavior on an explicit wallet/version before any live-write path is enabled.
 
 ## Verification strategy
 

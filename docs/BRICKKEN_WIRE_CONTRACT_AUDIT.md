@@ -328,6 +328,8 @@ Official normalisation:
 
 Omitting nonce/fees means the broadcast transaction may differ from the prepared nonce/gas. How Brickken reconciles `txHash` against the prepared record in that case is **UNKNOWN**.
 
+**DECISION — Phase 7** — Edict does not adopt the example's omission of nonce, type, or fee fields. Its strict projection preserves every supported prepared signing field and rejects conflicts or unknowns. Only transaction-level `chainId` is omitted: it remains validated and bound into the canonical wallet intent, while Sepolia is enforced as a provider precondition immediately before send. That precondition is not assumed atomic or equivalent across wallets. Production execution remains deny-all until a controlled wallet/version test validates either transaction-level chain acceptance or the active-chain constraint, and until Brickken accepts and reconciles the resulting hash.
+
 ### 5.4 Multi-transaction batches
 
 Order is semantically mandatory because transactions carry sequential nonces. Broadcasting only a later item leaves it stranded. **VERIFIED** mintToken warning; browser-wallets; troubleshooting.
