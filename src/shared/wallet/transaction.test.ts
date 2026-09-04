@@ -3,6 +3,7 @@ import encodingA from "@/server/brickken/test-vectors/prepare/newTokenization.re
 import encodingB from "@/server/brickken/test-vectors/prepare/unsigned-transaction.encoding-b.json";
 import whitelist from "@/server/brickken/test-vectors/prepare/whitelist.response.json";
 import mint from "@/server/brickken/test-vectors/prepare/mintToken.response.single.json";
+import { WALLET_BOUNDARY_LIMITS } from "./limits";
 import {
   projectPreparedTransactionV1,
   validateWalletTransactionRequestV1,
@@ -119,5 +120,29 @@ describe("strict prepared transaction projection", () => {
       // Frozen objects may throw in strict mode.
     }
     expect(normalized.walletRequest.from).toBe(encodingB.from);
+  });
+
+  it("rejects quantities above uint256 before conversion", () => {
+    expect(() => projectPreparedTransactionV1({
+      from: encodingA.transactions[0].from,
+      chainId: encodingA.transactions[0].chainId,
+      value: `0x1${"0".repeat(64)}`,
+    })).toThrowError(expect.objectContaining({ code: "MALFORMED_PREPARED_TRANSACTION" }));
+  });
+
+  it("rejects oversized calldata and access lists without truncation", () => {
+    expect(() => projectPreparedTransactionV1({
+      from: encodingA.transactions[0].from,
+      chainId: encodingA.transactions[0].chainId,
+      data: `0x${"00".repeat(WALLET_BOUNDARY_LIMITS.calldataBytes + 1)}`,
+    })).toThrowError(expect.objectContaining({ code: "MALFORMED_PREPARED_TRANSACTION" }));
+    expect(() => projectPreparedTransactionV1({
+      from: encodingA.transactions[0].from,
+      chainId: encodingA.transactions[0].chainId,
+      accessList: Array.from({ length: WALLET_BOUNDARY_LIMITS.accessListEntries + 1 }, () => ({
+        address: encodingA.transactions[0].to,
+        storageKeys: [],
+      })),
+    })).toThrowError(expect.objectContaining({ code: "MALFORMED_PREPARED_TRANSACTION" }));
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SelectedWalletSession } from "./session";
+import { isEdictProvider, SelectedWalletSession, type WalletProviderTimers } from "./session";
 import { WalletBoundaryError } from "./errors";
 
 const SIGNER = "0xb91155113039693456491ac398614bc81fef5ea7";
@@ -73,5 +73,103 @@ describe("selected wallet account and chain session", () => {
       code: "ACCOUNT_AUTHORIZATION_REJECTED",
       message: "Wallet account authorization was rejected.",
     });
+  });
+
+  it("refuses accessor-backed request methods without invoking them", () => {
+    let reads = 0;
+    const provider = {};
+    Object.defineProperty(provider, "request", {
+      get: () => {
+        reads += 1;
+        return vi.fn();
+      },
+    });
+    expect(isEdictProvider(provider)).toBe(false);
+    expect(() => new SelectedWalletSession("wallet-1", "EIP6963", provider as never)).toThrowError(
+      WalletBoundaryError,
+    );
+    expect(reads).toBe(0);
+  });
+
+  it("detects mutation of the captured provider request reference", async () => {
+    const provider = new Provider();
+    const session = new SelectedWalletSession("wallet-1", "EIP6963", provider);
+    (provider as { request: Provider["request"] }).request = vi.fn(async () => [SIGNER]);
+    await expect(session.inspect(SIGNER)).rejects.toMatchObject({
+      code: "SELECTED_PROVIDER_DISAPPEARED",
+    });
+  });
+
+  it("rolls back listeners when registration fails partway", () => {
+    const provider = new Provider();
+    const removed: string[] = [];
+    let calls = 0;
+    provider.on = ((event: string, listener: (...args: readonly unknown[]) => void) => {
+      calls += 1;
+      if (calls === 3) throw new Error("registration failed");
+      const handlers = provider.handlers.get(event) ?? new Set();
+      handlers.add(listener);
+      provider.handlers.set(event, handlers);
+    }) as typeof provider.on;
+    provider.removeListener = ((event: string, listener: (...args: readonly unknown[]) => void) => {
+      removed.push(event);
+      provider.handlers.get(event)?.delete(listener);
+    }) as typeof provider.removeListener;
+    expect(() => new SelectedWalletSession("wallet-1", "EIP6963", provider)).toThrowError(
+      WalletBoundaryError,
+    );
+    expect(removed).toEqual(["connect", "disconnect"]);
+    expect([...provider.handlers.values()].every((handlers) => handlers.size === 0)).toBe(true);
+  });
+
+  it("invalidates a multi-request snapshot when wallet state changes between reads", async () => {
+    const provider = new Provider();
+    provider.request.mockImplementation(async ({ method }: { method: string }) => {
+      if (method === "eth_accounts") {
+        provider.emit("accountsChanged");
+        return [SIGNER];
+      }
+      return "0xaa36a7";
+    });
+    const session = new SelectedWalletSession("wallet-1", "EIP6963", provider);
+    await expect(session.inspect(SIGNER)).rejects.toMatchObject({ code: "ATTEMPT_INVALIDATED" });
+    expect(provider.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds accounts and chain quantities", async () => {
+    const provider = new Provider();
+    const session = new SelectedWalletSession("wallet-1", "EIP6963", provider);
+    provider.accounts = Array.from({ length: 65 }, () => SIGNER);
+    await expect(session.inspect(SIGNER)).rejects.toMatchObject({ code: "PROVIDER_UNAVAILABLE" });
+    provider.accounts = [SIGNER];
+    provider.chain = `0x1${"0".repeat(64)}`;
+    await expect(session.inspect(SIGNER)).resolves.toMatchObject({ state: "WRONG_CHAIN", chainId: null });
+  });
+
+  it("uses an injected passive deadline and ignores late settlement", async () => {
+    let expire: (() => void) | null = null;
+    const timers: WalletProviderTimers = {
+      setTimeout(callback) {
+        expire = callback;
+        return 1;
+      },
+      clearTimeout: vi.fn(),
+    };
+    let resolveRead: ((value: unknown) => void) | null = null;
+    const request = vi.fn(() => new Promise<unknown>((resolve) => {
+      resolveRead = resolve;
+    }));
+    const session = new SelectedWalletSession("wallet-1", "EIP6963", { request }, {
+      timers,
+      deadlinesMs: { passiveRead: 1 },
+    });
+    const pending = session.inspect(SIGNER);
+    await Promise.resolve();
+    expect(expire).not.toBeNull();
+    expire!();
+    await expect(pending).rejects.toMatchObject({ code: "ATTEMPT_INVALIDATED" });
+    resolveRead!([SIGNER]);
+    await Promise.resolve();
+    expect(request).toHaveBeenCalledTimes(1);
   });
 });

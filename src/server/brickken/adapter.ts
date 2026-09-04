@@ -7,6 +7,7 @@ import {
   UnauthorizedTokenSymbolError,
   ValidationError,
 } from "brickken-sdk";
+import { assertBoundedWalletValue, WALLET_BOUNDARY_LIMITS } from "@/shared/wallet";
 import {
   isSandboxBaseUrl,
   readBrickkenRuntimeConfig,
@@ -75,6 +76,14 @@ function assertNoSecret(value: unknown, secret?: string): void {
   }
 }
 
+function assertBoundedBrickkenResponse(value: unknown): void {
+  assertBoundedWalletValue(value, {
+    maxCodeUnits: WALLET_BOUNDARY_LIMITS.brickkenResponseCodeUnits,
+    maxArrayLength: 256,
+    maxProperties: 128,
+  });
+}
+
 export function createBrickkenServerAdapter(
   deps: AdapterDependencies = {},
 ): BrickkenServerAdapter {
@@ -110,6 +119,7 @@ export function createBrickkenServerAdapter(
   };
 
   const parsePrepared = (raw: unknown, secret?: string): AdapterResult<PreparedOperation> => {
+    assertBoundedBrickkenResponse(raw);
     assertNoSecret(raw, secret);
     return parsePreparedOperation(raw, secret);
   };
@@ -190,6 +200,7 @@ export function createBrickkenServerAdapter(
       }
       return withClient(async (client, apiKey) => {
         const result = await client.tx.send({ txId: input.txId, txHash: input.txHash });
+        assertBoundedBrickkenResponse(result.raw);
         const parsed = sendResponseSchema.safeParse(result.raw);
         if (!parsed.success) return fail("INVALID_EXTERNAL_RESPONSE", apiKey);
         assertNoSecret(parsed.data, apiKey);
@@ -212,6 +223,7 @@ export function createBrickkenServerAdapter(
           ...(query.txId === undefined ? {} : { txId: query.txId }),
           ...(query.hash === undefined ? {} : { hash: query.hash }),
         });
+        assertBoundedBrickkenResponse(result.raw);
         const parsed = transactionStatusSchema.safeParse(result.raw);
         if (!parsed.success) return fail("INVALID_EXTERNAL_RESPONSE", apiKey);
         const hash = parsed.data.transactionHash ?? parsed.data.hash ?? null;
@@ -229,6 +241,7 @@ export function createBrickkenServerAdapter(
     async getTokenInfo(query) {
       return withClient(async (client, apiKey) => {
         const raw = await client.tokenization.info({ tokenSymbol: query.tokenSymbol });
+        assertBoundedBrickkenResponse(raw);
         const parsed = tokenInfoAssetSchema.safeParse(raw);
         if (!parsed.success) return fail("INVALID_EXTERNAL_RESPONSE", apiKey);
         return {
@@ -250,6 +263,7 @@ export function createBrickkenServerAdapter(
     async getTokenizerInfo(query) {
       return withClient(async (client, apiKey) => {
         const raw = await client.tokenization.tokenizer({ tokenSymbol: query.tokenSymbol });
+        assertBoundedBrickkenResponse(raw);
         const parsed = tokenizerInfoSchema.safeParse(raw);
         if (!parsed.success) return fail("INVALID_EXTERNAL_RESPONSE", apiKey);
         if (!/^0x[a-fA-F0-9]{40}$/.test(parsed.data.tokenAddress)) {
@@ -284,6 +298,7 @@ export function createBrickkenServerAdapter(
           },
         });
         const body: unknown = await response.json();
+        assertBoundedBrickkenResponse(body);
         if (!response.ok) {
           return fail(
             response.status === 401 || response.status === 403
@@ -312,6 +327,7 @@ export function createBrickkenServerAdapter(
           tokenSymbol: query.tokenSymbol,
           investorEmail: query.investorEmail,
         });
+        assertBoundedBrickkenResponse(raw);
         const parsed = balanceWhitelistSchema.safeParse(raw);
         if (!parsed.success) return fail("INVALID_EXTERNAL_RESPONSE", apiKey);
         return {
@@ -332,6 +348,7 @@ export function createBrickkenServerAdapter(
       if (query.chainId !== SEPOLIA_CHAIN_ID) return fail("UNSUPPORTED_CHAIN");
       return withClient(async (client, apiKey) => {
         const raw = await client.network.info({ chainId: SEPOLIA_CHAIN_ID });
+        assertBoundedBrickkenResponse(raw);
         const parsed = networkInfoSchema.safeParse(raw);
         if (!parsed.success) return fail("INVALID_EXTERNAL_RESPONSE", apiKey);
         let host: string | null = null;

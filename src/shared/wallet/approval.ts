@@ -1,6 +1,8 @@
 import { canonicalizeJson } from "@/core";
 import { getTypesForEIP712Domain, hashTypedData, serializeTypedData, type Hex } from "viem";
 import { z } from "zod";
+import { assertBoundedWalletValue } from "./bounds";
+import { WALLET_BOUNDARY_LIMITS } from "./limits";
 import type { AuthorizedRunProjection } from "./types";
 
 export const EDICT_APPROVAL_CHALLENGE_TTL_SECONDS = 5 * 60;
@@ -82,12 +84,15 @@ export const approvalTypedDataSchema = z.strictObject({
 export type EdictApprovalTypedDataV1 = z.infer<typeof approvalTypedDataSchema>;
 
 export const approvalChallengeEnvelopeSchema = z.strictObject({
-  challengeToken: z.string().min(1).max(4096),
+  challengeToken: z.string().min(1).max(WALLET_BOUNDARY_LIMITS.challengeTokenCodeUnits),
   typedData: approvalTypedDataSchema,
   typedDataDigest: hex32Schema,
   signingRequest: z.strictObject({
     method: z.literal("eth_signTypedData_v4"),
-    params: z.tuple([addressSchema, z.string().min(1).max(16 * 1024)]),
+    params: z.tuple([
+      addressSchema,
+      z.string().min(1).max(WALLET_BOUNDARY_LIMITS.typedDataSerializationCodeUnits),
+    ]),
   }),
 });
 
@@ -136,6 +141,16 @@ export function validateApprovalChallenge(
   run: AuthorizedRunProjection,
   nowEpochSeconds: bigint,
 ): ApprovalChallengeValidation {
+  try {
+    assertBoundedWalletValue(raw, {
+      maxCodeUnits: WALLET_BOUNDARY_LIMITS.compatibilityEvidenceCodeUnits,
+      maxArrayLength: 64,
+      maxProperties: 32,
+    });
+    canonicalizeJson(raw);
+  } catch {
+    return Object.freeze({ ok: false, code: "APPROVAL_CHALLENGE_MALFORMED" });
+  }
   const parsed = approvalChallengeEnvelopeSchema.safeParse(raw);
   if (!parsed.success) return Object.freeze({ ok: false, code: "APPROVAL_CHALLENGE_MALFORMED" });
   const value = parsed.data;

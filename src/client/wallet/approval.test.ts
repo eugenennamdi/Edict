@@ -132,4 +132,27 @@ describe("browser EIP-712 approval", () => {
     expect(request.mock.calls.filter(([value]) => value.method.startsWith("eth_sign"))).toHaveLength(1);
     expect(gateway.submitApproval).not.toHaveBeenCalled();
   });
+
+  it("rejects an accessor-backed challenge without invoking the getter", async () => {
+    const { request, wallet, gateway } = setup();
+    const hostile = challenge();
+    let reads = 0;
+    Object.defineProperty(hostile, "typedData", {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return challenge().typedData;
+      },
+    });
+    vi.mocked(gateway.issueChallenge).mockResolvedValue(hostile);
+    await expect(approveRunFromUserAction({
+      runId: run.id,
+      expectedRevision: 1,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    })).rejects.toMatchObject({ code: "APPROVAL_CHALLENGE_MALFORMED" });
+    expect(reads).toBe(0);
+    expect(request.mock.calls.some(([value]) => value.method === "eth_signTypedData_v4")).toBe(false);
+  });
 });

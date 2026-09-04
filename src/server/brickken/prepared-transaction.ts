@@ -1,4 +1,5 @@
 import { SEPOLIA_CHAIN_ID, SEPOLIA_CHAIN_ID_HEX } from "./config";
+import { assertBoundedWalletValue, WALLET_BOUNDARY_LIMITS } from "@/shared/wallet";
 import { BrickkenAdapterError, safeErrorMessage } from "./errors";
 import type { AdapterResult, EdictPreparedTransaction, PreparedOperation } from "./types";
 import { prepareResponseSchema, unsignedTransactionSchema } from "./wire-schemas";
@@ -47,6 +48,15 @@ export function parsePreparedOperation(
   raw: unknown,
   secret?: string,
 ): AdapterResult<PreparedOperation> {
+  try {
+    assertBoundedWalletValue(raw, {
+      maxCodeUnits: WALLET_BOUNDARY_LIMITS.brickkenResponseCodeUnits,
+      maxArrayLength: 64,
+      maxProperties: 64,
+    });
+  } catch {
+    return fail("INVALID_EXTERNAL_RESPONSE", secret);
+  }
   const parsed = prepareResponseSchema.safeParse(raw);
   if (!parsed.success) {
     return fail("INVALID_EXTERNAL_RESPONSE", secret);

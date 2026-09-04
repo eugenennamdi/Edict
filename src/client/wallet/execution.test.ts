@@ -235,12 +235,116 @@ describe("deterministic browser transaction boundary", () => {
     expect(setup.results.map((result) => result.result)).toEqual([{ outcome: "UNKNOWN" }]);
   });
 
-  it("records a definite 4001 rejection without calling the provider twice", async () => {
+  it("treats a post-invocation 4001 as potentially broadcast and blocks resend", async () => {
     const setup = await harness();
     setup.provider.sendError = Object.assign(new Error("provider detail"), { code: 4001 });
-    await expect(execute(setup)).resolves.toEqual({ outcome: "REJECTED" });
+    await expect(execute(setup)).rejects.toMatchObject({
+      code: "BROADCAST_OUTCOME_UNKNOWN",
+      reconciliationRequired: true,
+    });
     expect(sendCalls(setup.provider)).toHaveLength(1);
-    expect(setup.results.map((result) => result.result)).toEqual([{ outcome: "REJECTED" }]);
+    expect(setup.results.map((result) => result.result)).toEqual([{ outcome: "UNKNOWN" }]);
+    await expect(execute(setup)).rejects.toMatchObject({ code: "PRE_SEND_ABORTED" });
+    expect(sendCalls(setup.provider)).toHaveLength(1);
+  });
+
+  it("does not inspect accessor-backed provider errors and still blocks resend", async () => {
+    const setup = await harness();
+    let reads = 0;
+    const error = new Error("hidden detail");
+    Object.defineProperty(error, "code", {
+      get: () => {
+        reads += 1;
+        return 4001;
+      },
+    });
+    setup.provider.sendError = error;
+    await expect(execute(setup)).rejects.toMatchObject({ code: "BROADCAST_OUTCOME_UNKNOWN" });
+    expect(reads).toBe(0);
+    expect(sendCalls(setup.provider)).toHaveLength(1);
+  });
+
+  it("uses the durable prompt lock so two tabs and new coordinators create one send", async () => {
+    const provider = new Provider();
+    let durable = run(4, "PREPARED");
+    const envelope = await promptEnvelope();
+    const gateway: ExecutionGateway = {
+      readRun: vi.fn(async () => durable),
+      recordPrompt: vi.fn(async () => {
+        if (durable.revision !== 4 || durable.operations[0].stage !== "PREPARED") {
+          throw new Error("revision conflict");
+        }
+        durable = run(5, "WALLET_PROMPT_RECORDED");
+        return envelope;
+      }),
+      recordResult: vi.fn(async (result) => {
+        durable = run(
+          6,
+          result.result.outcome === "BROADCAST" ? "BROADCAST_HASH_PERSISTED" : "BROADCAST_UNKNOWN",
+          result.result.outcome === "BROADCAST" ? result.result.txHash : null,
+        );
+        return durable;
+      }),
+    };
+    const first = executePreparedTransactionFromUserAction({
+      runId: durable.id,
+      expectedRevision: 4,
+      operationKind: "TOKENIZE",
+      wallet: new SelectedWalletSession("wallet-a", "EIP6963", provider),
+      gateway,
+      semanticPolicy: allowFixturePolicy,
+    });
+    const second = executePreparedTransactionFromUserAction({
+      runId: durable.id,
+      expectedRevision: 4,
+      operationKind: "TOKENIZE",
+      wallet: new SelectedWalletSession("wallet-b", "EIP6963", provider),
+      gateway,
+      semanticPolicy: allowFixturePolicy,
+    });
+    const settled = await Promise.allSettled([first, second]);
+    expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(settled.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(sendCalls(provider)).toHaveLength(1);
+  });
+
+  it("treats a never-settling send deadline as potentially broadcast", async () => {
+    const setup = await harness();
+    let expire: (() => void) | null = null;
+    let markInvoked: (() => void) | null = null;
+    const invoked = new Promise<void>((resolve) => {
+      markInvoked = resolve;
+    });
+    setup.provider.request.mockImplementation(async (request) => {
+      setup.provider.calls.push(request);
+      if (request.method === "eth_accounts") return [SIGNER];
+      if (request.method === "eth_chainId") return "0xaa36a7";
+      markInvoked?.();
+      return new Promise<never>(() => undefined);
+    });
+    const wallet = new SelectedWalletSession("wallet-timeout", "EIP6963", setup.provider, {
+      timers: {
+        setTimeout(callback, delayMs) {
+          if (delayMs === 1) expire = callback;
+          return delayMs;
+        },
+        clearTimeout: vi.fn(),
+      },
+      deadlinesMs: { sendTransaction: 1 },
+    });
+    const pending = executePreparedTransactionFromUserAction({
+      runId: "11111111-1111-4111-8111-111111111111",
+      expectedRevision: 4,
+      operationKind: "TOKENIZE",
+      wallet,
+      gateway: setup.gateway,
+      semanticPolicy: allowFixturePolicy,
+    });
+    await invoked;
+    (expire as unknown as () => void)();
+    await expect(pending).rejects.toMatchObject({ code: "BROADCAST_OUTCOME_UNKNOWN" });
+    expect(sendCalls(setup.provider)).toHaveLength(1);
+    expect(setup.results.map((result) => result.result)).toEqual([{ outcome: "UNKNOWN" }]);
   });
 
   it("moves a chain event after invocation and a malformed returned hash to reconciliation", async () => {

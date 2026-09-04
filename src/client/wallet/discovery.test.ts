@@ -47,6 +47,8 @@ describe("EIP-6963 discovery", () => {
     const first = new FakeProvider();
     const second = new FakeProvider();
     const discovery = new InjectedWalletDiscovery({ events });
+    const notified = vi.fn();
+    discovery.subscribe(notified);
     discovery.start();
     const uuid = "11111111-1111-4111-8111-111111111111";
     announce(events, uuid, first);
@@ -56,6 +58,54 @@ describe("EIP-6963 discovery", () => {
     expect(discovery.list()).toHaveLength(2);
     announce(events, uuid, second);
     expect(discovery.list().map((wallet) => wallet.status)).toEqual(["COLLISION", "COLLISION"]);
+    expect(notified).toHaveBeenCalledTimes(3);
+  });
+
+  it("supports duplicate start and dispose cycles without duplicate listeners", () => {
+    const events = new EventTarget();
+    const provider = new FakeProvider();
+    const discovery = new InjectedWalletDiscovery({ events });
+    const notified = vi.fn();
+    discovery.subscribe(notified);
+    discovery.start();
+    discovery.start();
+    announce(events, "11111111-1111-4111-8111-111111111111", provider);
+    expect(notified).toHaveBeenCalledOnce();
+    discovery.dispose();
+    discovery.dispose();
+    announce(events, "22222222-2222-4222-8222-222222222222", new FakeProvider());
+    expect(discovery.list()).toHaveLength(1);
+    discovery.start();
+    discovery.start();
+    announce(events, "33333333-3333-4333-8333-333333333333", new FakeProvider());
+    expect(discovery.list()).toHaveLength(2);
+  });
+
+  it("refuses an accessor-backed provider request without invoking it", () => {
+    const events = new EventTarget();
+    const discovery = new InjectedWalletDiscovery({ events });
+    let reads = 0;
+    const provider = {};
+    Object.defineProperty(provider, "request", {
+      get: () => {
+        reads += 1;
+        return vi.fn();
+      },
+    });
+    discovery.start();
+    events.dispatchEvent(new CustomEvent("eip6963:announceProvider", {
+      detail: {
+        info: {
+          uuid: "11111111-1111-4111-8111-111111111111",
+          name: "Accessor Wallet",
+          icon: "data:image/png;base64,AA==",
+          rdns: "com.example.wallet",
+        },
+        provider,
+      },
+    }));
+    expect(reads).toBe(0);
+    expect(discovery.list()).toEqual([]);
   });
 
   it("does not execute accessor-backed metadata", () => {

@@ -151,20 +151,7 @@ export async function executePreparedTransactionFromUserAction(input: {
     providerResult = await pendingResult;
   } catch (error) {
     if (!providerInvoked) throw new WalletBoundaryError("PRE_SEND_ABORTED");
-    if (providerErrorCode(error) === 4001) {
-      try {
-        await input.gateway.recordResult({
-          runId: envelope.runId,
-          expectedRevision: envelope.promptRevision,
-          operationKind: envelope.operation.kind,
-          walletIntentHash: envelope.integrity.walletIntentHash,
-          result: Object.freeze({ outcome: "REJECTED" }),
-        });
-      } catch {
-        // The definite no-broadcast result remains blocked by the durable prompt.
-      }
-      return Object.freeze({ outcome: "REJECTED" });
-    }
+    void providerErrorCode(error);
     return recordUnknown(input.gateway, envelope);
   }
 

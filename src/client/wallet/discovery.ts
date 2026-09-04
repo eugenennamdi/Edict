@@ -2,7 +2,7 @@
 
 import "client-only";
 
-import type { DiscoveredWallet, EdictEip1193Provider } from "@/shared/wallet";
+import { WALLET_BOUNDARY_LIMITS, type DiscoveredWallet, type EdictEip1193Provider } from "@/shared/wallet";
 import { WalletBoundaryError } from "./errors";
 import { isEdictProvider, SelectedWalletSession } from "./session";
 
@@ -46,12 +46,12 @@ function metadata(raw: unknown) {
     !UUID_V4.test(uuid) ||
     typeof name !== "string" ||
     name.trim().length === 0 ||
-    name.length > 100 ||
+    name.length > WALLET_BOUNDARY_LIMITS.providerNameCodeUnits ||
     typeof rdns !== "string" ||
-    rdns.length > 255 ||
+    rdns.length > WALLET_BOUNDARY_LIMITS.providerRdnsCodeUnits ||
     !RDNS.test(rdns) ||
     typeof icon !== "string" ||
-    icon.length > 65_536 ||
+    icon.length > WALLET_BOUNDARY_LIMITS.providerIconCodeUnits ||
     !ICON.test(icon)
   ) {
     throw new WalletBoundaryError("PROVIDER_METADATA_MALFORMED");
@@ -129,6 +129,7 @@ export class InjectedWalletDiscovery {
           const existing = this.#entries.get(id);
           if (existing) existing.view = Object.freeze({ ...existing.view, status: "COLLISION" });
         }
+        for (const listener of this.#listeners) listener();
         return;
       }
       const selectionId = `eip6963-${this.#nextId++}`;

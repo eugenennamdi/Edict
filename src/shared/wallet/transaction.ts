@@ -1,6 +1,8 @@
 import { canonicalizeJson } from "@/core";
 import { getAddress, isAddress } from "viem";
 import { z } from "zod";
+import { assertBoundedWalletValue } from "./bounds";
+import { WALLET_BOUNDARY_LIMITS } from "./limits";
 
 export type WalletTransactionErrorCode =
   | "MALFORMED_PREPARED_TRANSACTION"
@@ -44,13 +46,23 @@ export interface NormalizedPreparedTransactionV1 {
   readonly walletRequest: WalletTransactionRequestV1;
 }
 
-const quantitySchema = z.string().regex(/^0x(?:0|[1-9a-f][0-9a-f]*)$/);
-const dataSchema = z.string().regex(/^0x(?:[0-9a-f]{2})*$/);
+const MAX_UINT256 = (1n << 256n) - 1n;
+const quantitySchema = z
+  .string()
+  .max(66)
+  .regex(/^0x(?:0|[1-9a-f][0-9a-f]*)$/)
+  .refine((value) => BigInt(value) <= MAX_UINT256);
+const dataSchema = z
+  .string()
+  .max(2 + WALLET_BOUNDARY_LIMITS.calldataBytes * 2)
+  .regex(/^0x(?:[0-9a-f]{2})*$/);
 const addressSchema = z.string().regex(/^0x[0-9a-f]{40}$/);
 
 const accessListEntrySchema = z.strictObject({
   address: addressSchema,
-  storageKeys: z.array(z.string().regex(/^0x[0-9a-f]{64}$/)),
+  storageKeys: z
+    .array(z.string().regex(/^0x[0-9a-f]{64}$/))
+    .max(WALLET_BOUNDARY_LIMITS.storageKeysPerEntry),
 });
 
 export const walletTransactionRequestV1Schema = z
@@ -65,7 +77,7 @@ export const walletTransactionRequestV1Schema = z
     data: dataSchema.optional(),
     nonce: quantitySchema.optional(),
     type: z.enum(["0x0", "0x1", "0x2"]).optional(),
-    accessList: z.array(accessListEntrySchema).optional(),
+    accessList: z.array(accessListEntrySchema).max(WALLET_BOUNDARY_LIMITS.accessListEntries).optional(),
   })
   .superRefine((value, context) => {
     const hasLegacy = value.gasPrice !== undefined;
@@ -113,6 +125,9 @@ function inspectPlainObject(raw: unknown, path: string): Record<string, unknown>
   if (prototype !== Object.prototype && prototype !== null) {
     throw new WalletTransactionError("MALFORMED_PREPARED_TRANSACTION", path);
   }
+  if (Reflect.ownKeys(raw).length > WALLET_BOUNDARY_LIMITS.transactionPropertyCount) {
+    throw new WalletTransactionError("MALFORMED_PREPARED_TRANSACTION", path);
+  }
   for (const key of Reflect.ownKeys(raw)) {
     if (typeof key === "symbol") {
       throw new WalletTransactionError("MALFORMED_PREPARED_TRANSACTION", path);
@@ -135,21 +150,28 @@ function quantity(raw: unknown, path: string): string {
     if (typeof raw === "number") {
       if (!Number.isSafeInteger(raw) || raw < 0) throw new Error();
       value = BigInt(raw);
-    } else if (typeof raw === "string" && /^(?:0|[1-9][0-9]*)$/.test(raw)) {
+    } else if (typeof raw === "string" && raw.length <= 78 && /^(?:0|[1-9][0-9]*)$/.test(raw)) {
       value = BigInt(raw);
-    } else if (typeof raw === "string" && /^0x[0-9a-fA-F]+$/.test(raw)) {
+    } else if (typeof raw === "string" && raw.length <= 66 && /^0x[0-9a-fA-F]+$/.test(raw)) {
       value = BigInt(raw);
     } else if (typeof raw === "object" && raw !== null) {
       const wrapper = inspectPlainObject(raw, path);
       if (Object.keys(wrapper).sort().join(",") !== "hex,type") throw new Error();
       if (read(wrapper, "type") !== "BigNumber") throw new Error();
       const hex = read(wrapper, "hex");
-      if (typeof hex !== "string" || !/^0x[0-9a-fA-F]+$/.test(hex)) throw new Error();
+      if (
+        typeof hex !== "string" ||
+        hex.length > 66 ||
+        !/^0x[0-9a-fA-F]+$/.test(hex)
+      ) throw new Error();
       value = BigInt(hex);
     } else {
       throw new Error();
     }
   } catch {
+    throw new WalletTransactionError("MALFORMED_PREPARED_TRANSACTION", path);
+  }
+  if (value > MAX_UINT256) {
     throw new WalletTransactionError("MALFORMED_PREPARED_TRANSACTION", path);
   }
   return `0x${value.toString(16)}`;
@@ -163,7 +185,11 @@ function address(raw: unknown, path: string): string {
 }
 
 function data(raw: unknown, path: string): string {
-  if (typeof raw !== "string" || !/^0x(?:[0-9a-fA-F]{2})*$/.test(raw)) {
+  if (
+    typeof raw !== "string" ||
+    raw.length > 2 + WALLET_BOUNDARY_LIMITS.calldataBytes * 2 ||
+    !/^0x(?:[0-9a-fA-F]{2})*$/.test(raw)
+  ) {
     throw new WalletTransactionError("MALFORMED_PREPARED_TRANSACTION", path);
   }
   return raw.toLowerCase();
@@ -191,16 +217,32 @@ function arrayDescriptors(raw: unknown, path: string): readonly unknown[] {
 }
 
 function accessList(raw: unknown): readonly WalletAccessListEntryV1[] {
-  return arrayDescriptors(raw, "$.accessList").map((entry, index) => {
+  const entries = arrayDescriptors(raw, "$.accessList");
+  if (entries.length > WALLET_BOUNDARY_LIMITS.accessListEntries) {
+    throw new WalletTransactionError("MALFORMED_PREPARED_TRANSACTION", "$.accessList");
+  }
+  let totalStorageKeys = 0;
+  return entries.map((entry, index) => {
     const object = inspectPlainObject(entry, `$.accessList[${index}]`);
     const keys = Object.keys(object).sort();
     if (keys.join(",") !== "address,storageKeys") {
       throw new WalletTransactionError("UNSUPPORTED_SIGNING_FIELD", `$.accessList[${index}]`);
     }
-    const storageKeys = arrayDescriptors(
+    const rawStorageKeys = arrayDescriptors(
       read(object, "storageKeys"),
       `$.accessList[${index}].storageKeys`,
-    ).map((key, keyIndex) => {
+    );
+    if (rawStorageKeys.length > WALLET_BOUNDARY_LIMITS.storageKeysPerEntry) {
+      throw new WalletTransactionError(
+        "MALFORMED_PREPARED_TRANSACTION",
+        `$.accessList[${index}].storageKeys`,
+      );
+    }
+    totalStorageKeys += rawStorageKeys.length;
+    if (totalStorageKeys > WALLET_BOUNDARY_LIMITS.storageKeysTotal) {
+      throw new WalletTransactionError("MALFORMED_PREPARED_TRANSACTION", "$.accessList");
+    }
+    const storageKeys = rawStorageKeys.map((key, keyIndex) => {
       if (typeof key !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(key)) {
         throw new WalletTransactionError(
           "MALFORMED_PREPARED_TRANSACTION",
@@ -304,6 +346,11 @@ export function projectPreparedTransactionV1(raw: unknown): NormalizedPreparedTr
 
 export function validateWalletTransactionRequestV1(raw: unknown): WalletTransactionRequestV1 {
   try {
+    assertBoundedWalletValue(raw, {
+      maxCodeUnits: WALLET_BOUNDARY_LIMITS.calldataBytes * 2 + 16_384,
+      maxArrayLength: WALLET_BOUNDARY_LIMITS.storageKeysTotal,
+      maxProperties: WALLET_BOUNDARY_LIMITS.transactionPropertyCount,
+    });
     canonicalizeJson(raw);
   } catch {
     throw new WalletTransactionError("MALFORMED_PREPARED_TRANSACTION", "$.walletRequest");

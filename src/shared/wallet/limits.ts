@@ -1,0 +1,31 @@
+export const WALLET_BOUNDARY_LIMITS = Object.freeze({
+  providerNameCodeUnits: 100,
+  providerRdnsCodeUnits: 255,
+  providerIconCodeUnits: 65_536,
+  accountCount: 64,
+  chainResponseCodeUnits: 66,
+  challengeTokenCodeUnits: 4_096,
+  typedDataSerializationCodeUnits: 16_384,
+  signatureCodeUnits: 132,
+  transactionHashCodeUnits: 66,
+  transactionPropertyCount: 16,
+  calldataBytes: 131_072,
+  accessListEntries: 256,
+  storageKeysPerEntry: 256,
+  storageKeysTotal: 4_096,
+  quantityBits: 256,
+  externalStructureDepth: 16,
+  externalStructureNodes: 10_000,
+  brickkenResponseCodeUnits: 1_048_576,
+  rpcResponseCodeUnits: 1_048_576,
+  compatibilityEvidenceCodeUnits: 262_144,
+  harnessBodyBytes: 65_536,
+});
+
+export const WALLET_PROVIDER_DEADLINES_MS = Object.freeze({
+  passiveRead: 10_000,
+  accountAccess: 120_000,
+  chainSwitch: 120_000,
+  typedDataSignature: 120_000,
+  sendTransaction: 180_000,
+});
