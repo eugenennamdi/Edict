@@ -13,6 +13,8 @@
     "test": "vitest run",
     "test:brickken-live-read": "BRICKKEN_LIVE_READS=1 node --env-file-if-exists=.env.local ./node_modules/vitest/vitest.mjs run --config vitest.live.config.mts",
     "test:database-live": "EDICT_DATABASE_LIVE=1 node --env-file-if-exists=.env.local ./node_modules/vitest/vitest.mjs run --config vitest.database-live.config.mts",
+    "test:phase8": "vitest run tools/phase8-harness",
+    "check:phase8-harness": "tsc --noEmit -p tools/phase8-harness/tsconfig.json",
     "db:generate": "drizzle-kit generate --config drizzle.config.ts",
     "db:migrate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs migrate --config drizzle.live.config.ts",
     "check": "npm run lint && npm run typecheck && npm run test && npm run build"
