@@ -3,7 +3,7 @@ import {
   hashAssetManifestV1,
   type NormalizedAssetManifestV1,
 } from "@/core";
-import { InvalidRunSnapshotError } from "./errors";
+import { InvalidRunSnapshotError, RepositoryRevisionConflictError } from "./errors";
 import type { Clock, IdGenerator } from "./infrastructure";
 import { jsonClone } from "./infrastructure";
 import type { ExecutionRunRepository } from "./repository";
@@ -145,9 +145,10 @@ export class ExecutionRunService {
 
   async approvePlan(
     runId: string,
+    expectedRevision: number,
     input: { planHash: string; approvedByWallet: string; proof: ApprovalProofV1 },
   ): Promise<ExecutionRun> {
-    return this.#apply(runId, (_at, id) => ({
+    return this.#apply(runId, expectedRevision, (_at, id) => ({
       type: "APPROVE_PLAN",
       id,
       at: input.proof.verifiedAt,
@@ -157,12 +158,12 @@ export class ExecutionRunService {
     }));
   }
 
-  async cancelRun(runId: string): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({ type: "CANCEL_RUN", id, at }));
+  async cancelRun(runId: string, expectedRevision: number): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (at, id) => ({ type: "CANCEL_RUN", id, at }));
   }
 
-  async beginPrepare(runId: string, operationKind: OperationKind): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+  async beginPrepare(runId: string, expectedRevision: number, operationKind: OperationKind): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "BEGIN_PREPARE",
       id,
       at,
@@ -172,10 +173,11 @@ export class ExecutionRunService {
 
   async recordPrepared(
     runId: string,
+    expectedRevision: number,
     operationKind: OperationKind,
     input: { txId: string; unsignedTransaction: Record<string, unknown> },
   ): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_PREPARED",
       id,
       at,
@@ -185,8 +187,8 @@ export class ExecutionRunService {
     }));
   }
 
-  async recordPrepareUnknown(runId: string, operationKind: OperationKind): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+  async recordPrepareUnknown(runId: string, expectedRevision: number, operationKind: OperationKind): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_PREPARE_UNKNOWN",
       id,
       at,
@@ -194,8 +196,8 @@ export class ExecutionRunService {
     }));
   }
 
-  async recordPrepareFailure(runId: string, operationKind: OperationKind): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+  async recordPrepareFailure(runId: string, expectedRevision: number, operationKind: OperationKind): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_PREPARE_FAILURE",
       id,
       at,
@@ -203,8 +205,8 @@ export class ExecutionRunService {
     }));
   }
 
-  async recordWalletPrompt(runId: string, operationKind: OperationKind): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+  async recordWalletPrompt(runId: string, expectedRevision: number, operationKind: OperationKind): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_WALLET_PROMPT",
       id,
       at,
@@ -214,9 +216,10 @@ export class ExecutionRunService {
 
   async recordWalletRejection(
     runId: string,
+    expectedRevision: number,
     operationKind: OperationKind,
   ): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_WALLET_REJECTION",
       id,
       at,
@@ -226,10 +229,11 @@ export class ExecutionRunService {
 
   async recordBroadcastHash(
     runId: string,
+    expectedRevision: number,
     operationKind: OperationKind,
     txHash: string,
   ): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_BROADCAST_HASH",
       id,
       at,
@@ -240,9 +244,10 @@ export class ExecutionRunService {
 
   async recordBroadcastUnknown(
     runId: string,
+    expectedRevision: number,
     operationKind: OperationKind,
   ): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_BROADCAST_UNKNOWN",
       id,
       at,
@@ -252,9 +257,10 @@ export class ExecutionRunService {
 
   async submitConfirmation(
     runId: string,
+    expectedRevision: number,
     operationKind: OperationKind,
   ): Promise<{ run: ExecutionRunV1; txId: string; txHash: string }> {
-    const run = await this.#apply(runId, (at, id) => ({
+    const run = await this.#apply(runId, expectedRevision, (at, id) => ({
       type: "SUBMIT_CONFIRMATION",
       id,
       at,
@@ -267,8 +273,8 @@ export class ExecutionRunService {
     return { run, ...pair };
   }
 
-  async recordPending(runId: string, operationKind: OperationKind): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+  async recordPending(runId: string, expectedRevision: number, operationKind: OperationKind): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_PENDING",
       id,
       at,
@@ -278,9 +284,10 @@ export class ExecutionRunService {
 
   async recordConfirmTransportFailure(
     runId: string,
+    expectedRevision: number,
     operationKind: OperationKind,
   ): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_CONFIRM_TRANSPORT_FAILURE",
       id,
       at,
@@ -288,8 +295,8 @@ export class ExecutionRunService {
     }));
   }
 
-  async recordConfirmed(runId: string, operationKind: OperationKind): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+  async recordConfirmed(runId: string, expectedRevision: number, operationKind: OperationKind): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_CONFIRMED",
       id,
       at,
@@ -299,10 +306,11 @@ export class ExecutionRunService {
 
   async recordRejected(
     runId: string,
+    expectedRevision: number,
     operationKind: OperationKind,
     error: string,
   ): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_REJECTED",
       id,
       at,
@@ -311,8 +319,8 @@ export class ExecutionRunService {
     }));
   }
 
-  async recordPollTimeout(runId: string, operationKind: OperationKind): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+  async recordPollTimeout(runId: string, expectedRevision: number, operationKind: OperationKind): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_POLL_TIMEOUT",
       id,
       at,
@@ -322,10 +330,11 @@ export class ExecutionRunService {
 
   async recordReadBackVerified(
     runId: string,
+    expectedRevision: number,
     operationKind: OperationKind,
     read: string,
   ): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_READ_BACK_VERIFIED",
       id,
       at,
@@ -336,9 +345,10 @@ export class ExecutionRunService {
 
   async recordReadBackMismatch(
     runId: string,
+    expectedRevision: number,
     operationKind: OperationKind,
   ): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_READ_BACK_MISMATCH",
       id,
       at,
@@ -346,8 +356,8 @@ export class ExecutionRunService {
     }));
   }
 
-  async recordFinalVerification(runId: string): Promise<ExecutionRunV1> {
-    return this.#apply(runId, (at, id) => ({
+  async recordFinalVerification(runId: string, expectedRevision: number): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_FINAL_VERIFICATION",
       id,
       at,
@@ -356,9 +366,13 @@ export class ExecutionRunService {
 
   async #apply(
     runId: string,
+    expectedRevision: number,
     event: (at: IsoUtcTimestamp, id: string) => ExecutionRunEvent,
   ): Promise<ExecutionRunV1> {
     const current = await this.#repository.getById(runId);
+    if (current.revision !== expectedRevision) {
+      throw new RepositoryRevisionConflictError();
+    }
     const next = applyRunEvent(current, event(this.#clock.nowIso(), this.#ids.eventId()));
     return this.#repository.update(runId, current.revision, next);
   }

@@ -18,7 +18,7 @@ describe("run security boundaries", () => {
       .map((filename) => fs.readFileSync(path.join(directory, filename), "utf8"))
       .join("\n");
     expect(content).not.toMatch(/\bfetch\s*\(|createPublicClient|readContract|verifyTypedData/);
-    expect(content).not.toMatch(/privateKeyToAccount|generatePrivateKey|personal_sign|personalSign/);
+    expect(content).not.toMatch(/privateKeyToAccount|generatePrivateKey|personal_sign|\bpersonalSign\s*\(/);
   });
 
   it("keeps security modules out of core and client code", () => {

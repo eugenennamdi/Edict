@@ -30,13 +30,17 @@ function createService() {
   return new ExecutionRunService({ repository, clock, ids: generator });
 }
 
+async function currentRevision(service: ExecutionRunService, runId: string): Promise<number> {
+  return (await service.getRun(runId)).revision;
+}
+
 async function createApproved() {
   const validation = validateAssetManifestV1(createValidRawManifest());
   if (!validation.ok) throw new Error("Golden manifest must validate.");
   const service = createService();
   const created = await service.createRun(validation.value);
   const proof = createApprovalProofFixture(created, "2026-09-03T12:00:01.000Z");
-  const run = await service.approvePlan(created.id, {
+  const run = await service.approvePlan(created.id, await currentRevision(service, created.id), {
     planHash: created.planHash,
     approvedByWallet: TOKENIZER_ADDRESS,
     proof,
@@ -47,10 +51,10 @@ async function createApproved() {
 describe("execution run service persistence order", () => {
   it("persists prepare intent before a prepared transaction can exist", async () => {
     const { service, run } = await createApproved();
-    const intent = await service.beginPrepare(run.id, "TOKENIZE");
+    const intent = await service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE");
     expect(intent.operations[0].stage).toBe("PREPARE_INTENT");
     expect(intent.operations[0].preparedTxId).toBeNull();
-    const prepared = await service.recordPrepared(run.id, "TOKENIZE", {
+    const prepared = await service.recordPrepared(run.id, await currentRevision(service, run.id), "TOKENIZE", {
       txId: "0xtxid",
       unsignedTransaction: UNSIGNED,
     });
@@ -61,15 +65,15 @@ describe("execution run service persistence order", () => {
 
   it("persists the broadcast hash before confirmation identifiers are returned", async () => {
     const { service, run } = await createApproved();
-    await service.beginPrepare(run.id, "TOKENIZE");
-    await service.recordPrepared(run.id, "TOKENIZE", {
+    await service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE");
+    await service.recordPrepared(run.id, await currentRevision(service, run.id), "TOKENIZE", {
       txId: "0xtxid",
       unsignedTransaction: UNSIGNED,
     });
-    await service.recordWalletPrompt(run.id, "TOKENIZE");
-    const hashed = await service.recordBroadcastHash(run.id, "TOKENIZE", TX_HASH);
+    await service.recordWalletPrompt(run.id, await currentRevision(service, run.id), "TOKENIZE");
+    const hashed = await service.recordBroadcastHash(run.id, await currentRevision(service, run.id), "TOKENIZE", TX_HASH);
     expect(hashed.operations[0].blockchainTxHash).toBe(TX_HASH);
-    const confirmation = await service.submitConfirmation(run.id, "TOKENIZE");
+    const confirmation = await service.submitConfirmation(run.id, await currentRevision(service, run.id), "TOKENIZE");
     expect(confirmation.txId).toBe("0xtxid");
     expect(confirmation.txHash).toBe(TX_HASH);
   });
@@ -82,9 +86,9 @@ describe("execution run service persistence order", () => {
 
   it("refuses to resubmit a blocked run", async () => {
     const { service, run } = await createApproved();
-    await service.beginPrepare(run.id, "TOKENIZE");
-    await service.recordPrepareUnknown(run.id, "TOKENIZE");
-    await expect(service.beginPrepare(run.id, "TOKENIZE")).rejects.toBeInstanceOf(
+    await service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE");
+    await service.recordPrepareUnknown(run.id, await currentRevision(service, run.id), "TOKENIZE");
+    await expect(service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE")).rejects.toBeInstanceOf(
       IllegalStateTransitionError,
     );
   });

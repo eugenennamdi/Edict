@@ -50,6 +50,10 @@ function createHarness() {
   return { service, repository };
 }
 
+async function currentRevision(service: ExecutionRunService, runId: string): Promise<number> {
+  return (await service.getRun(runId)).revision;
+}
+
 async function newRun() {
   const validation = validateAssetManifestV1(createValidRawManifest());
   if (!validation.ok) throw new Error("Golden manifest must validate.");
@@ -60,7 +64,7 @@ async function newRun() {
 async function approvedRun() {
   const { service, run } = await newRun();
   const proof = createApprovalProofFixture(run, "2026-01-01T00:00:01.000Z");
-  const approved = await service.approvePlan(run.id, {
+  const approved = await service.approvePlan(run.id, await currentRevision(service, run.id), {
     planHash: run.planHash,
     approvedByWallet: TOKENIZER_ADDRESS,
     proof,
@@ -70,8 +74,8 @@ async function approvedRun() {
 
 async function preparedRun(kind: OperationKind = "TOKENIZE") {
   const { service, run } = await approvedRun();
-  await service.beginPrepare(run.id, kind);
-  const prepared = await service.recordPrepared(run.id, kind, {
+  await service.beginPrepare(run.id, await currentRevision(service, run.id), kind);
+  const prepared = await service.recordPrepared(run.id, await currentRevision(service, run.id), kind, {
     txId: "0xprepared",
     unsignedTransaction: UNSIGNED,
   });
@@ -80,30 +84,30 @@ async function preparedRun(kind: OperationKind = "TOKENIZE") {
 
 async function promptedRun(kind: OperationKind = "TOKENIZE") {
   const { service, run } = await preparedRun(kind);
-  return { service, run: await service.recordWalletPrompt(run.id, kind) };
+  return { service, run: await service.recordWalletPrompt(run.id, await currentRevision(service, run.id), kind) };
 }
 
 async function hashedRun(kind: OperationKind = "TOKENIZE") {
   const { service, run } = await promptedRun(kind);
-  return { service, run: await service.recordBroadcastHash(run.id, kind, TX_HASH) };
+  return { service, run: await service.recordBroadcastHash(run.id, await currentRevision(service, run.id), kind, TX_HASH) };
 }
 
 async function pendingRun(kind: OperationKind = "TOKENIZE") {
   const { service, run } = await hashedRun(kind);
-  await service.submitConfirmation(run.id, kind);
-  return { service, run: await service.recordPending(run.id, kind) };
+  await service.submitConfirmation(run.id, await currentRevision(service, run.id), kind);
+  return { service, run: await service.recordPending(run.id, await currentRevision(service, run.id), kind) };
 }
 
 async function confirmedRun(kind: OperationKind = "TOKENIZE") {
   const { service, run } = await pendingRun(kind);
-  return { service, run: await service.recordConfirmed(run.id, kind) };
+  return { service, run: await service.recordConfirmed(run.id, await currentRevision(service, run.id), kind) };
 }
 
 async function verifiedWrite(kind: OperationKind) {
   const { service, run } = await confirmedRun(kind);
   return {
     service,
-    run: await service.recordReadBackVerified(run.id, kind, `${kind}-read`),
+    run: await service.recordReadBackVerified(run.id, await currentRevision(service, run.id), kind, `${kind}-read`),
   };
 }
 
@@ -137,7 +141,7 @@ describe("approval binding", () => {
   it("rejects a mismatched plan hash", async () => {
     const { service, run } = await newRun();
     await expect(
-      service.approvePlan(run.id, {
+      service.approvePlan(run.id, await currentRevision(service, run.id), {
         planHash: GOLDEN_MANIFEST_HASH,
         approvedByWallet: TOKENIZER_ADDRESS,
         proof: createApprovalProofFixture(run, "2026-01-01T00:00:01.000Z"),
@@ -148,7 +152,7 @@ describe("approval binding", () => {
   it("rejects a non-tokenizer wallet", async () => {
     const { service, run } = await newRun();
     await expect(
-      service.approvePlan(run.id, {
+      service.approvePlan(run.id, await currentRevision(service, run.id), {
         planHash: run.planHash,
         approvedByWallet: "0x2222222222222222222222222222222222222222",
         proof: createApprovalProofFixture(
@@ -163,7 +167,7 @@ describe("approval binding", () => {
   it("rejects approval when the run is not awaiting approval", async () => {
     const { service, run } = await approvedRun();
     await expect(
-      service.approvePlan(run.id, {
+      service.approvePlan(run.id, await currentRevision(service, run.id), {
         planHash: run.planHash,
         approvedByWallet: TOKENIZER_ADDRESS,
         proof: createApprovalProofFixture(run, "2026-01-01T00:00:02.000Z"),
@@ -175,19 +179,19 @@ describe("approval binding", () => {
 describe("permitted transitions", () => {
   it("walks tokenize through verification eligibility", async () => {
     const { service, run } = await approvedRun();
-    await service.beginPrepare(run.id, "TOKENIZE");
-    await service.recordPrepared(run.id, "TOKENIZE", {
+    await service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE");
+    await service.recordPrepared(run.id, await currentRevision(service, run.id), "TOKENIZE", {
       txId: "0xprepared",
       unsignedTransaction: UNSIGNED,
     });
-    await service.recordWalletPrompt(run.id, "TOKENIZE");
-    await service.recordBroadcastHash(run.id, "TOKENIZE", TX_HASH);
-    const submitted = await service.submitConfirmation(run.id, "TOKENIZE");
+    await service.recordWalletPrompt(run.id, await currentRevision(service, run.id), "TOKENIZE");
+    await service.recordBroadcastHash(run.id, await currentRevision(service, run.id), "TOKENIZE", TX_HASH);
+    const submitted = await service.submitConfirmation(run.id, await currentRevision(service, run.id), "TOKENIZE");
     expect(submitted.txId).toBe("0xprepared");
     expect(submitted.txHash).toBe(TX_HASH);
-    await service.recordPending(run.id, "TOKENIZE");
-    await service.recordConfirmed(run.id, "TOKENIZE");
-    const verified = await service.recordReadBackVerified(run.id, "TOKENIZE", "TOKEN_INFO");
+    await service.recordPending(run.id, await currentRevision(service, run.id), "TOKENIZE");
+    await service.recordConfirmed(run.id, await currentRevision(service, run.id), "TOKENIZE");
+    const verified = await service.recordReadBackVerified(run.id, await currentRevision(service, run.id), "TOKENIZE", "TOKEN_INFO");
     expect(verified.phase).toBe("WHITELIST");
     expect(verified.operations[0].stage).toBe("READ_BACK_VERIFIED");
     expect(verified.receiptEligible).toBe(false);
@@ -195,63 +199,64 @@ describe("permitted transitions", () => {
 
   it("allows explicit wallet rejection then the same prepared prompt", async () => {
     const { service, run } = await promptedRun();
-    const rejected = await service.recordWalletRejection(run.id, "TOKENIZE");
+    const rejected = await service.recordWalletRejection(run.id, await currentRevision(service, run.id), "TOKENIZE");
     expect(rejected.operations[0].stage).toBe("WALLET_REJECTED");
     expect(rejected.operations[0].preparedTxId).toBe("0xprepared");
-    const retried = await service.recordWalletPrompt(run.id, "TOKENIZE");
+    const retried = await service.recordWalletPrompt(run.id, await currentRevision(service, run.id), "TOKENIZE");
     expect(retried.operations[0].stage).toBe("WALLET_PROMPT_RECORDED");
     expect(retried.status).toBe("AWAITING_WALLET");
   });
 
   it("retries identical confirmation after transport failure", async () => {
     const { service, run } = await hashedRun();
-    await service.submitConfirmation(run.id, "TOKENIZE");
-    const failed = await service.recordConfirmTransportFailure(run.id, "TOKENIZE");
+    await service.submitConfirmation(run.id, await currentRevision(service, run.id), "TOKENIZE");
+    const failed = await service.recordConfirmTransportFailure(run.id, await currentRevision(service, run.id), "TOKENIZE");
     expect(failed.operations[0].stage).toBe("BROADCAST_HASH_PERSISTED");
-    const retry = await service.submitConfirmation(run.id, "TOKENIZE");
+    const retry = await service.submitConfirmation(run.id, await currentRevision(service, run.id), "TOKENIZE");
     expect(retry.txId).toBe("0xprepared");
     expect(retry.txHash).toBe(TX_HASH);
   });
 
   it("resumes polling after a timeout", async () => {
     const { service, run } = await pendingRun();
-    const timedOut = await service.recordPollTimeout(run.id, "TOKENIZE");
+    const timedOut = await service.recordPollTimeout(run.id, await currentRevision(service, run.id), "TOKENIZE");
     expect(timedOut.status).toBe("TIMED_OUT");
-    const pending = await service.recordPending(run.id, "TOKENIZE");
+    const pending = await service.recordPending(run.id, await currentRevision(service, run.id), "TOKENIZE");
     expect(pending.status).toBe("CONFIRMING");
     expect(pending.operations[0].timeout).toBe(false);
   });
 
   it("requires linear tokenize then whitelist then mint before receipt eligibility", async () => {
     const { service, run } = await verifiedWrite("TOKENIZE");
-    await service.beginPrepare(run.id, "WHITELIST");
-    await service.recordPrepared(run.id, "WHITELIST", {
+    await service.beginPrepare(run.id, await currentRevision(service, run.id), "WHITELIST");
+    await service.recordPrepared(run.id, await currentRevision(service, run.id), "WHITELIST", {
       txId: "0xwl",
       unsignedTransaction: UNSIGNED,
     });
-    await service.recordWalletPrompt(run.id, "WHITELIST");
-    await service.recordBroadcastHash(run.id, "WHITELIST", OTHER_HASH);
-    await service.submitConfirmation(run.id, "WHITELIST");
-    await service.recordConfirmed(run.id, "WHITELIST");
+    await service.recordWalletPrompt(run.id, await currentRevision(service, run.id), "WHITELIST");
+    await service.recordBroadcastHash(run.id, await currentRevision(service, run.id), "WHITELIST", OTHER_HASH);
+    await service.submitConfirmation(run.id, await currentRevision(service, run.id), "WHITELIST");
+    await service.recordConfirmed(run.id, await currentRevision(service, run.id), "WHITELIST");
     const whitelistVerified = await service.recordReadBackVerified(
       run.id,
+      await currentRevision(service, run.id),
       "WHITELIST",
       "WHITELIST_STATUS",
     );
     expect(whitelistVerified.phase).toBe("MINT");
-    await service.beginPrepare(run.id, "MINT");
-    await service.recordPrepared(run.id, "MINT", {
+    await service.beginPrepare(run.id, await currentRevision(service, run.id), "MINT");
+    await service.recordPrepared(run.id, await currentRevision(service, run.id), "MINT", {
       txId: "0xmint",
       unsignedTransaction: UNSIGNED,
     });
-    await service.recordWalletPrompt(run.id, "MINT");
-    await service.recordBroadcastHash(run.id, "MINT", `0x${"ef".repeat(32)}`);
-    await service.submitConfirmation(run.id, "MINT");
-    await service.recordConfirmed(run.id, "MINT");
-    const minted = await service.recordReadBackVerified(run.id, "MINT", "BALANCE");
+    await service.recordWalletPrompt(run.id, await currentRevision(service, run.id), "MINT");
+    await service.recordBroadcastHash(run.id, await currentRevision(service, run.id), "MINT", `0x${"ef".repeat(32)}`);
+    await service.submitConfirmation(run.id, await currentRevision(service, run.id), "MINT");
+    await service.recordConfirmed(run.id, await currentRevision(service, run.id), "MINT");
+    const minted = await service.recordReadBackVerified(run.id, await currentRevision(service, run.id), "MINT", "BALANCE");
     expect(minted.phase).toBe("VERIFICATION");
     expect(minted.receiptEligible).toBe(false);
-    const final = await service.recordFinalVerification(run.id);
+    const final = await service.recordFinalVerification(run.id, await currentRevision(service, run.id));
     expect(final.receiptEligible).toBe(true);
   });
 });
@@ -265,60 +270,60 @@ describe("forbidden transitions", () => {
     {
       name: "prepare before approval",
       setup: newRun,
-      act: (service, run) => service.beginPrepare(run.id, "TOKENIZE"),
+      act: async (service, run) => service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE"),
     },
     {
       name: "wallet prompt before prepared tx",
       setup: approvedRun,
       act: async (service, run) => {
-        await service.beginPrepare(run.id, "TOKENIZE");
-        return service.recordWalletPrompt(run.id, "TOKENIZE");
+        await service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE");
+        return service.recordWalletPrompt(run.id, await currentRevision(service, run.id), "TOKENIZE");
       },
     },
     {
       name: "confirm before both identifiers",
       setup: preparedRun,
-      act: (service, run) => service.submitConfirmation(run.id, "TOKENIZE"),
+      act: async (service, run) => service.submitConfirmation(run.id, await currentRevision(service, run.id), "TOKENIZE"),
     },
     {
       name: "whitelist before tokenize verification",
       setup: approvedRun,
-      act: (service, run) => service.beginPrepare(run.id, "WHITELIST"),
+      act: async (service, run) => service.beginPrepare(run.id, await currentRevision(service, run.id), "WHITELIST"),
     },
     {
       name: "mint before whitelist verification",
       setup: async () => verifiedWrite("TOKENIZE"),
-      act: (service, run) => service.beginPrepare(run.id, "MINT"),
+      act: async (service, run) => service.beginPrepare(run.id, await currentRevision(service, run.id), "MINT"),
     },
     {
       name: "second prepare after txId exists",
       setup: preparedRun,
-      act: (service, run) => service.beginPrepare(run.id, "TOKENIZE"),
+      act: async (service, run) => service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE"),
     },
     {
       name: "second hash after broadcast",
       setup: hashedRun,
-      act: (service, run) => service.recordBroadcastHash(run.id, "TOKENIZE", OTHER_HASH),
+      act: async (service, run) => service.recordBroadcastHash(run.id, await currentRevision(service, run.id), "TOKENIZE", OTHER_HASH),
     },
     {
       name: "wallet prompt after hash",
       setup: hashedRun,
-      act: (service, run) => service.recordWalletPrompt(run.id, "TOKENIZE"),
+      act: async (service, run) => service.recordWalletPrompt(run.id, await currentRevision(service, run.id), "TOKENIZE"),
     },
     {
       name: "prepare after hash",
       setup: hashedRun,
-      act: (service, run) => service.beginPrepare(run.id, "TOKENIZE"),
+      act: async (service, run) => service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE"),
     },
     {
       name: "cancel after hash",
       setup: hashedRun,
-      act: (service, run) => service.cancelRun(run.id),
+      act: async (service, run) => service.cancelRun(run.id, await currentRevision(service, run.id)),
     },
     {
       name: "final verification before all reads",
       setup: async () => verifiedWrite("TOKENIZE"),
-      act: (service, run) => service.recordFinalVerification(run.id),
+      act: async (service, run) => service.recordFinalVerification(run.id, await currentRevision(service, run.id)),
     },
   ];
 
@@ -333,34 +338,34 @@ describe("forbidden transitions", () => {
 describe("reconciliation blocking", () => {
   it("blocks the run after an ambiguous prepare", async () => {
     const { service, run } = await approvedRun();
-    await service.beginPrepare(run.id, "TOKENIZE");
-    const blocked = await service.recordPrepareUnknown(run.id, "TOKENIZE");
+    await service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE");
+    const blocked = await service.recordPrepareUnknown(run.id, await currentRevision(service, run.id), "TOKENIZE");
     expect(blocked.status).toBe("RECONCILIATION_REQUIRED");
     expect(blocked.operations[0].stage).toBe("PREPARE_UNKNOWN");
-    await expect(service.beginPrepare(run.id, "TOKENIZE")).rejects.toBeInstanceOf(
+    await expect(service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE")).rejects.toBeInstanceOf(
       IllegalStateTransitionError,
     );
-    await expect(service.recordWalletPrompt(run.id, "TOKENIZE")).rejects.toBeInstanceOf(
+    await expect(service.recordWalletPrompt(run.id, await currentRevision(service, run.id), "TOKENIZE")).rejects.toBeInstanceOf(
       IllegalStateTransitionError,
     );
-    await expect(service.recordBroadcastHash(run.id, "TOKENIZE", TX_HASH)).rejects.toBeInstanceOf(
+    await expect(service.recordBroadcastHash(run.id, await currentRevision(service, run.id), "TOKENIZE", TX_HASH)).rejects.toBeInstanceOf(
       IllegalStateTransitionError,
     );
   });
 
   it("blocks the run after an ambiguous broadcast and does not stay awaiting wallet", async () => {
     const { service, run } = await promptedRun();
-    const blocked = await service.recordBroadcastUnknown(run.id, "TOKENIZE");
+    const blocked = await service.recordBroadcastUnknown(run.id, await currentRevision(service, run.id), "TOKENIZE");
     expect(blocked.status).toBe("RECONCILIATION_REQUIRED");
     expect(blocked.status).not.toBe("AWAITING_WALLET");
     expect(blocked.operations[0].stage).toBe("BROADCAST_UNKNOWN");
-    await expect(service.recordWalletPrompt(run.id, "TOKENIZE")).rejects.toBeInstanceOf(
+    await expect(service.recordWalletPrompt(run.id, await currentRevision(service, run.id), "TOKENIZE")).rejects.toBeInstanceOf(
       IllegalStateTransitionError,
     );
-    await expect(service.beginPrepare(run.id, "TOKENIZE")).rejects.toBeInstanceOf(
+    await expect(service.beginPrepare(run.id, await currentRevision(service, run.id), "TOKENIZE")).rejects.toBeInstanceOf(
       IllegalStateTransitionError,
     );
-    await expect(service.submitConfirmation(run.id, "TOKENIZE")).rejects.toBeInstanceOf(
+    await expect(service.submitConfirmation(run.id, await currentRevision(service, run.id), "TOKENIZE")).rejects.toBeInstanceOf(
       IllegalStateTransitionError,
     );
   });

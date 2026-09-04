@@ -20,6 +20,8 @@
 
 **DECISION** — Plan approval requires an EIP-712 EOA signature over fixed fields binding the run, manifest hash, plan hash, sandbox chain and environment, approval revision, required signer, challenge nonce and bounded timestamps. The server recovers the signer with exactly pinned `viem@2.56.3`; EIP-1271 contract wallets, personal-sign fallback and RPC contract detection are not supported in Phase 6.
 
+**DECISION** — Phase 6 is complete. The public surface is limited to run creation/read, approval challenge/verification and pre-broadcast cancellation. It is deny-by-default and constructs no write-capable Brickken adapter. The injected internal orchestrator implements durable CAS intent ordering, gate rechecks, single adapter attempts and manual-reconciliation outcomes for later phases. [`RUN_API_SPEC.md`](RUN_API_SPEC.md) owns the detailed HTTP, capability, approval and orchestration contract.
+
 **VERIFIED** — On 2026-09-04, the Neon migration completed without error and the explicitly opted-in live database test passed create, read, atomic compare-and-swap update, stale-revision refusal, and cleanup of its uniquely created run. Durable persistence is verified. The test made no Brickken request or blockchain operation and emitted no credential.
 
 **VERIFIED** — On 2026-09-04, the opt-in adapter smoke test completed one authenticated `get-network-info` read and identified `Sepolia ETH`; the earlier anonymous request still returned `401`. No authenticated write has occurred. Signer approval, tokenizer licensing, credits, prepared write payloads, browser-wallet compatibility, finality, and write behavior remain unverified.
@@ -43,9 +45,9 @@ Browser UI
   └─ run status / verification / receipt viewer
           │ public run commands and txHash only
           ▼
-Next.js route handlers (same origin)
+Next.js route handlers (same origin; Phase 6 exposes create/read/approve/cancel only)
   ├─ domain: validate, canonicalize, plan, hashes
-  ├─ orchestrator: approval guards + state transitions
+  ├─ orchestrator: internal-only effect methods + approval/CAS/write gates
   ├─ brickken.server: Edict-owned server adapter wrapping pinned SDK + Zod wire validation
   ├─ verifier: requested state vs observed state
   └─ repository: application-owned interface
@@ -66,7 +68,7 @@ Brickken sandbox API ──► Ethereum Sepolia
 
 ### `execution_runs`
 
-- **DECISION** — Store one complete, versioned `ExecutionRunV1` snapshot in JSONB with duplicated indexed metadata: `run_id` primary key, `schema_version`, non-negative `revision`, `manifest_hash`, `plan_hash`, `status`, `created_at`, and `updated_at`.
+- **DECISION** — Store one complete, explicitly versioned execution-run snapshot in JSONB with duplicated indexed metadata: `run_id` primary key, `schema_version`, non-negative `revision`, `manifest_hash`, `plan_hash`, `status`, `created_at`, and `updated_at`. V1 and V2 decoding are supported; only V2 is created now.
 - **DECISION** — The primary key is the only current access index. No speculative relational tables or analytics indexes are introduced.
 - **DECISION** — Every persisted value crosses an explicit runtime codec. The codec rejects unsupported properties, unsafe JSON values, accessors, sparse arrays, cycles, class instances, secret-bearing fields, invalid timestamps, unknown versions, and inconsistent duplicated values. Decoded values are newly allocated and deeply frozen.
 - **DECISION** — `create` is insert-only. `update` is a single compare-and-swap statement constrained by `run_id` and expected `revision`; it increments the row revision exactly once and atomically replaces the snapshot and duplicated metadata. A zero-row update is classified as not found or stale revision without performing a read-modify-write overwrite.

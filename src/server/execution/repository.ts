@@ -47,7 +47,9 @@ export class InMemoryExecutionRunRepository implements ExecutionRunRepository {
     expectedRevision: number,
     next: ExecutionRun,
   ): Promise<ExecutionRun> {
-    const current = await this.getById(id);
+    const raw = this.#runs.get(id);
+    if (raw === undefined) throw new RepositoryNotFoundError();
+    const current = decodeExecutionRunV1(JSON.parse(raw));
     if (current.revision !== expectedRevision || next.revision !== expectedRevision) {
       throw new RepositoryRevisionConflictError();
     }
