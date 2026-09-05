@@ -9,6 +9,7 @@ import {
 } from "./brickken-read-executor";
 import { readPhase8HarnessConfig } from "./config";
 import { Phase8HarnessRuntime } from "./runtime";
+import { validatePhase8ActionEvidenceV1 } from "./evidence";
 import type { BrickkenServerAdapter } from "../../src/server/brickken/types";
 import type { AdapterDependencies } from "../../src/server/brickken/adapter";
 import type { Phase8ActionContext } from "./types";
@@ -29,6 +30,12 @@ function environment(extra: Record<string, string | undefined> = {}) {
     BRICKKEN_API_KEY: API_KEY,
     ...extra,
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
 function request(pathname: string, value: unknown, headers: Record<string, string> = {}) {
@@ -169,7 +176,23 @@ describe("BRICKKEN_READ lifecycle and wire contract", () => {
     }
   });
 
-  it("makes exactly one authenticated GET only after session, Arm, and valid Execute", async () => {
+  it("accepts the bounded normalized projection through the real adapter and fake transport", async () => {
+    const config = readPhase8HarnessConfig(environment());
+    const executor = createBrickkenReadExecutor({
+      fetch: vi.fn(async () => successResponse()),
+      now: () => NOW,
+    });
+    await expect(executor.execute({
+      target: config.target,
+      allowedEnvironment: config.allowedEnvironment,
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({
+      evidenceStatus: "PASSED",
+      details: { credentialBearingRequestSucceeded: true },
+    });
+  });
+
+  it("makes exactly one credential-bearing GET only after session, Arm, and valid Execute", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     let factories = 0;
     const state = runtime({
@@ -244,9 +267,20 @@ describe("BRICKKEN_READ lifecycle and wire contract", () => {
       UNRELATED_SECRET: "must-not-pass",
     }));
 
-    await executor.execute({ target: config.target, allowedEnvironment: config.allowedEnvironment });
+    const evidence = await executor.execute({
+      target: config.target,
+      allowedEnvironment: config.allowedEnvironment,
+    });
 
     expect(Object.keys(config.allowedEnvironment)).toEqual(["BRICKKEN_API_KEY"]);
+    expect(evidence.resultFingerprint).toBe(
+      "sha256:d54f68d3d3415f1b1ef4b923d428ed5be03bdf2f669eac7375cfcb0867ddb78a",
+    );
+    await expect(validatePhase8ActionEvidenceV1(
+      evidence,
+      config.target,
+      Object.values(config.allowedEnvironment),
+    )).resolves.toEqual(evidence);
     expect(factory).toHaveBeenCalledTimes(1);
     expect(factory.mock.calls[0]?.[0]).toMatchObject({
       runtimeConfig: {
@@ -359,6 +393,41 @@ describe("BRICKKEN_READ lifecycle and wire contract", () => {
     expect(stopped.status).toBe(200);
     expect(factories).toBe(0);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("aborts bounded response parsing when Stop races with the transport", async () => {
+    const reading = deferred<void>();
+    const cancelled = vi.fn();
+    let observedSignal: AbortSignal | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        reading.resolve();
+      },
+      cancel: cancelled,
+    }, { highWaterMark: 0 });
+    const state = runtime({
+      fetch: vi.fn(async (_input, init) => {
+        observedSignal = init?.signal ?? undefined;
+        return new Response(body, { headers: { "content-type": "application/json" } });
+      }),
+    });
+    const auth = await establish(state.runtime);
+    const grantId = await arm(state.runtime, auth);
+    const pending = state.runtime.handle(request("/execute", {
+      csrfToken: auth.csrfToken,
+      grantId,
+      confirmation: "EXECUTE",
+    }, { cookie: auth.cookie }));
+    await reading.promise;
+
+    const stopped = await state.runtime.handle(request("/stop", {
+      csrfToken: auth.csrfToken,
+    }, { cookie: auth.cookie }));
+
+    expect(stopped.status).toBe(200);
+    expect((await pending).status).toBe(410);
+    expect(observedSignal?.aborted).toBe(true);
+    await vi.waitFor(() => expect(cancelled).toHaveBeenCalled());
   });
 });
 

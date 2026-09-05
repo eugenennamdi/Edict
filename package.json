@@ -15,7 +15,8 @@
     "test:database-live": "EDICT_DATABASE_LIVE=1 node --env-file-if-exists=.env.local ./node_modules/vitest/vitest.mjs run --config vitest.database-live.config.mts",
     "test:phase8": "vitest run tools/phase8-harness",
     "check:phase8-harness": "tsc --noEmit -p tools/phase8-harness/tsconfig.json",
-    "phase8:brickken-read": "node --conditions=react-server ./node_modules/tsx/dist/cli.mjs tools/phase8-harness/brickken-read-cli.ts",
+    "audit:phase8-client-bundle": "node --conditions=react-server --import tsx tools/phase8-harness/phase8-client-bundle-audit.ts",
+    "phase8:brickken-read": "node --conditions=react-server --import tsx tools/phase8-harness/brickken-read-cli.ts",
     "db:generate": "drizzle-kit generate --config drizzle.config.ts",
     "db:migrate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs migrate --config drizzle.live.config.ts",
     "check": "npm run lint && npm run typecheck && npm run test && npm run build"

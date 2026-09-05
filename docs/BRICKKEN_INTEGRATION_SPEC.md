@@ -78,7 +78,7 @@ The sanitized adapter projection was:
 }
 ```
 
-**VERIFIED** — The authenticated adapter path can reach the sandbox and parse the Sepolia network-info response. This does not change the earlier anonymous `401` observation or prove that the endpoint is public.
+**HISTORICAL OBSERVATION — 2026-09-04** — A credential-bearing adapter request reached the sandbox and recorded the sanitized projection `Sepolia ETH` and `sepolia.etherscan.io`. This correction task did not repeat the request; current behavior remains unverified. The projection does not prove the raw response had no additional properties, nor that the credential was required, accepted as authority or independently authenticated. It does not change the earlier anonymous `401` observation or prove that the endpoint is public. A changed or additional current response must fail closed pending review.
 
 **DECISION** — The check performed no prepare, sign, send, tokenize, whitelist, mint, or broadcast operation. It did not validate signer approval, tokenizer licensing, credits, prepared write responses, wallet compatibility, transaction finality, or any write behavior. No authenticated write has occurred.
 
@@ -158,7 +158,7 @@ The sanitized adapter projection was:
 
 **DECISION** — Because the locked MVP requires an explicit whitelist stage, set `needWhitelist: false` only after standalone whitelist read-back succeeds. This avoids hiding a second state change inside mint and yields distinct approval, transaction, and verification evidence.
 
-**ASSUMPTION** — A previously confirmed standalone whitelist permits `mintToken` with `needWhitelist: false` and yields exactly one prepared transaction. The authenticated network-info read did not validate this write assumption.
+**ASSUMPTION** — A previously confirmed standalone whitelist permits `mintToken` with `needWhitelist: false` and yields exactly one prepared transaction. The historical credential-bearing network-info observation did not validate this write assumption.
 
 **VERIFIED** — Current dedicated whitelist schema requires `investorEmail` on each `userToWhitelist` entry. The Phase 0 “email optional” reading is not present in that schema on 2026-09-03. [whitelist](https://docs.brickken.com/api-reference/endpoint/prepare-whitelist)
 
@@ -232,7 +232,7 @@ The sanitized adapter projection was:
 
 ## Phase 1 gates and unresolved questions
 
-- **OPEN QUESTION** — Authenticated read access is confirmed, but Brickken approval for the exact tokenizer signer address, active tokenizer licensing, native gas, and write-method credits remain unverified. Do not place credentials in source control. [Request an API key](https://docs.brickken.com/get-started/request-api-key)
+- **OPEN QUESTION** — A historical credential-bearing network-information request succeeded, but its authentication semantics remain unverified. Brickken approval for the exact tokenizer signer address, active tokenizer licensing, native gas, and write-method credits also remain unverified. Do not place credentials in source control. [Request an API key](https://docs.brickken.com/get-started/request-api-key)
 - **OPEN QUESTION** — Ask Brickken to resolve the public `get-network-info` documentation/live `401` conflict.
 - **OPEN QUESTION** — Confirm live `userToWhitelist[].whitelistStatus` JSON type if anything other than boolean is still accepted.
 - **OPEN QUESTION** — Confirm standalone whitelist followed by mint with `needWhitelist: false` returns a single transaction and mints.

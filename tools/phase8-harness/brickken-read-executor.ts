@@ -16,6 +16,7 @@ import { createBrickkenReadTransport } from "./brickken-read-transport";
 import {
   BRICKKEN_READ_LIMITATIONS,
   BRICKKEN_READ_REDACTIONS,
+  brickkenReadFingerprintProjection,
   type Phase8ActionEvidenceV1,
 } from "./evidence";
 import type { Phase8ActionContext, Phase8ActionExecutor } from "./types";
@@ -63,29 +64,61 @@ function refuse(code: BrickkenReadFailureCode): never {
   throw new BrickkenReadExecutorError(code);
 }
 
-function inspectContext(context: Phase8ActionContext): string {
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor && "value" in descriptor) deepFreeze(descriptor.value);
+  }
+  return Object.freeze(value);
+}
+
+function inspectContext(context: Phase8ActionContext): {
+  readonly apiKey: string;
+  readonly target: Phase8ActionContext["target"];
+  readonly signal: AbortSignal | undefined;
+} {
   try {
-    assertBoundedWalletValue(context, {
+    const targetDescriptor = Object.getOwnPropertyDescriptor(context, "target");
+    const environmentDescriptor = Object.getOwnPropertyDescriptor(context, "allowedEnvironment");
+    const signalDescriptor = Object.getOwnPropertyDescriptor(context, "signal");
+    if (
+      !targetDescriptor || !("value" in targetDescriptor) ||
+      !environmentDescriptor || !("value" in environmentDescriptor) ||
+      (signalDescriptor !== undefined && !("value" in signalDescriptor))
+    ) {
+      return refuse("BRICKKEN_NETWORK_READ_FAILED");
+    }
+    const target = targetDescriptor.value as Phase8ActionContext["target"];
+    const allowedEnvironment = environmentDescriptor.value as Phase8ActionContext["allowedEnvironment"];
+    const signal = signalDescriptor?.value as AbortSignal | undefined;
+    assertBoundedWalletValue(target, {
+      maxCodeUnits: 16_384,
+      maxArrayLength: 8,
+      maxProperties: 8,
+    });
+    assertBoundedWalletValue(allowedEnvironment, {
       maxCodeUnits: 16_384,
       maxArrayLength: 8,
       maxProperties: 8,
     });
     if (
-      context.target.action !== "BRICKKEN_READ" ||
-      context.target.walletRequestHash !== null ||
-      Object.keys(context.allowedEnvironment).length !== 1 ||
-      !Object.hasOwn(context.allowedEnvironment, "BRICKKEN_API_KEY")
+      target.action !== "BRICKKEN_READ" ||
+      target.walletRequestHash !== null ||
+      Object.keys(allowedEnvironment).length !== 1 ||
+      !Object.hasOwn(allowedEnvironment, "BRICKKEN_API_KEY") ||
+      (signal !== undefined && !(signal instanceof AbortSignal))
     ) {
       return refuse("BRICKKEN_NETWORK_READ_FAILED");
     }
-    const apiKey = context.allowedEnvironment.BRICKKEN_API_KEY;
+    const apiKey = allowedEnvironment.BRICKKEN_API_KEY;
     if (
       typeof apiKey !== "string" || apiKey.length === 0 || apiKey.length > 8_192 ||
       apiKey.trim() !== apiKey || !/^[\x21-\x7e]+$/.test(apiKey)
     ) {
       return refuse("BRICKKEN_NETWORK_READ_FAILED");
     }
-    return apiKey;
+    return { apiKey, target, signal };
   } catch (error) {
     if (error instanceof BrickkenReadExecutorError) throw error;
     return refuse("BRICKKEN_NETWORK_READ_FAILED");
@@ -117,15 +150,16 @@ export function createBrickkenReadExecutor(
 ): Phase8ActionExecutor {
   return Object.freeze({
     async execute(context: Phase8ActionContext): Promise<Phase8ActionEvidenceV1> {
-      const apiKey = inspectContext(context);
+      const inspected = inspectContext(context);
+      const { apiKey } = inspected;
       const deadlineMs = dependencies.deadlineMs ?? BRICKKEN_READ_DEADLINE_MS;
       if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > 60_000) {
         return refuse("BRICKKEN_NETWORK_READ_FAILED");
       }
       const deadlineAbort = new AbortController();
-      const executionSignal = context.signal === undefined
+      const executionSignal = inspected.signal === undefined
         ? deadlineAbort.signal
-        : AbortSignal.any([context.signal, deadlineAbort.signal]);
+        : AbortSignal.any([inspected.signal, deadlineAbort.signal]);
       const underlyingFetch = dependencies.fetch ?? globalThis.fetch.bind(globalThis);
       const transport = createBrickkenReadTransport({
         fetch: underlyingFetch,
@@ -177,12 +211,12 @@ export function createBrickkenReadExecutor(
         requestedChainId: "11155111" as const,
         currencyName: "Sepolia ETH" as const,
         blockExplorerHost: "sepolia.etherscan.io" as const,
-        authenticatedNetworkRead: true as const,
+        credentialBearingRequestSucceeded: true as const,
         resultCategory: "BRICKKEN_NETWORK_READ_PASSED" as const,
         adapterVersion: BRICKKEN_READ_ADAPTER_VERSION,
         sdkVersion: BRICKKEN_READ_SDK_VERSION,
       });
-      const fingerprint = await hashCanonicalJson(details);
+      const fingerprint = await hashCanonicalJson(brickkenReadFingerprintProjection(details));
       const observedAt = (dependencies.now?.() ?? new Date()).toISOString();
 
       const evidence: Phase8ActionEvidenceV1 = {
@@ -190,8 +224,8 @@ export function createBrickkenReadExecutor(
         harnessVersion: "1.0",
         observedAt,
         action: "BRICKKEN_READ",
-        runId: context.target.runId,
-        operation: context.target.operation,
+        runId: inspected.target.runId,
+        operation: inspected.target.operation,
         walletRequestHash: null,
         evidenceStatus: "PASSED",
         resultFingerprint: fingerprint.hash,
@@ -212,7 +246,7 @@ export function createBrickkenReadExecutor(
           BRICKKEN_READ_REDACTIONS[11],
         ],
       };
-      return Object.freeze(evidence);
+      return deepFreeze(evidence);
     },
   });
 }

@@ -4,7 +4,7 @@
 
 **DECISION** — Phase 8 is complete offline. It provides hardened provider handling, `ExecutionRunV3`, strict trusted-RPC transaction/receipt comparators, a deny-by-default authorization harness, and one concrete `BRICKKEN_READ` executor. The executor implementation did not start the harness, apply migration `0002_gorgeous_squadron_sinister.sql`, access Neon, call Brickken or RPC, request a wallet account/signature/transaction, broadcast, confirm, poll, or read back.
 
-**DECISION** — The harness is an authorization and evidence-validation shell, not a production route and not a general live-action dispatcher. `runPhase8HarnessCli()` accepts only an explicitly injected, action-specific executor factory. The sole concrete composition is `BRICKKEN_READ`: an authenticated Brickken sandbox connectivity and Sepolia network-information check. It is not imported by the production application and has not been run. Every later action still requires a separately reviewed executor.
+**DECISION** — The harness is an authorization and evidence-validation shell, not a production route and not a general live-action dispatcher. `runPhase8HarnessCli()` accepts only an explicitly injected, action-specific executor factory. The sole concrete composition is `BRICKKEN_READ`: a credential-bearing Brickken sandbox connectivity and Sepolia network-information check. It is not approved for operator execution, is not imported by the production application, and has not been run. Every later action still requires a separately reviewed executor.
 
 **DECISION** — No wallet is selected, privileged or verified. EIP-6963 display metadata is self-asserted. A result applies only to the exact selected provider instance, operator-recorded wallet version, run, operation and wallet-request hash. It does not certify a wallet brand, another version, WalletConnect, another operation or another prepared transaction.
 
@@ -18,6 +18,7 @@ Run only this offline preflight, review its output, and stop:
 npm run check
 npm run check:phase8-harness
 npm run test:phase8
+npm run audit:phase8-client-bundle
 git status --short
 ```
 
@@ -27,11 +28,13 @@ No live action is authorized by the implementation work. Any later use must be s
 
 ## Harness boundary
 
-The harness is located only at `tools/phase8-harness/`. Root `tsconfig.json` excludes it, while its own `tsconfig.json` provides an offline compile check. It binds only to validated `127.0.0.1` or `::1`, rejects unexpected `Host` and `Origin`, accepts exact `application/json` bodies up to 65,536 bytes, and constructs the injected executor only after every Execute gate passes.
+The harness is located only at `tools/phase8-harness/`. Root `tsconfig.json` excludes it, while its own `tsconfig.json` provides an offline compile check. It binds only to validated `127.0.0.1` or `::1`, rejects unexpected `Host` and `Origin`, accepts exact `application/json` bodies up to 65,536 bytes, and constructs the injected executor only after every Execute gate passes. The pre-authentication page is generic and contains no action target; target metadata is returned only after bootstrap/session authentication.
 
-The limits are application refusal ceilings, not claims about wallet or Brickken protocol maxima. Transaction and provider bounds cover the checked-in Brickken fixtures and standard Ethereum address/hash/uint256 shapes with substantial bounded headroom; external response and evidence ceilings accommodate diagnostic metadata without permitting unbounded traversal, parsing, hashing or persistence. Any real payload above a ceiling is rejected for review rather than truncated or silently expanding the limit.
+The limits are application refusal ceilings, not claims about wallet or Brickken protocol maxima. `BRICKKEN_READ` structurally permits exactly `GET https://api.sandbox.brickken.com/get-network-info?chainId=11155111`, supplies no body, forces `redirect: "manual"`, refuses every redirect/final-URL mismatch, and permits one underlying dispatch. It streams success and error bodies before SDK parsing, rejects a valid oversized `Content-Length`, and counts actual bytes when the header is absent, malformed or dishonest. The ceiling is 1,048,576 bytes. Overflow aborts and cancels the reader where supported.
 
-The CLI requires an interactive TTY. It generates a random 256-bit bootstrap secret, shows it once on that TTY, zeroes the source byte buffer, and retains only a SHA-256 verifier. The secret expires after five minutes and is consumed once. A successful exchange issues one opaque 15-minute session cookie whose server retains only a digest. The cookie is `HttpOnly`, `SameSite=Strict`, path `/`; CSRF uses a separate opaque token and constant-time digest checks.
+**ASSUMPTION** — A hostile transport can deliver one individually oversized stream chunk before application code observes and rejects it. The bound constrains accepted/buffered response bytes at the observable stream boundary; it is not a claim of lower-level network or allocator containment.
+
+The CLI requires an interactive TTY. It generates a random 256-bit bootstrap secret, shows it once on that TTY, zeroes the source byte buffer, and retains only a SHA-256 verifier. The secret expires after five minutes and is consumed once. A successful exchange issues one opaque 15-minute session cookie whose server retains only a digest. The cookie is `HttpOnly`, `SameSite=Strict`, path `/`; CSRF uses a separate opaque token and constant-time digest checks. Stop consumes the grant, invalidates the execution generation, aborts the active signal and is terminal. The injected 30-second harness deadline is also terminal; late factory, executor, evidence or cleanup settlement cannot produce success or retry.
 
 **ASSUMPTION** — The current supported operator transport is plain HTTP on an exclusive local loopback host. The cookie deliberately omits `Secure` because secure-cookie behavior over this actual HTTP transport has not been verified. The operator must use a local browser on the same controlled workstation, close unrelated local pages, avoid proxies/port forwarding, and treat the short session as sensitive. Loopback is not authentication; the one-time bootstrap, strict origin/host, session and CSRF layers remain mandatory. HTTPS/Secure-cookie claims remain unverified.
 
@@ -55,7 +58,9 @@ The selected action receives only this credential allowlist:
 | `RPC_FINALITY` | `DATABASE_URL`, `EDICT_SEPOLIA_RPC_URL` |
 | `BRICKKEN_READ_BACK` | `DATABASE_URL`, `BRICKKEN_API_KEY` |
 
-There is no environment spread, environment dump, root environment-file loading or browser delivery. The `BRICKKEN_READ` runner copies only the listed non-secret harness settings and `BRICKKEN_API_KEY`, hard-codes its action and sandbox mode, and accepts no command arguments. It constructs neither the adapter nor its transport until the single-use Execute grant has passed and the executor has revalidated its narrowed configuration.
+There is no environment spread, environment dump, root environment-file loading or browser delivery. The `BRICKKEN_READ` runner copies only the listed non-secret harness settings and `BRICKKEN_API_KEY`, hard-codes its action and sandbox mode, and accepts no command arguments. It constructs neither the adapter nor its transport until the single-use Execute grant has passed and the executor has revalidated its narrowed configuration. API keys must be non-empty bounded visible ASCII without controls, CR/LF or surrounding whitespace. Startup fails with a fixed code if any configured credential collides wholly or by containment with browser-visible target, origin, HTML or evidence metadata, including short values.
+
+**DEPENDENCY** — `tsx@4.23.13` was promoted to a direct development dependency for the isolated TypeScript CLI. The identical version was already present transitively through `drizzle-kit`; promotion changed no locked package version, integrity hash, resolved URL or transitive graph. This correction adds no dependency.
 
 ## Independent stopping points
 
@@ -63,7 +68,7 @@ Each row is a separate process and fresh human decision. A successful action con
 
 | Stop | Exact action | Preconditions and successful sanitized evidence | Mandatory stop |
 | --- | --- | --- | --- |
-| 1 | `BRICKKEN_READ` | Authenticated sandbox connectivity and a normalized Sepolia network-information response; no write | Stop. This proves neither signer approval, license, credits nor prepare readiness. |
+| 1 | `BRICKKEN_READ` | A credential-bearing sandbox network-information request succeeded and produced the expected normalized Sepolia projection; no write | Stop. This does not prove that the credential was required, accepted as authority or independently authenticated, nor signer approval, license, credits or prepare readiness. |
 | 2 | `BRICKKEN_PREPARE` | Exact run/revision/operation; one validated prepared transaction; sanitized field names, hashes and selector only | Persist and review; do not open a wallet prompt. Ambiguous prepare blocks. |
 | 3 | `WALLET_APPROVAL` | Explicit EIP-6963 selection; exact signer/chain/challenge; operator records wallet version as unverified metadata | Persist approval result; do not send a transaction. |
 | 4 | `WALLET_SEND` | Exact prepared wallet-request hash; durable prompt lock; separate visible Execute | Persist returned hash or `BROADCAST_UNKNOWN`; never resend automatically. |
@@ -105,11 +110,11 @@ The implementation does not claim automatic replacement detection. A missing tra
 
 The action harness accepts only successful, strictly action-specific `Phase8ActionEvidenceV1`, bounded to 262,144 code units. Outer `ok: true` requires executor success, exact `PASSED` status, strict validation, sanitization and successful awaited cleanup. `FAILED`, `BLOCKED`, `INCONCLUSIVE`, malformed, accessor-backed, cyclic, oversized or unexpected evidence fails with an Edict-owned error and no upstream content.
 
-`BRICKKEN_READ` evidence is projected only from the normalized `currencyName` and block-explorer host plus fixed action metadata. It records the fixed Sepolia chain request, a canonical SHA-256 fingerprint of that allowlisted projection, observation time, public adapter/SDK versions, explicit limitations and redaction categories. Raw Brickken bodies, request/response headers, credentials, database/RPC URLs, run capabilities, challenge tokens, signatures, private signing material, tokenizer email, claimed signer identity, complete prepared transactions and calldata cannot enter this schema.
+`BRICKKEN_READ` evidence is projected only from the normalized `currencyName` and block-explorer host plus fixed action metadata. It records the fixed Sepolia chain request, observation time, public adapter/SDK versions, explicit limitations and redaction categories. The trusted validator—not the executor—recomputes the canonical SHA-256 fingerprint from exactly this allowlisted projection. Mutable evidence, supplied alternative fingerprints, timestamps/raw bodies folded into a fingerprint, accessors and unknown projected fields fail closed. Raw Brickken bodies, request/response headers, credentials, database/RPC URLs, run capabilities, challenge tokens, signatures, private signing material, tokenizer email, claimed signer identity, complete prepared transactions and calldata cannot enter this schema.
 
 ## Current evidence and unresolved prerequisites
 
-**VERIFIED** — The authenticated Brickken network-info read previously passed and identified `Sepolia ETH`; anonymous access previously returned `401`. The Neon migration/create/read/CAS/stale-conflict/cleanup verification also previously passed.
+**HISTORICAL OBSERVATION — 2026-09-04** — A credential-bearing adapter observation recorded the sanitized projection `Sepolia ETH` and `sepolia.etherscan.io`; anonymous access had previously returned `401`. This correction task did not repeat either request, so current service behavior remains unverified. The sanitized historical projection does not prove that the raw response contained no additional properties. The corrected strict schema will refuse a changed or additional current response pending review. The observation does not prove that the credential was required, accepted as authority or independently authenticated. The Neon migration/create/read/CAS/stale-conflict/cleanup verification previously passed.
 
 **OPEN QUESTION** — No authenticated Brickken write has occurred. Signer approval, tokenizer licensing, credits, prepared write payloads, selected-wallet compatibility, provider chain behavior, durable V3 data on Neon, RPC transaction equivalence, receipts, finality, Brickken confirmation/status and post-write behavior remain unverified. Migration `0002_gorgeous_squadron_sinister.sql` must receive separate authorization before application.
 
@@ -119,4 +124,4 @@ The first possible later live activity is the separately authorized command belo
 npm run phase8:brickken-read
 ```
 
-The command accepts no arguments or credential on its command line, retains the interactive TTY bootstrap plus separate Arm and Execute decisions, makes at most one fixed `GET /get-network-info?chainId=11155111` request, emits only strict `Phase8ActionEvidenceV1`, and stops. Success proves only that the supplied server-side credential was accepted for this endpoint, the sandbox responded, and the normalized response matched the expected Sepolia network contract. It does not prove tokenizer signer approval, license status, remaining credits, prepare eligibility, wallet compatibility, ability to tokenize/whitelist/mint, or blockchain execution readiness.
+The command accepts no arguments or credential on its command line, retains the interactive TTY bootstrap plus separate Arm and Execute decisions, makes at most one fixed `GET /get-network-info?chainId=11155111` request, emits only strict `Phase8ActionEvidenceV1`, and stops. If a later independent audit and explicit authorization permit execution, success would prove only that a credential-bearing Brickken sandbox network-information request succeeded and the normalized response matched the expected Sepolia contract. It would not prove that the credential was required, accepted as authority or independently authenticated. It also would not prove tokenizer signer approval, license status, remaining credits, prepare eligibility, wallet compatibility, ability to tokenize/whitelist/mint, or blockchain execution readiness.

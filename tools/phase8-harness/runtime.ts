@@ -6,12 +6,48 @@ import {
   type HarnessClock,
   type OneTimeBootstrapVerifier,
 } from "./auth";
-import { expectedHarnessOrigin } from "./config";
+import {
+  assertNoSensitivePublicCollision,
+  assertPhase8PublicMetadataSafe,
+  expectedHarnessOrigin,
+} from "./config";
 import { validatePhase8ActionEvidenceV1 } from "./evidence";
 import type { Phase8ActionExecutor, Phase8HarnessConfig } from "./types";
 
 export const HARNESS_BODY_LIMIT_BYTES = 65_536;
+export const HARNESS_EXECUTION_DEADLINE_MS = 30_000;
 const COOKIE_NAME = "edict_phase8_session";
+const PUBLIC_RESPONSE_STATIC_VALUES = Object.freeze([
+  "ok",
+  "error",
+  "code",
+  "csrfToken",
+  "target",
+  "grantId",
+  "category",
+  "evidence",
+  "ORIGIN_REFUSED",
+  "HOST_REFUSED",
+  "NOT_FOUND",
+  "HARNESS_STOPPED",
+  "SESSION_REFUSED",
+  "BAD_REQUEST",
+  "BOOTSTRAP_REFUSED",
+  "ARM_REFUSED",
+  "EXECUTE_REFUSED",
+  "ACTION_DEADLINE_EXCEEDED",
+  "ACTION_FAILED",
+] as const);
+
+export interface Phase8HarnessTimers {
+  setTimeout(callback: () => void, delayMs: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+const DEFAULT_TIMERS: Phase8HarnessTimers = {
+  setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+  clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>),
+};
 
 interface SessionRecord {
   readonly sessionDigest: string;
@@ -29,10 +65,6 @@ function json(status: number, body: unknown, headers: HeadersInit = {}): Respons
     status,
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers },
   });
-}
-
-function fail(status: number, code: string): Response {
-  return json(status, { ok: false, error: { code } });
 }
 
 function cookieValue(request: Request): string | null {
@@ -89,44 +121,76 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 export class Phase8HarnessRuntime {
   readonly #config: Phase8HarnessConfig;
   readonly #bootstrap: OneTimeBootstrapVerifier;
-  readonly #executorFactory: () => Phase8ActionExecutor;
+  readonly #executorFactory: () => Phase8ActionExecutor | Promise<Phase8ActionExecutor>;
   readonly #clock: HarnessClock;
+  readonly #timers: Phase8HarnessTimers;
+  readonly #executionDeadlineMs: number;
+  readonly #evidenceValidator: typeof validatePhase8ActionEvidenceV1;
   #session: SessionRecord | null = null;
   #grant: Grant | null = null;
   #executionStarted = false;
   #stopped = false;
+  #generation = 0;
+  #activeAbort: AbortController | null = null;
+  #terminalReason: "STOPPED" | "DEADLINE" | "FAILED" | "SUCCEEDED" | null = null;
 
   constructor(input: {
     readonly config: Phase8HarnessConfig;
     readonly bootstrap: OneTimeBootstrapVerifier;
-    readonly executorFactory: () => Phase8ActionExecutor;
+    readonly executorFactory: () => Phase8ActionExecutor | Promise<Phase8ActionExecutor>;
     readonly clock: HarnessClock;
+    readonly timers?: Phase8HarnessTimers;
+    readonly executionDeadlineMs?: number;
+    readonly evidenceValidator?: typeof validatePhase8ActionEvidenceV1;
   }) {
+    assertPhase8PublicMetadataSafe(input.config, [
+      renderHarnessPage(),
+      ...PUBLIC_RESPONSE_STATIC_VALUES,
+    ]);
+    const deadline = input.executionDeadlineMs ?? HARNESS_EXECUTION_DEADLINE_MS;
+    if (!Number.isSafeInteger(deadline) || deadline < 1 || deadline > 300_000) {
+      throw new Error("PHASE8_CONFIGURATION_INVALID");
+    }
     this.#config = input.config;
     this.#bootstrap = input.bootstrap;
     this.#executorFactory = input.executorFactory;
     this.#clock = input.clock;
+    this.#timers = input.timers ?? DEFAULT_TIMERS;
+    this.#executionDeadlineMs = deadline;
+    this.#evidenceValidator = input.evidenceValidator ?? validatePhase8ActionEvidenceV1;
   }
 
   get stopped(): boolean {
     return this.#stopped;
   }
 
+  #json(status: number, responseBody: unknown, headers: HeadersInit = {}): Response {
+    assertNoSensitivePublicCollision(
+      [JSON.stringify(responseBody), JSON.stringify(headers)],
+      Object.values(this.#config.allowedEnvironment),
+    );
+    return json(status, responseBody, headers);
+  }
+
+  #fail(status: number, code: string): Response {
+    return this.#json(status, { ok: false, error: { code } });
+  }
+
   async handle(request: Request): Promise<Response> {
     try {
-      if (this.#stopped) return fail(410, "HARNESS_STOPPED");
+      if (this.#stopped) return this.#fail(410, "HARNESS_STOPPED");
       const origin = expectedHarnessOrigin(this.#config);
       const expectedHost = new URL(origin).host;
-      if (request.headers.get("host") !== expectedHost) return fail(403, "HOST_REFUSED");
+      if (request.headers.get("host") !== expectedHost) return this.#fail(403, "HOST_REFUSED");
       const requestOrigin = request.headers.get("origin");
       if ((request.method === "GET" && requestOrigin !== null && requestOrigin !== origin) ||
           (request.method !== "GET" && requestOrigin !== origin)) {
-        return fail(403, "ORIGIN_REFUSED");
+        return this.#fail(403, "ORIGIN_REFUSED");
       }
       const url = new URL(request.url);
-      if (url.origin !== origin) return fail(403, "ORIGIN_REFUSED");
+      if (url.origin !== origin) return this.#fail(403, "ORIGIN_REFUSED");
       if (request.method === "GET" && url.pathname === "/") {
-        return new Response(renderHarnessPage(this.#config.target), {
+        return new Response(renderHarnessPage(), {
           headers: {
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
@@ -136,29 +200,30 @@ export class Phase8HarnessRuntime {
           },
         });
       }
-      if (request.method !== "POST") return fail(404, "NOT_FOUND");
+      if (request.method !== "POST") return this.#fail(404, "NOT_FOUND");
       const parsed = await body(request);
+      if (this.#stopped) return this.#fail(410, "HARNESS_STOPPED");
       if (url.pathname === "/session") return this.#establish(parsed);
       const authenticated = this.#authenticate(request, parsed);
-      if (authenticated === null) return fail(403, "SESSION_REFUSED");
+      if (authenticated === null) return this.#fail(403, "SESSION_REFUSED");
+      if (this.#stopped) return this.#fail(410, "HARNESS_STOPPED");
       if (url.pathname === "/arm") return this.#arm(parsed, authenticated);
       if (url.pathname === "/execute") return this.#execute(parsed, authenticated);
       if (url.pathname === "/stop") {
-        if (!exactKeys(parsed, ["csrfToken"])) return fail(400, "BAD_REQUEST");
-        this.#stopped = true;
-        this.#grant = null;
-        return json(200, { ok: true, category: "HARNESS_STOPPED" });
+        if (!exactKeys(parsed, ["csrfToken"])) return this.#fail(400, "BAD_REQUEST");
+        this.#terminate("STOPPED");
+        return this.#json(200, { ok: true, category: "HARNESS_STOPPED" });
       }
-      return fail(404, "NOT_FOUND");
+      return this.#fail(404, "NOT_FOUND");
     } catch {
-      return fail(400, "BAD_REQUEST");
+      return this.#fail(400, "BAD_REQUEST");
     }
   }
 
   #establish(parsed: Record<string, unknown>): Response {
     if (!exactKeys(parsed, ["bootstrapSecret"]) || this.#session !== null ||
         !this.#bootstrap.consume(parsed.bootstrapSecret)) {
-      return fail(403, "BOOTSTRAP_REFUSED");
+      return this.#fail(403, "BOOTSTRAP_REFUSED");
     }
     const sessionToken = randomOpaqueToken();
     const csrfToken = randomOpaqueToken();
@@ -167,7 +232,7 @@ export class Phase8HarnessRuntime {
       csrfDigest: tokenDigest(csrfToken),
       expiresAt: this.#clock.nowMs() + SESSION_TTL_MS,
     };
-    return json(200, { ok: true, csrfToken, target: this.#config.target }, {
+    return this.#json(200, { ok: true, csrfToken, target: this.#config.target }, {
       "set-cookie": `${COOKIE_NAME}=${sessionToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_MS / 1_000}`,
     });
   }
@@ -189,11 +254,48 @@ export class Phase8HarnessRuntime {
         parsed.action !== this.#config.target.action || parsed.runId !== this.#config.target.runId ||
         parsed.operation !== this.#config.target.operation ||
         parsed.walletRequestHash !== this.#config.target.walletRequestHash) {
-      return fail(409, "ARM_REFUSED");
+      return this.#fail(409, "ARM_REFUSED");
     }
     const id = randomOpaqueToken();
     this.#grant = { idDigest: tokenDigest(id), sessionDigest: session.sessionDigest };
-    return json(200, { ok: true, grantId: id, target: this.#config.target });
+    if (this.#stopped) return this.#fail(410, "HARNESS_STOPPED");
+    return this.#json(200, { ok: true, grantId: id, target: this.#config.target });
+  }
+
+  #terminate(reason: "STOPPED" | "DEADLINE" | "FAILED" | "SUCCEEDED"): void {
+    if (this.#stopped) return;
+    this.#stopped = true;
+    this.#terminalReason = reason;
+    this.#grant = null;
+    this.#generation += 1;
+    this.#activeAbort?.abort();
+    this.#activeAbort = null;
+  }
+
+  #assertActive(generation: number): void {
+    if (this.#stopped || this.#generation !== generation) {
+      throw new Error("PHASE8_EXECUTION_TERMINATED");
+    }
+  }
+
+  async #awaitActive<T>(
+    promise: Promise<T>,
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<T> {
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(new Error("PHASE8_EXECUTION_TERMINATED"));
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      const result = await Promise.race([promise, aborted]);
+      this.#assertActive(generation);
+      return result;
+    } finally {
+      if (onAbort) signal.removeEventListener("abort", onAbort);
+    }
   }
 
   async #execute(parsed: Record<string, unknown>, session: SessionRecord): Promise<Response> {
@@ -202,48 +304,77 @@ export class Phase8HarnessRuntime {
         this.#grant === null || this.#executionStarted ||
         this.#grant.sessionDigest !== session.sessionDigest ||
         !matchesTokenDigest(parsed.grantId, this.#grant.idDigest)) {
-      return fail(409, "EXECUTE_REFUSED");
+      return this.#fail(409, "EXECUTE_REFUSED");
     }
     this.#executionStarted = true;
     this.#grant = null;
+    const generation = ++this.#generation;
+    const abort = new AbortController();
+    this.#activeAbort = abort;
+    const deadline = this.#timers.setTimeout(() => {
+      if (!this.#stopped && this.#generation === generation) this.#terminate("DEADLINE");
+    }, this.#executionDeadlineMs);
+    let executor: Phase8ActionExecutor | undefined;
     try {
-      const executor = this.#executorFactory();
+      const factoryPromise = Promise.resolve().then(() => this.#executorFactory());
+      try {
+        executor = await this.#awaitActive(factoryPromise, generation, abort.signal);
+      } catch (error) {
+        void factoryPromise.then((lateExecutor) => lateExecutor.cleanup?.()).catch(() => undefined);
+        throw error;
+      }
+      this.#assertActive(generation);
       let evidence;
       try {
-        const rawEvidence = await executor.execute({
+        const rawEvidence = await this.#awaitActive(executor.execute({
           target: this.#config.target,
           allowedEnvironment: this.#config.allowedEnvironment,
-        });
-        evidence = validatePhase8ActionEvidenceV1(
+          signal: abort.signal,
+        }), generation, abort.signal);
+        this.#assertActive(generation);
+        evidence = await this.#awaitActive(this.#evidenceValidator(
           rawEvidence,
           this.#config.target,
           Object.values(this.#config.allowedEnvironment),
-        );
+        ), generation, abort.signal);
+        this.#assertActive(generation);
       } finally {
-        await executor.cleanup?.();
+        await this.#awaitActive(
+          Promise.resolve().then(() => executor?.cleanup?.()),
+          generation,
+          abort.signal,
+        );
       }
-      this.#stopped = true;
-      return json(200, { ok: true, category: this.#config.target.action, evidence });
+      this.#assertActive(generation);
+      const result = { ok: true, category: this.#config.target.action, evidence } as const;
+      this.#assertActive(generation);
+      this.#terminate("SUCCEEDED");
+      return this.#json(200, result);
     } catch {
-      this.#stopped = true;
-      return fail(502, "ACTION_FAILED");
+      const reason = this.#terminalReason;
+      if (!this.#stopped) this.#terminate("FAILED");
+      if (reason === "STOPPED") return this.#fail(410, "HARNESS_STOPPED");
+      if (reason === "DEADLINE") return this.#fail(504, "ACTION_DEADLINE_EXCEEDED");
+      return this.#fail(502, "ACTION_FAILED");
+    } finally {
+      this.#timers.clearTimeout(deadline);
+      if (this.#activeAbort === abort) this.#activeAbort = null;
     }
   }
 }
 
-export function renderHarnessPage(target: Phase8HarnessConfig["target"]): string {
-  const publicTarget = JSON.stringify(target).replaceAll("<", "\\u003c");
+export function renderHarnessPage(): string {
   return `<!doctype html><meta charset="utf-8"><title>Edict Phase 8 Harness</title>
 <style>body{font:16px system-ui;max-width:52rem;margin:3rem auto;padding:0 1rem}button,input{font:inherit;margin:.4rem;padding:.6rem}pre{white-space:pre-wrap}</style>
-<h1>Edict Phase 8 one-action harness</h1><p id="target"></p>
+<h1>Edict Phase 8 one-action harness</h1><p id="target">Authenticate to reveal the fixed action target.</p>
 <label>One-time bootstrap secret <input id="secret" type="password" autocomplete="off" maxlength="256"></label>
 <button id="login">Establish session</button><button id="arm" disabled>Arm exact action</button>
 <button id="execute" disabled>Execute once</button><button id="stop" disabled>Stop</button><pre id="status"></pre>
-<script>'use strict';const target=${publicTarget};let csrfToken=null,grantId=null;
-const status=document.getElementById('status');document.getElementById('target').textContent=JSON.stringify(target);
+<script>'use strict';let target=null,csrfToken=null,grantId=null;
+const status=document.getElementById('status');
 async function post(path,value){const response=await fetch(path,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(value)});const result=await response.json();status.textContent=JSON.stringify(result);return result}
-document.getElementById('login').onclick=async()=>{const input=document.getElementById('secret');const result=await post('/session',{bootstrapSecret:input.value});input.value='';if(result.ok){csrfToken=result.csrfToken;document.getElementById('arm').disabled=false;document.getElementById('stop').disabled=false}};
-document.getElementById('arm').onclick=async()=>{const result=await post('/arm',{csrfToken,...target});if(result.ok){grantId=result.grantId;document.getElementById('execute').disabled=false;document.getElementById('arm').disabled=true}};
+document.getElementById('login').onclick=async()=>{const input=document.getElementById('secret');const result=await post('/session',{bootstrapSecret:input.value});input.value='';if(result.ok){target=result.target;csrfToken=result.csrfToken;document.getElementById('target').textContent=JSON.stringify(target);document.getElementById('arm').disabled=false;document.getElementById('stop').disabled=false}};
+document.getElementById('arm').onclick=async()=>{if(target===null)return;const result=await post('/arm',{csrfToken,...target});if(result.ok){grantId=result.grantId;document.getElementById('execute').disabled=false;document.getElementById('arm').disabled=true}};
 document.getElementById('execute').onclick=async()=>{document.getElementById('execute').disabled=true;await post('/execute',{csrfToken,grantId,confirmation:'EXECUTE'})};
 document.getElementById('stop').onclick=async()=>{await post('/stop',{csrfToken})};</script>`;
 }

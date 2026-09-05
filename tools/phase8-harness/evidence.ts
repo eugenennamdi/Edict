@@ -1,6 +1,8 @@
 import { assertBoundedWalletValue } from "../../src/shared/wallet/bounds";
 import { WALLET_BOUNDARY_LIMITS } from "../../src/shared/wallet/limits";
+import { hashCanonicalJson } from "../../src/core/hashing";
 import { z } from "zod";
+import { assertNoSensitivePublicCollision } from "./config";
 import type { Phase8PublicTarget } from "./types";
 
 const hash = z.string().regex(/^sha256:[0-9a-f]{64}$/);
@@ -15,14 +17,14 @@ const brickkenReadDetailsSchema = z.strictObject({
   requestedChainId: z.literal("11155111"),
   currencyName: z.literal("Sepolia ETH"),
   blockExplorerHost: z.literal("sepolia.etherscan.io"),
-  authenticatedNetworkRead: z.literal(true),
+  credentialBearingRequestSucceeded: z.literal(true),
   resultCategory: z.literal("BRICKKEN_NETWORK_READ_PASSED"),
   adapterVersion: z.literal("1.0"),
   sdkVersion: z.literal("0.2.1"),
 });
 
 export const BRICKKEN_READ_LIMITATIONS = Object.freeze([
-  "Proves only that the supplied server-side credential was accepted for the sandbox network-information endpoint.",
+  "Proves only that a credential-bearing Brickken sandbox network-information request succeeded.",
   "Does not prove signer approval, license status, remaining credits, prepare eligibility, wallet compatibility, write capability, or blockchain execution readiness.",
 ] as const);
 
@@ -83,17 +85,67 @@ function deepFreeze<T>(value: T): T {
   return Object.freeze(value);
 }
 
-export function validatePhase8ActionEvidenceV1(
+function assertDeepFrozen(value: unknown): void {
+  const seen = new WeakSet<object>();
+  const visit = (entry: unknown): void => {
+    if (entry === null || typeof entry !== "object" || seen.has(entry)) return;
+    seen.add(entry);
+    if (!Object.isFrozen(entry)) throw new Error("PHASE8_EVIDENCE_INVALID");
+    for (const key of Reflect.ownKeys(entry)) {
+      const descriptor = Object.getOwnPropertyDescriptor(entry, key);
+      if (!descriptor || !("value" in descriptor)) throw new Error("PHASE8_EVIDENCE_INVALID");
+      visit(descriptor.value);
+    }
+  };
+  visit(value);
+}
+
+export function brickkenReadFingerprintProjection(
+  details: Phase8ActionEvidenceV1["details"],
+) {
+  return Object.freeze({
+    adapterVersion: details.adapterVersion,
+    blockExplorerHost: details.blockExplorerHost,
+    checkKind: details.checkKind,
+    checkVersion: details.checkVersion,
+    credentialBearingRequestSucceeded: details.credentialBearingRequestSucceeded,
+    currencyName: details.currencyName,
+    environment: details.environment,
+    requestedChainId: details.requestedChainId,
+    resultCategory: details.resultCategory,
+    sdkVersion: details.sdkVersion,
+  });
+}
+
+function collectPublicStrings(value: unknown): string[] {
+  const result: string[] = [];
+  const visit = (entry: unknown): void => {
+    if (typeof entry === "string") {
+      result.push(entry);
+      return;
+    }
+    if (entry === null || typeof entry !== "object") return;
+    for (const key of Reflect.ownKeys(entry)) {
+      const descriptor = Object.getOwnPropertyDescriptor(entry, key);
+      if (descriptor && "value" in descriptor) visit(descriptor.value);
+    }
+  };
+  visit(value);
+  return result;
+}
+
+export async function validatePhase8ActionEvidenceV1(
   raw: unknown,
   target: Phase8PublicTarget,
   sensitiveValues: readonly string[],
-): Phase8ActionEvidenceV1 {
+): Promise<Phase8ActionEvidenceV1> {
   try {
     assertBoundedWalletValue(raw, {
       maxCodeUnits: WALLET_BOUNDARY_LIMITS.compatibilityEvidenceCodeUnits,
       maxArrayLength: 64,
       maxProperties: 64,
     });
+    assertDeepFrozen(raw);
     const parsed = phase8ActionEvidenceV1Schema.parse(raw);
     if (
       parsed.action !== target.action || parsed.runId !== target.runId ||
@@ -101,10 +153,12 @@ export function validatePhase8ActionEvidenceV1(
     ) {
       throw new Error("PHASE8_EVIDENCE_INVALID");
     }
-    const serialized = JSON.stringify(parsed);
-    if (sensitiveValues.some((value) => value.length >= 8 && serialized.includes(value))) {
-      throw new Error("PHASE8_EVIDENCE_INVALID");
-    }
+    assertNoSensitivePublicCollision(
+      [...collectPublicStrings(parsed), JSON.stringify(parsed)],
+      sensitiveValues,
+    );
+    const expectedFingerprint = await hashCanonicalJson(brickkenReadFingerprintProjection(parsed.details));
+    if (parsed.resultFingerprint !== expectedFingerprint.hash) throw new Error("PHASE8_EVIDENCE_INVALID");
     return deepFreeze(parsed);
   } catch {
     throw new Error("PHASE8_EVIDENCE_INVALID");

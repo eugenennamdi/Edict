@@ -34,12 +34,13 @@ Inspect `.env.example` for approved environment variables. For local development
 | `npm run lint` | Run ESLint across the codebase |
 | `npm run typecheck` | Run TypeScript strict compiler checks (`tsc --noEmit`) |
 | `npm run test` | Run Vitest unit and architectural assertion tests |
-| `npm run test:brickken-live-read` | Opt-in authenticated Brickken sandbox network-info read; excluded from default tests |
+| `npm run test:brickken-live-read` | Opt-in credential-bearing Brickken sandbox network-info read; excluded from default tests |
 | `npm run db:generate` | Generate reviewable Drizzle SQL migrations without connecting to a database |
 | `npm run db:migrate` | Apply committed migrations using ignored runtime `DATABASE_URL` configuration |
 | `npm run test:database-live` | Opt-in Neon create/read/CAS/cleanup verification; excluded from default tests |
 | `npm run test:phase8` | Run only the offline Phase 8 adversarial and harness tests |
 | `npm run check:phase8-harness` | Compile-check the isolated harness, which is excluded from the production application build |
+| `npm run audit:phase8-client-bundle` | Build and scan isolated emitted harness/public artifacts after the production build; loads no environment file |
 | `npm run phase8:brickken-read` | Separately authorized interactive sandbox network-information action; do not run as an offline check |
 | `npm run check` | Run all checks (`lint`, `typecheck`, `test`, `build`) in sequence |
 
@@ -49,12 +50,12 @@ Inspect `.env.example` for approved environment variables. For local development
 - **Phase 1: Application Foundation** — Complete. Scaffolding, strict TypeScript App Router, Tailwind CSS, Vitest, pinned `brickken-sdk@0.2.1`, and server-only boundaries established.
 - **Phase 2: Deterministic Core Domain** — Complete. The versioned normalized manifest, strict validation, canonical JSON, SHA-256 identities, immutable execution plan, and golden tests are specified in [`docs/CORE_DOMAIN_SPEC.md`](docs/CORE_DOMAIN_SPEC.md).
 - **Phase 3: Brickken Wire-Contract Audit** — Complete. The adversarial review, conflict register, retry matrix, and sourced fixtures are in [`docs/BRICKKEN_WIRE_CONTRACT_AUDIT.md`](docs/BRICKKEN_WIRE_CONTRACT_AUDIT.md) and `src/server/brickken/test-vectors/`.
-- **Phase 4: Execution Safety and Brickken Adapter** — Complete. The application-owned run state machine and in-memory repository are committed, and the server-only sandbox adapter is covered by injected transport tests. An opt-in authenticated network-info read identified `Sepolia ETH`; no authenticated write has occurred. At Phase 4 completion, live writes were blocked on durable persistence.
+- **Phase 4: Execution Safety and Brickken Adapter** — Complete. The application-owned run state machine and in-memory repository are committed, and the server-only sandbox adapter is covered by injected transport tests. A historical opt-in credential-bearing network-info read recorded `Sepolia ETH`; it did not establish authentication semantics and no authenticated write occurred. At Phase 4 completion, live writes were blocked on durable persistence.
 - **Phase 5: Durable Execution Persistence** — Complete and verified. Neon Postgres and Drizzle are contained behind the existing server repository interface, with a versioned JSONB run snapshot, strict codec, atomic optimistic concurrency, deterministic SQL migration, and credential-free default tests. On 2026-09-04, the migration and opt-in Neon test passed create, read, compare-and-swap update, stale-revision refusal, and deletion of the unique smoke-test run.
 - **Phase 6: Secure Run APIs and Durable Orchestration** — Complete. The deny-by-default, same-origin API exposes only run creation/read, approval challenge/verification and cancellation. Run capabilities use a hardened HttpOnly cookie; plan approval preserves EIP-712 EOA evidence in versioned V2 snapshots; internal orchestration enforces CAS intent ordering, double write gates and ambiguity blocking with injected Brickken behavior. See [`docs/RUN_API_SPEC.md`](docs/RUN_API_SPEC.md).
 - **Phase 7: Browser Wallet Authorization and Transaction Boundary** — Complete offline. The vendor-neutral EIP-6963/EIP-1193 boundary provides explicit provider selection, exact server-issued EIP-712 approval requests, strict immutable transaction projection, canonical wallet-intent integrity, and durable prompt-before-send/hash-handoff ordering. No named wallet or live write is verified. See [`docs/WALLET_EXECUTION_SPEC.md`](docs/WALLET_EXECUTION_SPEC.md).
 - **Phase 8: Adversarial Boundary and Compatibility Harness** — Complete offline. Provider hardening, bounded deadlines, exact trusted-RPC transaction/receipt evidence, backward-compatible `ExecutionRunV3`, an isolated one-action operator harness, and the strict `BRICKKEN_READ` sandbox network-information executor are implemented. The executor has not been run, no named wallet is privileged or verified, the V3 migration is generated but unapplied, and production semantic authorization remains deny-all. See [`docs/PHASE_8_OPERATOR_PLAYBOOK.md`](docs/PHASE_8_OPERATOR_PLAYBOOK.md).
-- **Next Task:** Independently review the fixed `BRICKKEN_READ` executor and CLI composition. Any later authenticated sandbox connectivity check requires a new explicit authorization; do not prepare or broadcast until signer, license, credits, transport and wallet prerequisites are independently evidenced.
+- **Next Task:** Return the confined `BRICKKEN_READ` executor, terminal runtime and emitted-client-artifact audit for independent review. It is not approved for execution. Any later credential-bearing sandbox connectivity check requires a new explicit authorization.
 
 ## Durable Database Gate
 
@@ -63,6 +64,8 @@ The deployed repository uses Neon Postgres through Drizzle's Neon HTTP adapter. 
 The persistence packages are pinned exactly: [`drizzle-orm@0.45.2`](https://www.npmjs.com/package/drizzle-orm/v/0.45.2), [`@neondatabase/serverless@1.1.0`](https://www.npmjs.com/package/@neondatabase/serverless/v/1.1.0), and [`drizzle-kit@0.31.10`](https://www.npmjs.com/package/drizzle-kit/v/0.31.10).
 
 Server-side EIP-712 approval recovery and the shared browser-compatible primitives use exactly pinned `viem@2.56.3`. Phase 7 remains vendor-neutral, supports EOA approval only, and does not attempt EIP-1271 or make an RPC request to classify a signer.
+
+The isolated Phase 8 TypeScript CLI declares `tsx@4.23.13` directly as a development dependency. That exact package was already locked transitively through `drizzle-kit`; promotion changed no package version, integrity hash, resolved URL or transitive graph and introduced no additional dependency.
 
 **VERIFIED — 2026-09-04:** `npm run db:migrate` completed successfully. The explicitly opted-in `npm run test:database-live` then passed against Neon: it created and read a unique run, completed one atomic compare-and-swap update, refused a stale revision, and deleted the run before emitting its sanitized success result.
 

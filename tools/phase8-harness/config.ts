@@ -6,6 +6,40 @@ const HASH = /^sha256:[0-9a-f]{64}$/;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const LOOPBACK = new Set(["127.0.0.1", "::1"]);
 
+export function assertNoSensitivePublicCollision(
+  publicValues: readonly string[],
+  sensitiveValues: readonly string[],
+): void {
+  for (const sensitive of sensitiveValues) {
+    if (
+      sensitive.length === 0 ||
+      publicValues.some((value) => value.includes(sensitive) || sensitive.includes(value))
+    ) {
+      throw new Error("PHASE8_PUBLIC_METADATA_COLLISION");
+    }
+  }
+}
+
+export function assertPhase8PublicMetadataSafe(
+  config: Phase8HarnessConfig,
+  additionalPublicValues: readonly string[] = [],
+): void {
+  const authority = config.host === "::1" ? `[::1]:${config.port}` : `${config.host}:${config.port}`;
+  assertNoSensitivePublicCollision([
+    config.mode,
+    config.host,
+    String(config.port),
+    authority,
+    `http://${authority}`,
+    config.target.action,
+    config.target.runId,
+    config.target.operation,
+    ...(config.target.walletRequestHash === null ? [] : [config.target.walletRequestHash]),
+    JSON.stringify(config.target),
+    ...additionalPublicValues,
+  ], Object.values(config.allowedEnvironment));
+}
+
 const ACTION_ENVIRONMENT: Readonly<Record<Phase8Action, readonly string[]>> = Object.freeze({
   BRICKKEN_READ: ["BRICKKEN_API_KEY"],
   BRICKKEN_PREPARE: ["DATABASE_URL", "BRICKKEN_API_KEY"],
@@ -59,7 +93,7 @@ export function readPhase8HarnessConfig(source: Phase8EnvironmentSource): Phase8
   for (const name of ACTION_ENVIRONMENT[selectedAction]) {
     allowedEnvironment[name] = required(source, name, 8_192);
   }
-  return Object.freeze({
+  const config = Object.freeze({
     mode: "sandbox",
     host: host as "127.0.0.1" | "::1",
     port: Number(rawPort),
@@ -71,6 +105,8 @@ export function readPhase8HarnessConfig(source: Phase8EnvironmentSource): Phase8
     }),
     allowedEnvironment: Object.freeze(allowedEnvironment),
   });
+  assertPhase8PublicMetadataSafe(config);
+  return config;
 }
 
 export function expectedHarnessOrigin(config: Phase8HarnessConfig): string {

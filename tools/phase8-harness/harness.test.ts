@@ -16,6 +16,15 @@ import type { Phase8ActionExecutor, Phase8HarnessConfig } from "./types";
 const SECRET = "test-only-bootstrap-secret-with-at-least-32-characters";
 const HASH = `sha256:${"a".repeat(64)}` as const;
 
+function freezeForTest<T>(value: T): T {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor && "value" in descriptor) freezeForTest(descriptor.value);
+  }
+  return Object.freeze(value);
+}
+
 function config(): Phase8HarnessConfig {
   return Object.freeze({
     mode: "sandbox",
@@ -32,7 +41,7 @@ function config(): Phase8HarnessConfig {
 }
 
 function evidence(): Phase8ActionEvidenceV1 {
-  return {
+  const value: Phase8ActionEvidenceV1 = {
     evidenceVersion: "1.0",
     harnessVersion: "1.0",
     observedAt: "2026-09-04T12:00:00.000Z",
@@ -41,7 +50,7 @@ function evidence(): Phase8ActionEvidenceV1 {
     operation: config().target.operation,
     walletRequestHash: null,
     evidenceStatus: "PASSED",
-    resultFingerprint: `sha256:${"b".repeat(64)}`,
+    resultFingerprint: "sha256:d54f68d3d3415f1b1ef4b923d428ed5be03bdf2f669eac7375cfcb0867ddb78a",
     details: {
       checkKind: "BRICKKEN_SANDBOX_NETWORK_INFO",
       checkVersion: "1.0",
@@ -49,7 +58,7 @@ function evidence(): Phase8ActionEvidenceV1 {
       requestedChainId: "11155111",
       currencyName: "Sepolia ETH",
       blockExplorerHost: "sepolia.etherscan.io",
-      authenticatedNetworkRead: true,
+      credentialBearingRequestSucceeded: true,
       resultCategory: "BRICKKEN_NETWORK_READ_PASSED",
       adapterVersion: "1.0",
       sdkVersion: "0.2.1",
@@ -57,6 +66,7 @@ function evidence(): Phase8ActionEvidenceV1 {
     limitations: [...BRICKKEN_READ_LIMITATIONS],
     redactions: [...BRICKKEN_READ_REDACTIONS],
   };
+  return freezeForTest(value);
 }
 
 function unsafeEvidence(patch: Record<string, unknown>) {
@@ -108,6 +118,16 @@ async function arm(runtime: Phase8HarnessRuntime, auth: Awaited<ReturnType<typeo
   const result = await response.json() as { ok: boolean; grantId: string };
   if (!result.ok) throw new Error("Expected grant.");
   return result.grantId;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("Phase 8 environment isolation", () => {
@@ -339,9 +359,9 @@ describe("Phase 8 one-action grants", () => {
     expect(await response.json()).toEqual({ ok: false, error: { code: "ACTION_FAILED" } });
   });
 
-  it("bounds compatibility evidence and rejects accessors without invoking them", () => {
+  it("bounds compatibility evidence and rejects accessors without invoking them", async () => {
     let reads = 0;
-    const accessor = evidence() as unknown as Record<string, unknown>;
+    const accessor = { ...evidence() } as unknown as Record<string, unknown>;
     Object.defineProperty(accessor, "details", {
       enumerable: true,
       get() {
@@ -349,12 +369,287 @@ describe("Phase 8 one-action grants", () => {
         return {};
       },
     });
-    expect(() => validatePhase8ActionEvidenceV1(accessor, config().target, [])).toThrow();
+    await expect(validatePhase8ActionEvidenceV1(accessor, config().target, [])).rejects.toThrow();
     expect(reads).toBe(0);
-    expect(() => validatePhase8ActionEvidenceV1({
+    await expect(validatePhase8ActionEvidenceV1({
       ...evidence(),
       limitations: ["x".repeat(262_145)],
-    }, config().target, [])).toThrow();
+    }, config().target, [])).rejects.toThrow();
+  });
+});
+
+describe("Phase 8 terminal Stop and deadline races", () => {
+  async function executeRequest(
+    runtime: Phase8HarnessRuntime,
+    auth: Awaited<ReturnType<typeof session>>,
+    grantId: string,
+  ) {
+    return runtime.handle(request("/execute", {
+      csrfToken: auth.csrfToken,
+      grantId,
+      confirmation: "EXECUTE",
+    }, { cookie: auth.cookie }));
+  }
+
+  async function stop(
+    runtime: Phase8HarnessRuntime,
+    auth: Awaited<ReturnType<typeof session>>,
+  ) {
+    return runtime.handle(request("/stop", { csrfToken: auth.csrfToken }, { cookie: auth.cookie }));
+  }
+
+  it("makes Stop terminal while an Execute body is still being parsed", async () => {
+    const execute = vi.fn(async () => evidence());
+    const { runtime } = harness({ execute });
+    const auth = await session(runtime);
+    const grantId = await arm(runtime, auth);
+    const payload = JSON.stringify({ csrfToken: auth.csrfToken, grantId, confirmation: "EXECUTE" });
+    let release!: () => void;
+    const bodyStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        release = () => {
+          controller.enqueue(new TextEncoder().encode(payload));
+          controller.close();
+        };
+      },
+    });
+    const pending = runtime.handle(new Request("http://127.0.0.1:43119/execute", {
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:43119",
+        origin: "http://127.0.0.1:43119",
+        "content-type": "application/json",
+        "content-length": String(payload.length),
+        cookie: auth.cookie,
+      },
+      body: bodyStream,
+      duplex: "half",
+    } as RequestInit));
+    expect((await stop(runtime, auth)).status).toBe(200);
+    release();
+    expect((await pending).status).toBe(410);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("invalidates an asynchronous executor factory and cleans up its late result", async () => {
+    const factoryStarted = deferred<void>();
+    const factoryResult = deferred<Phase8ActionExecutor>();
+    const cleanup = vi.fn(async () => undefined);
+    const execute = vi.fn(async () => evidence());
+    const runtime = new Phase8HarnessRuntime({
+      config: config(),
+      bootstrap: new OneTimeBootstrapVerifier(SECRET, { nowMs: () => 1_000 }),
+      executorFactory: async () => {
+        factoryStarted.resolve();
+        return factoryResult.promise;
+      },
+      clock: { nowMs: () => 1_000 },
+    });
+    const auth = await session(runtime);
+    const grantId = await arm(runtime, auth);
+    const pending = executeRequest(runtime, auth, grantId);
+    await factoryStarted.promise;
+    await stop(runtime, auth);
+    factoryResult.resolve({ execute, cleanup });
+    expect((await pending).status).toBe(410);
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("aborts active execution and discards every late executor settlement", async () => {
+    const started = deferred<void>();
+    const result = deferred<Phase8ActionEvidenceV1>();
+    let signal: AbortSignal | undefined;
+    const execute = vi.fn(async (context) => {
+      signal = context.signal;
+      started.resolve();
+      return result.promise;
+    });
+    const { runtime } = harness({ execute });
+    const auth = await session(runtime);
+    const grantId = await arm(runtime, auth);
+    const pending = executeRequest(runtime, auth, grantId);
+    await started.promise;
+    await stop(runtime, auth);
+    expect(signal?.aborted).toBe(true);
+    expect((await pending).status).toBe(410);
+    result.resolve(evidence());
+    await Promise.resolve();
+    expect((await executeRequest(runtime, auth, grantId)).status).toBe(410);
+  });
+
+  it("cannot return success when Stop races with evidence validation", async () => {
+    const validationStarted = deferred<void>();
+    const validationResult = deferred<Phase8ActionEvidenceV1>();
+    const cleanup = vi.fn(async () => undefined);
+    const runtime = new Phase8HarnessRuntime({
+      config: config(),
+      bootstrap: new OneTimeBootstrapVerifier(SECRET, { nowMs: () => 1_000 }),
+      executorFactory: () => ({ execute: async () => evidence(), cleanup }),
+      evidenceValidator: async () => {
+        validationStarted.resolve();
+        return validationResult.promise;
+      },
+      clock: { nowMs: () => 1_000 },
+    });
+    const auth = await session(runtime);
+    const grantId = await arm(runtime, auth);
+    const pending = executeRequest(runtime, auth, grantId);
+    await validationStarted.promise;
+    await stop(runtime, auth);
+    validationResult.resolve(evidence());
+    expect((await pending).status).toBe(410);
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("cannot return success when Stop races with cleanup", async () => {
+    const cleanupStarted = deferred<void>();
+    const cleanupResult = deferred<void>();
+    const runtime = new Phase8HarnessRuntime({
+      config: config(),
+      bootstrap: new OneTimeBootstrapVerifier(SECRET, { nowMs: () => 1_000 }),
+      executorFactory: () => ({
+        execute: async () => evidence(),
+        cleanup: async () => {
+          cleanupStarted.resolve();
+          return cleanupResult.promise;
+        },
+      }),
+      clock: { nowMs: () => 1_000 },
+    });
+    const auth = await session(runtime);
+    const grantId = await arm(runtime, auth);
+    const pending = executeRequest(runtime, auth, grantId);
+    await cleanupStarted.promise;
+    await stop(runtime, auth);
+    cleanupResult.resolve();
+    expect((await pending).status).toBe(410);
+  });
+
+  it("makes an injected execution deadline terminal and ignores a late result", async () => {
+    const started = deferred<void>();
+    const result = deferred<Phase8ActionEvidenceV1>();
+    let deadline: (() => void) | undefined;
+    const runtime = new Phase8HarnessRuntime({
+      config: config(),
+      bootstrap: new OneTimeBootstrapVerifier(SECRET, { nowMs: () => 1_000 }),
+      executorFactory: () => ({
+        execute: async () => {
+          started.resolve();
+          return result.promise;
+        },
+      }),
+      clock: { nowMs: () => 1_000 },
+      executionDeadlineMs: 25,
+      timers: {
+        setTimeout: (callback) => {
+          deadline = callback;
+          return "deadline";
+        },
+        clearTimeout: () => undefined,
+      },
+    });
+    const auth = await session(runtime);
+    const grantId = await arm(runtime, auth);
+    const pending = executeRequest(runtime, auth, grantId);
+    await started.promise;
+    deadline?.();
+    expect((await pending).status).toBe(504);
+    result.resolve(evidence());
+    await Promise.resolve();
+    expect((await executeRequest(runtime, auth, grantId)).status).toBe(410);
+  });
+});
+
+describe("Phase 8 public metadata and trusted evidence", () => {
+  it.each([
+    ["whole run id", { BRICKKEN_API_KEY: "run-secret", EDICT_PHASE8_RUN_ID: "run-secret" }],
+    ["partial run id", { BRICKKEN_API_KEY: "prefix-run-fragment-suffix", EDICT_PHASE8_RUN_ID: "run-fragment" }],
+    ["operation", { BRICKKEN_API_KEY: "TOKEN", EDICT_PHASE8_OPERATION_KIND: "TOKENIZE" }],
+    ["action", { BRICKKEN_API_KEY: "BRICKKEN", EDICT_PHASE8_ACTION: "BRICKKEN_READ" }],
+    ["port", { BRICKKEN_API_KEY: "43119" }],
+    ["one character", { BRICKKEN_API_KEY: "1" }],
+  ])("refuses an API-key/public-metadata collision: %s", (_label, patch) => {
+    const source = Object.assign({
+      EDICT_PHASE8_MODE: "sandbox",
+      EDICT_PHASE8_HOST: "127.0.0.1",
+      EDICT_PHASE8_PORT: "43119",
+      EDICT_PHASE8_ACTION: "BRICKKEN_READ",
+      EDICT_PHASE8_RUN_ID: "run-default",
+      EDICT_PHASE8_OPERATION_KIND: "TOKENIZE",
+      BRICKKEN_API_KEY: "safe-key-with-no-public-overlap",
+    }, patch);
+    expect(() => readPhase8HarnessConfig(source)).toThrow("PHASE8_PUBLIC_METADATA_COLLISION");
+  });
+
+  it("refuses a configured secret reused as a request hash", () => {
+    expect(() => readPhase8HarnessConfig({
+      EDICT_PHASE8_MODE: "sandbox",
+      EDICT_PHASE8_HOST: "127.0.0.1",
+      EDICT_PHASE8_PORT: "43119",
+      EDICT_PHASE8_ACTION: "WALLET_SEND",
+      EDICT_PHASE8_RUN_ID: "run-default",
+      EDICT_PHASE8_OPERATION_KIND: "TOKENIZE",
+      EDICT_PHASE8_WALLET_REQUEST_HASH: HASH,
+      DATABASE_URL: HASH,
+    })).toThrow("PHASE8_PUBLIC_METADATA_COLLISION");
+  });
+
+  it("renders no target metadata before bootstrap authentication", () => {
+    const page = renderHarnessPage();
+    expect(page).not.toContain(config().target.runId);
+    expect(page).not.toContain(config().target.action);
+    expect(page).not.toContain(config().target.operation);
+    expect(page).not.toContain(SECRET);
+  });
+
+  it.each([
+    ["rendered page", "Authenticate to reveal"],
+    ["session response", "csrfToken"],
+    ["Arm response", "grantId"],
+    ["Execute response", "evidence"],
+    ["error response", "ACTION_FAILED"],
+  ])("refuses an API key colliding with %s metadata", (_label, apiKey) => {
+    const unsafeConfig = Object.freeze({
+      ...config(),
+      allowedEnvironment: Object.freeze({ BRICKKEN_API_KEY: apiKey }),
+    });
+    expect(() => new Phase8HarnessRuntime({
+      config: unsafeConfig,
+      bootstrap: new OneTimeBootstrapVerifier(SECRET, { nowMs: () => 1_000 }),
+      executorFactory: () => ({ execute: async () => evidence() }),
+      clock: { nowMs: () => 1_000 },
+    })).toThrow("PHASE8_PUBLIC_METADATA_COLLISION");
+  });
+
+  it("recomputes the strict fingerprint and rejects supplied alternatives", async () => {
+    await expect(validatePhase8ActionEvidenceV1(evidence(), config().target, []))
+      .resolves.toEqual(evidence());
+    for (const patch of [
+      { resultFingerprint: `sha256:${"0".repeat(64)}` },
+      { resultFingerprint: `sha256:${"1".repeat(64)}`, observedAt: "2026-09-04T12:00:01.000Z" },
+    ]) {
+      const altered = structuredClone(evidence()) as Phase8ActionEvidenceV1;
+      Object.assign(altered, patch);
+      freezeForTest(altered);
+      await expect(validatePhase8ActionEvidenceV1(altered, config().target, []))
+        .rejects.toThrow("PHASE8_EVIDENCE_INVALID");
+    }
+  });
+
+  it("rejects mutable, unknown, accessor-backed, and secret-colliding evidence", async () => {
+    const mutable = structuredClone(evidence());
+    const unknown = structuredClone(evidence()) as Phase8ActionEvidenceV1 & { rawResponse?: string };
+    unknown.rawResponse = "forbidden";
+    freezeForTest(unknown);
+    await expect(validatePhase8ActionEvidenceV1(mutable, config().target, []))
+      .rejects.toThrow("PHASE8_EVIDENCE_INVALID");
+    await expect(validatePhase8ActionEvidenceV1(unknown, config().target, []))
+      .rejects.toThrow("PHASE8_EVIDENCE_INVALID");
+    await expect(validatePhase8ActionEvidenceV1(evidence(), config().target, ["sandbox"]))
+      .rejects.toThrow("PHASE8_EVIDENCE_INVALID");
+    await expect(validatePhase8ActionEvidenceV1(evidence(), config().target, ["box"]))
+      .rejects.toThrow("PHASE8_EVIDENCE_INVALID");
   });
 });
 
@@ -375,7 +670,7 @@ describe("Phase 8 production isolation", () => {
   });
 
   it("puts no credential name or bootstrap value into the browser page", () => {
-    const page = renderHarnessPage(config().target);
+    const page = renderHarnessPage();
     expect(page).not.toMatch(/BRICKKEN_API_KEY|DATABASE_URL|EDICT_SEPOLIA_RPC_URL/);
     expect(page).not.toContain(SECRET);
   });
@@ -407,7 +702,10 @@ describe("Phase 8 production isolation", () => {
       (name) => name.endsWith(".ts") && !name.endsWith(".test.ts"),
     )) {
       const content = fs.readFileSync(path.join(directory, filename), "utf8");
-      expect(content, filename).not.toMatch(/dotenv|env-file-if-exists|NEXT_PUBLIC_/);
+      expect(content, filename).not.toMatch(/dotenv|env-file-if-exists/);
+      if (filename !== "phase8-client-bundle-audit.ts") {
+        expect(content, filename).not.toContain("NEXT_PUBLIC_");
+      }
     }
   });
 });
