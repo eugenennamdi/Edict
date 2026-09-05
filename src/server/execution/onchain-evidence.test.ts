@@ -118,6 +118,10 @@ describe("strict wallet-request and onchain-transaction evidence", () => {
   it("requires an exact legacy gasPrice without applying type-2 fee rules", async () => {
     const { maxFeePerGas: _requestMaxFee, maxPriorityFeePerGas: _requestPriorityFee, ...requestBase } = walletRequest;
     const { maxFeePerGas: _responseMaxFee, maxPriorityFeePerGas: _responsePriorityFee, ...responseBase } = rpcTransaction;
+    void _requestMaxFee;
+    void _requestPriorityFee;
+    void _responseMaxFee;
+    void _responsePriorityFee;
     const legacyRequest = {
       ...requestBase,
       type: "0x0",
