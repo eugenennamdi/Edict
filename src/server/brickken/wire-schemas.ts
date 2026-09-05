@@ -106,10 +106,10 @@ export const balanceWhitelistSchema = z
   .passthrough();
 
 export const networkInfoSchema = z
-  .object({
-    currencyName: z.string().optional(),
-    blockExplorerUrl: z.string().optional(),
+  .strictObject({
+    currencyName: z.string().max(128).optional(),
+    blockExplorerUrl: z.string().max(2_048).optional(),
   })
-  .passthrough();
+  .readonly();
 
 export type UnsignedTransactionWire = z.infer<typeof unsignedTransactionSchema>;

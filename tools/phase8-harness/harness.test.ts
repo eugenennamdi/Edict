@@ -50,6 +50,7 @@ function evidence(): Phase8ActionEvidenceV1 {
       currencyName: "Sepolia ETH",
       blockExplorerHost: "sepolia.etherscan.io",
       authenticatedNetworkRead: true,
+      resultCategory: "BRICKKEN_NETWORK_READ_PASSED",
       adapterVersion: "1.0",
       sdkVersion: "0.2.1",
     },

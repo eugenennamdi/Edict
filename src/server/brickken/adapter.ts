@@ -13,6 +13,7 @@ import {
   readBrickkenRuntimeConfig,
   SANDBOX_BASE_URL,
   SEPOLIA_CHAIN_ID,
+  type BrickkenRuntimeConfig,
 } from "./config";
 import { BrickkenAdapterError, safeErrorMessage } from "./errors";
 import { parsePreparedOperation } from "./prepared-transaction";
@@ -40,6 +41,7 @@ import {
 
 export interface AdapterDependencies {
   readonly fetch?: typeof fetch;
+  readonly runtimeConfig?: BrickkenRuntimeConfig;
 }
 
 const RETRY = { attempts: 1, baseDelayMs: 500, jitter: false };
@@ -88,9 +90,9 @@ export function createBrickkenServerAdapter(
   deps: AdapterDependencies = {},
 ): BrickkenServerAdapter {
   const injectedFetch = deps.fetch ?? globalThis.fetch.bind(globalThis);
+  const runtimeConfig = (): BrickkenRuntimeConfig => deps.runtimeConfig ?? readBrickkenRuntimeConfig();
 
-  const resolveClient = (): AdapterResult<Brickken> => {
-    const config = readBrickkenRuntimeConfig();
+  const resolveClient = (config: BrickkenRuntimeConfig): AdapterResult<Brickken> => {
     if (!config.apiKey) return fail("CONFIGURATION_MISSING");
     if (!isSandboxBaseUrl(config.baseUrl)) return fail("CONFIGURATION_MISSING", config.apiKey);
     const client = new Brickken({
@@ -106,8 +108,8 @@ export function createBrickkenServerAdapter(
   const withClient = async <T>(
     operation: (client: Brickken, apiKey: string) => Promise<AdapterResult<T>>,
   ): Promise<AdapterResult<T>> => {
-    const config = readBrickkenRuntimeConfig();
-    const client = resolveClient();
+    const config = runtimeConfig();
+    const client = resolveClient(config);
     if (!client.ok) return client;
     try {
       const result = await operation(client.value, config.apiKey ?? "");

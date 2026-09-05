@@ -284,6 +284,59 @@ describe("Brickken server adapter", () => {
     if (!missing.ok) expect(missing.error.code).toBe("CONFIGURATION_MISSING");
   });
 
+  it("uses an explicitly injected sandbox configuration without reading global environment", async () => {
+    const requests: string[] = [];
+    const adapter = createBrickkenServerAdapter({
+      runtimeConfig: {
+        apiKey: TEST_KEY,
+        baseUrl: "https://api.sandbox.brickken.com",
+        chainId: "11155111",
+      },
+      fetch: async (input) => {
+        requests.push(String(input));
+        return jsonResponse({
+          currencyName: "Sepolia ETH",
+          blockExplorerUrl: "https://sepolia.etherscan.io",
+        });
+      },
+    });
+    delete process.env.BRICKKEN_API_KEY;
+    delete process.env.BRICKKEN_BASE_URL;
+
+    const result = await adapter.getNetworkInfo({ chainId: "11155111" });
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        currencyName: "Sepolia ETH",
+        blockExplorerHost: "sepolia.etherscan.io",
+      },
+    });
+    expect(requests).toEqual([
+      "https://api.sandbox.brickken.com/get-network-info?chainId=11155111",
+    ]);
+  });
+
+  it("rejects unexpected network-info response fields", async () => {
+    const adapter = createBrickkenServerAdapter({
+      runtimeConfig: {
+        apiKey: TEST_KEY,
+        baseUrl: "https://api.sandbox.brickken.com",
+        chainId: "11155111",
+      },
+      fetch: async () => jsonResponse({
+        currencyName: "Sepolia ETH",
+        blockExplorerUrl: "https://sepolia.etherscan.io",
+        signer: TOKENIZER,
+      }),
+    });
+
+    const result = await adapter.getNetworkInfo({ chainId: "11155111" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INVALID_EXTERNAL_RESPONSE");
+  });
+
   it("excludes the live smoke test from the default Vitest config", () => {
     const config = fs.readFileSync(path.resolve(__dirname, "../../../vitest.config.mts"), "utf-8");
     expect(config).toContain("live-read.smoke.test.ts");

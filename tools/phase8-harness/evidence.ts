@@ -16,6 +16,7 @@ const brickkenReadDetailsSchema = z.strictObject({
   currencyName: z.literal("Sepolia ETH"),
   blockExplorerHost: z.literal("sepolia.etherscan.io"),
   authenticatedNetworkRead: z.literal(true),
+  resultCategory: z.literal("BRICKKEN_NETWORK_READ_PASSED"),
   adapterVersion: z.literal("1.0"),
   sdkVersion: z.literal("0.2.1"),
 });

@@ -2,9 +2,9 @@
 
 ## Status and hard stops
 
-**DECISION** — Phase 8 is complete offline. It provides hardened provider handling, `ExecutionRunV3`, strict trusted-RPC transaction/receipt comparators, and a deny-by-default authorization harness. The implementation did not start the harness, apply migration `0002_gorgeous_squadron_sinister.sql`, access Neon, call Brickken or RPC, request a wallet account/signature/transaction, broadcast, confirm, poll, or read back.
+**DECISION** — Phase 8 is complete offline. It provides hardened provider handling, `ExecutionRunV3`, strict trusted-RPC transaction/receipt comparators, a deny-by-default authorization harness, and one concrete `BRICKKEN_READ` executor. The executor implementation did not start the harness, apply migration `0002_gorgeous_squadron_sinister.sql`, access Neon, call Brickken or RPC, request a wallet account/signature/transaction, broadcast, confirm, poll, or read back.
 
-**DECISION** — The harness is an authorization and evidence-validation shell, not a production route and not a general live-action dispatcher. `runPhase8HarnessCli()` accepts only an explicitly injected, action-specific executor factory. No live executor or command that can contact an external system is composed in the repository. This is intentional: action wiring must be separately reviewed against the selected run, wallet/version and operator credentials before its one controlled use.
+**DECISION** — The harness is an authorization and evidence-validation shell, not a production route and not a general live-action dispatcher. `runPhase8HarnessCli()` accepts only an explicitly injected, action-specific executor factory. The sole concrete composition is `BRICKKEN_READ`: an authenticated Brickken sandbox connectivity and Sepolia network-information check. It is not imported by the production application and has not been run. Every later action still requires a separately reviewed executor.
 
 **DECISION** — No wallet is selected, privileged or verified. EIP-6963 display metadata is self-asserted. A result applies only to the exact selected provider instance, operator-recorded wallet version, run, operation and wallet-request hash. It does not certify a wallet brand, another version, WalletConnect, another operation or another prepared transaction.
 
@@ -23,7 +23,7 @@ git status --short
 
 Expected result: lint, typecheck, default tests, production build, harness compile and Phase 8 offline tests pass; `git status --short` is empty. These commands require no live variables and make no Neon, Brickken, RPC, wallet or blockchain request.
 
-Before authorizing even a read-only action, the account holder must independently confirm sandbox ownership, the exact tokenizer signer, Sepolia funding, signer approval, active tokenizer license, sufficient per-method credits, the selected wallet/version, and the intended single run/operation. License, credits, write payload compatibility and write behavior are currently unverified.
+No live action is authorized by the implementation work. Any later use must be separately authorized and performed by the authorized account holder/operator under Brickken's terms. Generic API request or credit accounting for the network-information method is undocumented. License, credits, signer approval, write payload compatibility, wallet compatibility and write behavior remain unverified.
 
 ## Harness boundary
 
@@ -55,7 +55,7 @@ The selected action receives only this credential allowlist:
 | `RPC_FINALITY` | `DATABASE_URL`, `EDICT_SEPOLIA_RPC_URL` |
 | `BRICKKEN_READ_BACK` | `DATABASE_URL`, `BRICKKEN_API_KEY` |
 
-There is no environment spread, environment dump, root environment-file loading or browser delivery. An action-specific runner must receive credentials through an approved secure server-side workflow, directly construct this minimal source object, and pass only it to `runPhase8HarnessCli()`. It must not construct a client until the factory is called after Execute.
+There is no environment spread, environment dump, root environment-file loading or browser delivery. The `BRICKKEN_READ` runner copies only the listed non-secret harness settings and `BRICKKEN_API_KEY`, hard-codes its action and sandbox mode, and accepts no command arguments. It constructs neither the adapter nor its transport until the single-use Execute grant has passed and the executor has revalidated its narrowed configuration.
 
 ## Independent stopping points
 
@@ -63,7 +63,7 @@ Each row is a separate process and fresh human decision. A successful action con
 
 | Stop | Exact action | Preconditions and successful sanitized evidence | Mandatory stop |
 | --- | --- | --- | --- |
-| 1 | `BRICKKEN_READ` | Authenticated sandbox eligibility/account observations; no write | Review signer, license and credit evidence manually. |
+| 1 | `BRICKKEN_READ` | Authenticated sandbox connectivity and a normalized Sepolia network-information response; no write | Stop. This proves neither signer approval, license, credits nor prepare readiness. |
 | 2 | `BRICKKEN_PREPARE` | Exact run/revision/operation; one validated prepared transaction; sanitized field names, hashes and selector only | Persist and review; do not open a wallet prompt. Ambiguous prepare blocks. |
 | 3 | `WALLET_APPROVAL` | Explicit EIP-6963 selection; exact signer/chain/challenge; operator records wallet version as unverified metadata | Persist approval result; do not send a transaction. |
 | 4 | `WALLET_SEND` | Exact prepared wallet-request hash; durable prompt lock; separate visible Execute | Persist returned hash or `BROADCAST_UNKNOWN`; never resend automatically. |
@@ -103,7 +103,9 @@ The implementation does not claim automatic replacement detection. A missing tra
 
 `ExecutionRunV3` is entered only by `RECORD_ONCHAIN_TRANSACTION_EVIDENCE` from `BROADCAST_HASH_PERSISTED`. Confirmation requires `MATCH/CLEAR`. Read-back requires a matching, successful, finalized receipt. Mismatch evidence is preserved and moves the run to `RECONCILIATION_REQUIRED`; a reverted receipt is terminal failed. Evidence is strictly parsed, newly copied, deeply frozen and stored per operation. V1 and V2 decode unchanged and are never silently upgraded.
 
-The action harness accepts only `Phase8ActionEvidenceV1`, bounded to 262,144 code units. It binds harness version, timestamp, exact action/run/operation/request hash, status, optional result fingerprint, bounded scalar details, limitations and an explicit redaction list. Secret-like detail names, accessor-backed structures, oversized values and any configured credential value are rejected before an `ok: true` response. Raw RPC/Brickken bodies, complete calldata, complete approval signatures, credentials and run capabilities are not evidence.
+The action harness accepts only successful, strictly action-specific `Phase8ActionEvidenceV1`, bounded to 262,144 code units. Outer `ok: true` requires executor success, exact `PASSED` status, strict validation, sanitization and successful awaited cleanup. `FAILED`, `BLOCKED`, `INCONCLUSIVE`, malformed, accessor-backed, cyclic, oversized or unexpected evidence fails with an Edict-owned error and no upstream content.
+
+`BRICKKEN_READ` evidence is projected only from the normalized `currencyName` and block-explorer host plus fixed action metadata. It records the fixed Sepolia chain request, a canonical SHA-256 fingerprint of that allowlisted projection, observation time, public adapter/SDK versions, explicit limitations and redaction categories. Raw Brickken bodies, request/response headers, credentials, database/RPC URLs, run capabilities, challenge tokens, signatures, private signing material, tokenizer email, claimed signer identity, complete prepared transactions and calldata cannot enter this schema.
 
 ## Current evidence and unresolved prerequisites
 
@@ -111,4 +113,10 @@ The action harness accepts only `Phase8ActionEvidenceV1`, bounded to 262,144 cod
 
 **OPEN QUESTION** — No authenticated Brickken write has occurred. Signer approval, tokenizer licensing, credits, prepared write payloads, selected-wallet compatibility, provider chain behavior, durable V3 data on Neon, RPC transaction equivalence, receipts, finality, Brickken confirmation/status and post-write behavior remain unverified. Migration `0002_gorgeous_squadron_sinister.sql` must receive separate authorization before application.
 
-The first later live activity should be one separately authorized `BRICKKEN_READ` eligibility action using a reviewed action-specific executor. It must emit only `Phase8ActionEvidenceV1`, stop after the read, and must not prepare, sign, send, query RPC, confirm, poll or read back.
+The first possible later live activity is the separately authorized command below. It has not been authorized or executed by this implementation task:
+
+```sh
+npm run phase8:brickken-read
+```
+
+The command accepts no arguments or credential on its command line, retains the interactive TTY bootstrap plus separate Arm and Execute decisions, makes at most one fixed `GET /get-network-info?chainId=11155111` request, emits only strict `Phase8ActionEvidenceV1`, and stops. Success proves only that the supplied server-side credential was accepted for this endpoint, the sandbox responded, and the normalized response matched the expected Sepolia network contract. It does not prove tokenizer signer approval, license status, remaining credits, prepare eligibility, wallet compatibility, ability to tokenize/whitelist/mint, or blockchain execution readiness.
