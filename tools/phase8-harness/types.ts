@@ -36,5 +36,6 @@ export interface Phase8ActionContext {
 }
 
 export interface Phase8ActionExecutor {
-  execute(context: Phase8ActionContext): Promise<unknown>;
+  execute(context: Phase8ActionContext): Promise<import("./evidence").Phase8ActionEvidenceV1>;
+  cleanup?(): Promise<void>;
 }

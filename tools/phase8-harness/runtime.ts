@@ -208,15 +208,20 @@ export class Phase8HarnessRuntime {
     this.#grant = null;
     try {
       const executor = this.#executorFactory();
-      const rawEvidence = await executor.execute({
-        target: this.#config.target,
-        allowedEnvironment: this.#config.allowedEnvironment,
-      });
-      const evidence = validatePhase8ActionEvidenceV1(
-        rawEvidence,
-        this.#config.target,
-        Object.values(this.#config.allowedEnvironment),
-      );
+      let evidence;
+      try {
+        const rawEvidence = await executor.execute({
+          target: this.#config.target,
+          allowedEnvironment: this.#config.allowedEnvironment,
+        });
+        evidence = validatePhase8ActionEvidenceV1(
+          rawEvidence,
+          this.#config.target,
+          Object.values(this.#config.allowedEnvironment),
+        );
+      } finally {
+        await executor.cleanup?.();
+      }
       this.#stopped = true;
       return json(200, { ok: true, category: this.#config.target.action, evidence });
     } catch {

@@ -4,7 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 import { OneTimeBootstrapVerifier } from "./auth";
 import { runPhase8HarnessCli } from "./cli";
 import { readPhase8HarnessConfig } from "./config";
-import { validatePhase8ActionEvidenceV1 } from "./evidence";
+import {
+  BRICKKEN_READ_LIMITATIONS,
+  BRICKKEN_READ_REDACTIONS,
+  validatePhase8ActionEvidenceV1,
+  type Phase8ActionEvidenceV1,
+} from "./evidence";
 import { HARNESS_BODY_LIMIT_BYTES, Phase8HarnessRuntime, renderHarnessPage } from "./runtime";
 import type { Phase8ActionExecutor, Phase8HarnessConfig } from "./types";
 
@@ -17,27 +22,44 @@ function config(): Phase8HarnessConfig {
     host: "127.0.0.1",
     port: 43119,
     target: Object.freeze({
-      action: "WALLET_SEND",
+      action: "BRICKKEN_READ",
       runId: "run-1",
       operation: "TOKENIZE",
-      walletRequestHash: HASH,
+      walletRequestHash: null,
     }),
     allowedEnvironment: Object.freeze(Object.create(null) as Record<string, string>),
   });
 }
 
-function evidence(details: Record<string, string | number | boolean | null> = { status: "PASSED" }) {
+function evidence(): Phase8ActionEvidenceV1 {
   return {
     evidenceVersion: "1.0",
     harnessVersion: "1.0",
     observedAt: "2026-09-04T12:00:00.000Z",
-    ...config().target,
+    action: "BRICKKEN_READ",
+    runId: config().target.runId,
+    operation: config().target.operation,
+    walletRequestHash: null,
     evidenceStatus: "PASSED",
-    resultFingerprint: null,
-    details,
-    limitations: ["One exact wallet, version, operation, and transaction profile only."],
-    redactions: ["CREDENTIALS", "RAW_EXTERNAL_RESPONSES"],
+    resultFingerprint: `sha256:${"b".repeat(64)}`,
+    details: {
+      checkKind: "BRICKKEN_SANDBOX_NETWORK_INFO",
+      checkVersion: "1.0",
+      environment: "sandbox",
+      requestedChainId: "11155111",
+      currencyName: "Sepolia ETH",
+      blockExplorerHost: "sepolia.etherscan.io",
+      authenticatedNetworkRead: true,
+      adapterVersion: "1.0",
+      sdkVersion: "0.2.1",
+    },
+    limitations: [...BRICKKEN_READ_LIMITATIONS],
+    redactions: [...BRICKKEN_READ_REDACTIONS],
   };
+}
+
+function unsafeEvidence(patch: Record<string, unknown>) {
+  return { ...evidence(), ...patch } as unknown as Phase8ActionEvidenceV1;
 }
 
 function harness(executor: Phase8ActionExecutor = { execute: vi.fn(async () => evidence()) }) {
@@ -193,7 +215,7 @@ describe("Phase 8 one-action grants", () => {
     }, { cookie: auth.cookie }));
     expect(response.status).toBe(200);
     expect(execute).toHaveBeenCalledTimes(1);
-    expect((await response.json()).category).toBe("WALLET_SEND");
+    expect((await response.json()).category).toBe("BRICKKEN_READ");
     const replay = await runtime.handle(request("/execute", {
       csrfToken: auth.csrfToken,
       grantId,
@@ -261,7 +283,7 @@ describe("Phase 8 one-action grants", () => {
   it("never prints ok true for action or evidence-sanitization failures", async () => {
     for (const executor of [
       { execute: vi.fn(async () => { throw new Error("sensitive failure"); }) },
-      { execute: vi.fn(async () => evidence({ apiKey: "must-not-return" })) },
+      { execute: vi.fn(async () => unsafeEvidence({ unexpected: "must-not-return" })) },
     ]) {
       const { runtime } = harness(executor);
       const auth = await session(runtime);
@@ -276,9 +298,49 @@ describe("Phase 8 one-action grants", () => {
     }
   });
 
+  it.each(["FAILED", "BLOCKED", "INCONCLUSIVE", "UNKNOWN"])(
+    "never returns ok true for %s evidence",
+    async (evidenceStatus) => {
+      const { runtime } = harness({
+        execute: vi.fn(async () => unsafeEvidence({ evidenceStatus })),
+      });
+      const auth = await session(runtime);
+      const grantId = await arm(runtime, auth);
+      const response = await runtime.handle(request("/execute", {
+        csrfToken: auth.csrfToken,
+        grantId,
+        confirmation: "EXECUTE",
+      }, { cookie: auth.cookie }));
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({ ok: false, error: { code: "ACTION_FAILED" } });
+    },
+  );
+
+  it("awaits cleanup and never returns ok true when cleanup fails", async () => {
+    let cleanupFinished = false;
+    const { runtime } = harness({
+      execute: vi.fn(async () => evidence()),
+      cleanup: vi.fn(async () => {
+        await Promise.resolve();
+        cleanupFinished = true;
+        throw new Error("sensitive cleanup failure");
+      }),
+    });
+    const auth = await session(runtime);
+    const grantId = await arm(runtime, auth);
+    const response = await runtime.handle(request("/execute", {
+      csrfToken: auth.csrfToken,
+      grantId,
+      confirmation: "EXECUTE",
+    }, { cookie: auth.cookie }));
+    expect(cleanupFinished).toBe(true);
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ ok: false, error: { code: "ACTION_FAILED" } });
+  });
+
   it("bounds compatibility evidence and rejects accessors without invoking them", () => {
     let reads = 0;
-    const accessor = evidence();
+    const accessor = evidence() as unknown as Record<string, unknown>;
     Object.defineProperty(accessor, "details", {
       enumerable: true,
       get() {
@@ -333,7 +395,7 @@ describe("Phase 8 production isolation", () => {
   it("requires a real interactive TTY before generating or starting", async () => {
     await expect(runPhase8HarnessCli({
       environment: {},
-      executorFactory: () => ({ execute: async () => evidence({ status: "unused" }) }),
+      executorFactory: () => ({ execute: async () => evidence() }),
       terminal: { isTTY: false, write: () => true },
     })).rejects.toThrow("PHASE8_INTERACTIVE_TTY_REQUIRED");
   });
