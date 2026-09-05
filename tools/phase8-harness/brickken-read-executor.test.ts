@@ -248,13 +248,14 @@ describe("BRICKKEN_READ lifecycle and wire contract", () => {
 
     expect(Object.keys(config.allowedEnvironment)).toEqual(["BRICKKEN_API_KEY"]);
     expect(factory).toHaveBeenCalledTimes(1);
-    expect(factory.mock.calls[0]?.[0]).toEqual({
+    expect(factory.mock.calls[0]?.[0]).toMatchObject({
       runtimeConfig: {
         apiKey: API_KEY,
         baseUrl: "https://api.sandbox.brickken.com",
         chainId: "11155111",
       },
     });
+    expect(factory.mock.calls[0]?.[0].fetch).toBeTypeOf("function");
   });
 
   it("calls no prepare, send, status, database, RPC, wallet, confirmation, polling, or read-back method", async () => {
@@ -287,6 +288,10 @@ describe("BRICKKEN_READ lifecycle and wire contract", () => {
     const cases: Phase8ActionContext[] = [
       { target: base.target, allowedEnvironment: {} },
       { target: base.target, allowedEnvironment: { BRICKKEN_API_KEY: ` ${API_KEY}` } },
+      { target: base.target, allowedEnvironment: { BRICKKEN_API_KEY: `${API_KEY}\r\n` } },
+      { target: base.target, allowedEnvironment: { BRICKKEN_API_KEY: `${API_KEY}\u0000` } },
+      { target: base.target, allowedEnvironment: { BRICKKEN_API_KEY: `${API_KEY}\u007f` } },
+      { target: base.target, allowedEnvironment: { BRICKKEN_API_KEY: `${API_KEY}é` } },
       { target: base.target, allowedEnvironment: { BRICKKEN_API_KEY: API_KEY, DATABASE_URL: "x" } },
       { target: { ...base.target, action: "BRICKKEN_PREPARE" as const }, allowedEnvironment: base.allowedEnvironment },
     ];
@@ -298,6 +303,48 @@ describe("BRICKKEN_READ lifecycle and wire contract", () => {
       });
     }
     expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("aborts on its independent deadline and discards late settlement", async () => {
+    vi.useFakeTimers();
+    let settle: ((value: unknown) => void) | undefined;
+    const operation = new Promise((resolve) => { settle = resolve; });
+    let observedSignal: AbortSignal | undefined;
+    const factory = vi.fn((dependencies: AdapterDependencies) => {
+      observedSignal = undefined;
+      void dependencies.fetch?.("https://api.sandbox.brickken.com/get-network-info?chainId=11155111", {
+        method: "GET",
+        headers: { "x-api-key": API_KEY },
+      }).catch(() => undefined);
+      return fakeAdapter(operation).adapter;
+    });
+    const executor = createBrickkenReadExecutor({
+      adapterFactory: factory,
+      fetch: vi.fn(async (_input, init) => {
+        observedSignal = init?.signal ?? undefined;
+        return operation as Promise<Response>;
+      }),
+      deadlineMs: 25,
+      now: () => NOW,
+    });
+    const config = readPhase8HarnessConfig(environment());
+    const pending = executor.execute({
+      target: config.target,
+      allowedEnvironment: config.allowedEnvironment,
+    });
+    const rejected = expect(pending).rejects.toMatchObject({
+      code: "BRICKKEN_NETWORK_READ_FAILED",
+    });
+
+    await vi.advanceTimersByTimeAsync(25);
+    await rejected;
+    expect(observedSignal?.aborted).toBe(true);
+    settle?.({
+      ok: true,
+      value: { currencyName: "Sepolia ETH", blockExplorerHost: "sepolia.etherscan.io" },
+    });
+    await Promise.resolve();
+    vi.useRealTimers();
   });
 
   it("stopping before Execute prevents adapter construction and requests", async () => {

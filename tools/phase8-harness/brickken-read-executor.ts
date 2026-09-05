@@ -12,6 +12,7 @@ import {
   SEPOLIA_CHAIN_ID,
 } from "../../src/server/brickken/config";
 import type { BrickkenServerAdapter } from "../../src/server/brickken/types";
+import { createBrickkenReadTransport } from "./brickken-read-transport";
 import {
   BRICKKEN_READ_LIMITATIONS,
   BRICKKEN_READ_REDACTIONS,
@@ -21,6 +22,7 @@ import type { Phase8ActionContext, Phase8ActionExecutor } from "./types";
 
 export const BRICKKEN_READ_ADAPTER_VERSION = "1.0";
 export const BRICKKEN_READ_SDK_VERSION = "0.2.1";
+export const BRICKKEN_READ_DEADLINE_MS = 15_000;
 
 export type BrickkenReadFailureCode =
   | "BRICKKEN_NETWORK_READ_FAILED"
@@ -43,6 +45,10 @@ export interface BrickkenReadExecutorDependencies {
   readonly adapterFactory?: AdapterFactory;
   readonly fetch?: typeof fetch;
   readonly now?: () => Date;
+  readonly deadlineMs?: number;
+  readonly setTimeout?: typeof globalThis.setTimeout;
+  readonly clearTimeout?: typeof globalThis.clearTimeout;
+  readonly allowEmptyResponseUrl?: boolean;
 }
 
 const normalizedNetworkResultSchema = z.strictObject({
@@ -75,7 +81,7 @@ function inspectContext(context: Phase8ActionContext): string {
     const apiKey = context.allowedEnvironment.BRICKKEN_API_KEY;
     if (
       typeof apiKey !== "string" || apiKey.length === 0 || apiKey.length > 8_192 ||
-      apiKey.trim() !== apiKey
+      apiKey.trim() !== apiKey || !/^[\x21-\x7e]+$/.test(apiKey)
     ) {
       return refuse("BRICKKEN_NETWORK_READ_FAILED");
     }
@@ -112,6 +118,21 @@ export function createBrickkenReadExecutor(
   return Object.freeze({
     async execute(context: Phase8ActionContext): Promise<Phase8ActionEvidenceV1> {
       const apiKey = inspectContext(context);
+      const deadlineMs = dependencies.deadlineMs ?? BRICKKEN_READ_DEADLINE_MS;
+      if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > 60_000) {
+        return refuse("BRICKKEN_NETWORK_READ_FAILED");
+      }
+      const deadlineAbort = new AbortController();
+      const executionSignal = context.signal === undefined
+        ? deadlineAbort.signal
+        : AbortSignal.any([context.signal, deadlineAbort.signal]);
+      const underlyingFetch = dependencies.fetch ?? globalThis.fetch.bind(globalThis);
+      const transport = createBrickkenReadTransport({
+        fetch: underlyingFetch,
+        apiKey,
+        signal: executionSignal,
+        allowEmptyResponseUrl: dependencies.allowEmptyResponseUrl ?? dependencies.fetch !== undefined,
+      });
       const adapterFactory = dependencies.adapterFactory ?? createBrickkenServerAdapter;
       const adapter = adapterFactory({
         runtimeConfig: Object.freeze({
@@ -119,14 +140,27 @@ export function createBrickkenReadExecutor(
           baseUrl: SANDBOX_BASE_URL,
           chainId: SEPOLIA_CHAIN_ID,
         }),
-        ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
+        fetch: transport,
       });
 
       let rawResult: unknown;
+      const setTimer = dependencies.setTimeout ?? globalThis.setTimeout;
+      const clearTimer = dependencies.clearTimeout ?? globalThis.clearTimeout;
+      let abortListener: (() => void) | undefined;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        abortListener = () => reject(new BrickkenReadExecutorError("BRICKKEN_NETWORK_READ_FAILED"));
+        if (executionSignal.aborted) abortListener();
+        else executionSignal.addEventListener("abort", abortListener, { once: true });
+      });
+      const timer = setTimer(() => deadlineAbort.abort(), deadlineMs);
       try {
-        rawResult = await adapter.getNetworkInfo({ chainId: "11155111" });
+        const operation = adapter.getNetworkInfo({ chainId: "11155111" });
+        rawResult = await Promise.race([operation, aborted]);
       } catch {
         return refuse("BRICKKEN_NETWORK_READ_FAILED");
+      } finally {
+        clearTimer(timer);
+        if (abortListener) executionSignal.removeEventListener("abort", abortListener);
       }
       const result = parseNetworkResult(rawResult);
       if (

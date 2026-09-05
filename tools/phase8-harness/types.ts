@@ -33,6 +33,7 @@ export interface Phase8HarnessConfig {
 export interface Phase8ActionContext {
   readonly target: Phase8PublicTarget;
   readonly allowedEnvironment: Readonly<Record<string, string>>;
+  readonly signal?: AbortSignal;
 }
 
 export interface Phase8ActionExecutor {
