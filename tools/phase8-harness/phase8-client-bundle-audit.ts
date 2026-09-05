@@ -1,15 +1,38 @@
 import "server-only";
 
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { OneTimeBootstrapVerifier } from "./auth";
-import { readPhase8HarnessConfig } from "./config";
-import { Phase8HarnessRuntime } from "./runtime";
 
 export const PHASE8_CLIENT_AUDIT_SENTINEL =
   "phase8-synthetic-client-credential-sentinel-7f6c";
+
+const EXPECTED_API_ROUTES = Object.freeze([
+  "/api/runs",
+  "/api/runs/[runId]",
+  "/api/runs/[runId]/approval",
+  "/api/runs/[runId]/approval-challenges",
+  "/api/runs/[runId]/cancel",
+] as const);
+
+const EXPECTED_APP_PATHS = Object.freeze([
+  "/_not-found/page",
+  "/page",
+  ...EXPECTED_API_ROUTES.map((route) => `${route}/route`),
+] as const);
+
+const ALLOWED_APP_PATHS = new Set([...EXPECTED_APP_PATHS, "/_global-error/page"]);
+
+const REQUIRED_MANIFESTS = Object.freeze([
+  ".next/BUILD_ID",
+  ".next/build-manifest.json",
+  ".next/prerender-manifest.json",
+  ".next/routes-manifest.json",
+  ".next/server/app-paths-manifest.json",
+] as const);
 
 const PROHIBITED_PUBLIC_TOKENS = Object.freeze([
   PHASE8_CLIENT_AUDIT_SENTINEL,
@@ -20,97 +43,462 @@ const PROHIBITED_PUBLIC_TOKENS = Object.freeze([
   "EDICT_RUN_SECURITY_SECRET",
   "createBrickkenReadExecutor",
   "createBrickkenReadTransport",
+  "tools/phase8-harness",
+  "phase8-harness",
   "brickken-sdk",
   "node:crypto",
 ] as const);
 
+const MAX_AUDITED_FILE_BYTES = 64 * 1_024 * 1_024;
+const BUILD_TIMEOUT_MS = 180_000;
+
+interface AuditStats {
+  readonly size: number;
+  readonly mtimeMs: number;
+  isDirectory(): boolean;
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+export interface Phase8AuditFileSystem {
+  copyDirectory(source: string, destination: string): void;
+  exists(target: string): boolean;
+  lstat(target: string): AuditStats;
+  mkdir(target: string, options?: { readonly recursive?: boolean }): void;
+  mkdtemp(prefix: string): string;
+  readDirectory(target: string): string[];
+  readFile(target: string): Buffer;
+  remove(target: string): void;
+  writeFile(target: string, value: string | Uint8Array): void;
+}
+
+export interface Phase8BuildResult {
+  readonly status: number | null;
+  readonly output: string;
+}
+
+export interface Phase8AuditProcessBoundary {
+  sourceRevision(projectRoot: string): string;
+  trackedFiles(projectRoot: string): readonly string[];
+  runBuild(input: {
+    readonly workspace: string;
+    readonly networkPolicy: string;
+    readonly builder: "turbopack" | "webpack";
+  }): Phase8BuildResult;
+}
+
+export interface Phase8ClientBundleAuditDependencies {
+  readonly fileSystem?: Phase8AuditFileSystem;
+  readonly process?: Phase8AuditProcessBoundary;
+}
+
 export interface Phase8ClientBundleAuditOptions {
   readonly projectRoot: string;
   readonly temporaryRoot?: string;
-  readonly productionPublicDirectory?: string;
-  readonly renderPage?: () => string | Promise<string>;
-  readonly cleanup?: (directory: string) => void;
+  readonly dependencies?: Phase8ClientBundleAuditDependencies;
 }
 
-function auditDirectory(directory: string): void {
-  if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) {
-    throw new Error("PHASE8_CLIENT_BUNDLE_AUDIT_FAILED");
-  }
-  for (const entry of fs.readdirSync(directory, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const filename = path.join(entry.parentPath, entry.name);
-    const content = fs.readFileSync(filename);
-    const rendered = content.toString("utf8");
-    if (PROHIBITED_PUBLIC_TOKENS.some((token) => rendered.includes(token))) {
+export interface Phase8ClientBundleAuditResult {
+  readonly sourceRevision: string;
+  readonly sourceDigest: `sha256:${string}`;
+  readonly artifactDigest: `sha256:${string}`;
+  readonly builder: "turbopack" | "webpack";
+  readonly apiRoutes: readonly string[];
+}
+
+const NODE_FILE_SYSTEM: Phase8AuditFileSystem = {
+  copyDirectory: (source, destination) => {
+    fs.cpSync(source, destination, {
+      recursive: true,
+      errorOnExist: true,
+      mode: fs.constants.COPYFILE_FICLONE,
+    });
+  },
+  exists: (target) => fs.existsSync(target),
+  lstat: (target) => fs.lstatSync(target),
+  mkdir: (target, options) => { fs.mkdirSync(target, options); },
+  mkdtemp: (prefix) => fs.mkdtempSync(prefix),
+  readDirectory: (target) => fs.readdirSync(target),
+  readFile: (target) => fs.readFileSync(target),
+  remove: (target) => { fs.rmSync(target, { recursive: true }); },
+  writeFile: (target, value) => { fs.writeFileSync(target, value); },
+};
+
+function commandResult(command: string, args: readonly string[], cwd: string) {
+  return spawnSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    env: { PATH: "/usr/bin:/bin" },
+    maxBuffer: 8 * 1_024 * 1_024,
+    timeout: BUILD_TIMEOUT_MS,
+  });
+}
+
+const NODE_PROCESS_BOUNDARY: Phase8AuditProcessBoundary = {
+  sourceRevision(projectRoot) {
+    const result = commandResult("git", ["rev-parse", "HEAD"], projectRoot);
+    const revision = result.stdout.trim();
+    if (result.status !== 0 || !/^[0-9a-f]{40}$/.test(revision)) {
       throw new Error("PHASE8_CLIENT_BUNDLE_AUDIT_FAILED");
     }
+    return revision;
+  },
+  trackedFiles(projectRoot) {
+    const result = spawnSync("git", ["ls-files", "-z", "--cached"], {
+      cwd: projectRoot,
+      env: { PATH: "/usr/bin:/bin" },
+      encoding: "buffer",
+      maxBuffer: 8 * 1_024 * 1_024,
+      timeout: BUILD_TIMEOUT_MS,
+    });
+    if (result.status !== 0 || !(result.stdout instanceof Buffer)) {
+      throw new Error("PHASE8_CLIENT_BUNDLE_AUDIT_FAILED");
+    }
+    return result.stdout.toString("utf8").split("\0").filter(Boolean).sort();
+  },
+  runBuild({ workspace, networkPolicy, builder }) {
+    const args = [
+      "-f",
+      networkPolicy,
+      "/usr/bin/env",
+      "node",
+      "node_modules/next/dist/bin/next",
+      "build",
+      ...(builder === "webpack" ? ["--webpack"] : []),
+    ];
+    const result = spawnSync("/usr/bin/sandbox-exec", args, {
+      cwd: workspace,
+      encoding: "utf8",
+      env: {
+        NODE_ENV: "production",
+        NEXT_TELEMETRY_DISABLED: "1",
+        CI: "1",
+        PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+        npm_config_audit: "false",
+        npm_config_fund: "false",
+        npm_config_offline: "true",
+        npm_config_update_notifier: "false",
+        BRICKKEN_API_KEY: PHASE8_CLIENT_AUDIT_SENTINEL,
+      },
+      maxBuffer: 16 * 1_024 * 1_024,
+      timeout: BUILD_TIMEOUT_MS,
+    });
+    return {
+      status: result.status,
+      output: `${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+    };
+  },
+};
+
+function fail(): never {
+  throw new Error("PHASE8_CLIENT_BUNDLE_AUDIT_FAILED");
+}
+
+function artifactFail(code: string): never {
+  throw new Error(`PHASE8_CLIENT_BUNDLE_ARTIFACT_${code}`);
+}
+
+function isRuntimeEnvironmentFile(relative: string): boolean {
+  const name = path.posix.basename(relative);
+  return name === ".env" || (name.startsWith(".env.") && name !== ".env.example");
+}
+
+function validateTrackedPath(relative: string): void {
+  if (
+    relative.length === 0 || relative.includes("\0") || path.isAbsolute(relative) ||
+    path.posix.normalize(relative) !== relative || relative === ".." || relative.startsWith("../") ||
+    relative === ".next" || relative.startsWith(".next/") ||
+    relative === "node_modules" || relative.startsWith("node_modules/") ||
+    isRuntimeEnvironmentFile(relative)
+  ) fail();
+}
+
+function updateDigest(hash: ReturnType<typeof createHash>, relative: string, content: Buffer): void {
+  const name = Buffer.from(relative, "utf8");
+  const sizes = Buffer.allocUnsafe(16);
+  sizes.writeBigUInt64BE(BigInt(name.byteLength), 0);
+  sizes.writeBigUInt64BE(BigInt(content.byteLength), 8);
+  hash.update(sizes).update(name).update(content);
+}
+
+function copyTrackedSnapshot(input: {
+  readonly fileSystem: Phase8AuditFileSystem;
+  readonly projectRoot: string;
+  readonly workspace: string;
+  readonly files: readonly string[];
+}): `sha256:${string}` {
+  const hash = createHash("sha256");
+  for (const relative of input.files) {
+    validateTrackedPath(relative);
+    const source = path.join(input.projectRoot, relative);
+    const stat = input.fileSystem.lstat(source);
+    if (!stat.isFile() || stat.isSymbolicLink()) fail();
+    const content = input.fileSystem.readFile(source);
+    const destination = path.join(input.workspace, relative);
+    input.fileSystem.mkdir(path.dirname(destination), { recursive: true });
+    input.fileSystem.writeFile(destination, content);
+    updateDigest(hash, relative, content);
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
+function digestSnapshot(input: {
+  readonly fileSystem: Phase8AuditFileSystem;
+  readonly workspace: string;
+  readonly files: readonly string[];
+}): `sha256:${string}` {
+  const hash = createHash("sha256");
+  for (const relative of input.files) {
+    const target = path.join(input.workspace, relative);
+    if (!input.fileSystem.exists(target)) fail();
+    const stat = input.fileSystem.lstat(target);
+    if (!stat.isFile() || stat.isSymbolicLink()) fail();
+    updateDigest(hash, relative, input.fileSystem.readFile(target));
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
+function walkFiles(fileSystem: Phase8AuditFileSystem, root: string): string[] {
+  if (!fileSystem.exists(root) || !fileSystem.lstat(root).isDirectory()) return [];
+  const files: string[] = [];
+  const visit = (directory: string): void => {
+    for (const name of fileSystem.readDirectory(directory).sort()) {
+      const target = path.join(directory, name);
+      const stat = fileSystem.lstat(target);
+      if (stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) visit(target);
+      else if (stat.isFile()) files.push(target);
+    }
+  };
+  visit(root);
+  return files;
+}
+
+function parseManifest(
+  fileSystem: Phase8AuditFileSystem,
+  filename: string,
+): Record<string, unknown> {
+  if (!fileSystem.exists(filename)) fail();
+  const stat = fileSystem.lstat(filename);
+  if (!stat.isFile() || stat.size === 0 || stat.size > MAX_AUDITED_FILE_BYTES) fail();
+  try {
+    const parsed: unknown = JSON.parse(fileSystem.readFile(filename).toString("utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) fail();
+    return parsed as Record<string, unknown>;
+  } catch {
+    return fail();
   }
 }
 
-async function emitHarnessPage(config: ReturnType<typeof readPhase8HarnessConfig>): Promise<string> {
-  const runtime = new Phase8HarnessRuntime({
-    config,
-    bootstrap: new OneTimeBootstrapVerifier(
-      "phase8-client-audit-bootstrap-secret-at-least-32-characters",
-      { nowMs: () => 0 },
-    ),
-    executorFactory: () => { throw new Error("PHASE8_CLIENT_BUNDLE_AUDIT_FAILED"); },
-    clock: { nowMs: () => 0 },
-  });
-  const origin = `http://${config.host}:${config.port}`;
-  const response = await runtime.handle(new Request(`${origin}/`, {
-    headers: { host: `${config.host}:${config.port}` },
-  }));
-  if (response.status !== 200) throw new Error("PHASE8_CLIENT_BUNDLE_AUDIT_FAILED");
-  return response.text();
+function validateRoutes(
+  fileSystem: Phase8AuditFileSystem,
+  workspace: string,
+): readonly string[] {
+  const routes = parseManifest(fileSystem, path.join(workspace, ".next", "routes-manifest.json"));
+  if (
+    typeof routes.version !== "number" || !Number.isSafeInteger(routes.version) ||
+    !Array.isArray(routes.staticRoutes) || !Array.isArray(routes.dynamicRoutes)
+  ) fail();
+  const appPaths = parseManifest(
+    fileSystem,
+    path.join(workspace, ".next", "server", "app-paths-manifest.json"),
+  );
+  const actualPaths = Object.keys(appPaths).sort();
+  if (
+    EXPECTED_APP_PATHS.some((value) => !actualPaths.includes(value)) ||
+    actualPaths.some((value) => !ALLOWED_APP_PATHS.has(value))
+  ) fail();
+  if (actualPaths.some((value) => /phase8|harness/i.test(value))) fail();
+  const apiRoutes = actualPaths
+    .filter((value) => value.endsWith("/route"))
+    .map((value) => value.slice(0, -"/route".length))
+    .sort();
+  if (apiRoutes.join("\0") !== [...EXPECTED_API_ROUTES].sort().join("\0")) fail();
+  return Object.freeze(apiRoutes);
+}
+
+function browserArtifacts(
+  fileSystem: Phase8AuditFileSystem,
+  workspace: string,
+): string[] {
+  const staticRoot = path.join(workspace, ".next", "static");
+  const staticFiles = walkFiles(fileSystem, staticRoot);
+  if (staticFiles.length === 0) artifactFail("STATIC_MISSING");
+  const javascript = staticFiles.filter((filename) => filename.endsWith(".js"));
+  if (javascript.length === 0 || javascript.some((filename) => fileSystem.lstat(filename).size === 0)) {
+    artifactFail("JAVASCRIPT_MISSING");
+  }
+  const serverApp = walkFiles(fileSystem, path.join(workspace, ".next", "server", "app"))
+    .filter((filename) => /\.(?:body|html|rsc|txt)$/.test(filename));
+  const publicFiles = walkFiles(fileSystem, path.join(workspace, "public"));
+  return [...staticFiles, ...serverApp, ...publicFiles].sort();
+}
+
+function validateAndDigestArtifacts(input: {
+  readonly fileSystem: Phase8AuditFileSystem;
+  readonly workspace: string;
+  readonly buildStartedAt: number;
+}): `sha256:${string}` {
+  const required = REQUIRED_MANIFESTS.map((relative) => path.join(input.workspace, relative));
+  for (const filename of required) {
+    if (!input.fileSystem.exists(filename)) {
+      artifactFail(`MANIFEST_MISSING_${path.relative(input.workspace, filename).split(path.sep).join("_")}`);
+    }
+    const stat = input.fileSystem.lstat(filename);
+    if (!stat.isFile() || stat.size === 0) artifactFail("MANIFEST_EMPTY");
+    if (stat.mtimeMs < input.buildStartedAt) artifactFail("MANIFEST_STALE");
+  }
+  const buildManifest = parseManifest(
+    input.fileSystem,
+    path.join(input.workspace, ".next", "build-manifest.json"),
+  );
+  if (
+    buildManifest.pages === null || typeof buildManifest.pages !== "object" ||
+    Array.isArray(buildManifest.pages)
+  ) artifactFail("MANIFEST_SHAPE");
+  const prerenderManifest = parseManifest(
+    input.fileSystem,
+    path.join(input.workspace, ".next", "prerender-manifest.json"),
+  );
+  if (
+    prerenderManifest.routes === null || typeof prerenderManifest.routes !== "object" ||
+    Array.isArray(prerenderManifest.routes) ||
+    !Object.hasOwn(prerenderManifest.routes, "/")
+  ) {
+    artifactFail("MANIFEST_SHAPE");
+  }
+  const artifacts = browserArtifacts(input.fileSystem, input.workspace);
+  const hash = createHash("sha256");
+  for (const filename of [...required, ...artifacts].sort()) {
+    const stat = input.fileSystem.lstat(filename);
+    if (!stat.isFile() || stat.size === 0 || stat.size > MAX_AUDITED_FILE_BYTES) {
+      artifactFail("FILE_INVALID");
+    }
+    if (filename.includes(`${path.sep}.next${path.sep}`) && stat.mtimeMs < input.buildStartedAt) {
+      artifactFail("FILE_STALE");
+    }
+    const content = input.fileSystem.readFile(filename);
+    for (const token of PROHIBITED_PUBLIC_TOKENS) {
+      if (content.includes(Buffer.from(token, "utf8"))) artifactFail("PROHIBITED_TOKEN");
+    }
+    updateDigest(hash, path.relative(input.workspace, filename).split(path.sep).join("/"), content);
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
+function writeNetworkPolicy(fileSystem: Phase8AuditFileSystem, filename: string): void {
+  fileSystem.writeFile(filename, `(version 1)
+(allow default)
+(deny network*)
+`);
+}
+
+function isTurbopackSandboxRestriction(result: Phase8BuildResult): boolean {
+  return result.status !== 0 &&
+    result.output.includes("binding to a port") &&
+    result.output.includes("Operation not permitted");
 }
 
 export async function runPhase8ClientBundleAudit(
   options: Phase8ClientBundleAuditOptions,
-): Promise<void> {
+): Promise<Phase8ClientBundleAuditResult> {
+  const fileSystem = options.dependencies?.fileSystem ?? NODE_FILE_SYSTEM;
+  const processBoundary = options.dependencies?.process ?? NODE_PROCESS_BOUNDARY;
   const temporaryRoot = options.temporaryRoot ?? os.tmpdir();
-  const directory = fs.mkdtempSync(path.join(temporaryRoot, "edict-phase8-client-audit-"));
-  const cleanup = options.cleanup ?? ((target: string) => fs.rmSync(target, { recursive: true }));
+  const directory = fileSystem.mkdtemp(path.join(temporaryRoot, "edict-phase8-client-audit-"));
   let auditError: unknown;
+  let result: Phase8ClientBundleAuditResult | undefined;
   try {
-    const config = readPhase8HarnessConfig({
-      EDICT_PHASE8_MODE: "sandbox",
-      EDICT_PHASE8_HOST: "127.0.0.1",
-      EDICT_PHASE8_PORT: "43119",
-      EDICT_PHASE8_ACTION: "BRICKKEN_READ",
-      EDICT_PHASE8_RUN_ID: "bundle-audit-run",
-      EDICT_PHASE8_OPERATION_KIND: "TOKENIZE",
-      BRICKKEN_API_KEY: PHASE8_CLIENT_AUDIT_SENTINEL,
+    const workspace = path.join(directory, "workspace");
+    const control = path.join(directory, "control");
+    fileSystem.mkdir(workspace, { recursive: true });
+    fileSystem.mkdir(control, { recursive: true });
+    const sourceRevision = processBoundary.sourceRevision(options.projectRoot);
+    if (!/^[0-9a-f]{40}$/.test(sourceRevision)) fail();
+    const files = [...processBoundary.trackedFiles(options.projectRoot)].sort();
+    if (files.length === 0 || new Set(files).size !== files.length) fail();
+    const sourceDigest = copyTrackedSnapshot({
+      fileSystem,
+      projectRoot: options.projectRoot,
+      workspace,
+      files,
     });
-    const publicDirectory = path.join(directory, "public");
-    fs.mkdirSync(publicDirectory);
-    const renderedPage = options.renderPage === undefined
-      ? await emitHarnessPage(config)
-      : await options.renderPage();
-    fs.writeFileSync(path.join(publicDirectory, "index.html"), renderedPage);
-    auditDirectory(publicDirectory);
-    auditDirectory(
-      options.productionPublicDirectory ?? path.join(options.projectRoot, ".next", "static"),
-    );
+    if (digestSnapshot({ fileSystem, workspace, files }) !== sourceDigest) fail();
+    if (fileSystem.exists(path.join(workspace, ".next"))) fail();
+    const dependencies = path.join(options.projectRoot, "node_modules");
+    if (!fileSystem.exists(dependencies) || !fileSystem.lstat(dependencies).isDirectory()) fail();
+    fileSystem.copyDirectory(dependencies, path.join(workspace, "node_modules"));
+    const networkPolicy = path.join(control, "network-disabled.sb");
+    writeNetworkPolicy(fileSystem, networkPolicy);
+    const marker = path.join(control, "build-started");
+    fileSystem.writeFile(marker, sourceDigest);
+    let buildStartedAt = fileSystem.lstat(marker).mtimeMs;
+
+    let builder: "turbopack" | "webpack" = "turbopack";
+    let build = processBoundary.runBuild({
+      workspace,
+      networkPolicy,
+      builder,
+    });
+    if (isTurbopackSandboxRestriction(build)) {
+      fileSystem.remove(workspace);
+      fileSystem.mkdir(workspace, { recursive: true });
+      if (copyTrackedSnapshot({
+        fileSystem,
+        projectRoot: options.projectRoot,
+        workspace,
+        files,
+      }) !== sourceDigest) fail();
+      if (fileSystem.exists(path.join(workspace, ".next"))) fail();
+      fileSystem.copyDirectory(dependencies, path.join(workspace, "node_modules"));
+      fileSystem.writeFile(marker, sourceDigest);
+      buildStartedAt = fileSystem.lstat(marker).mtimeMs;
+      builder = "webpack";
+      build = processBoundary.runBuild({
+        workspace,
+        networkPolicy,
+        builder,
+      });
+    }
+    if (build.status !== 0) fail();
+    if (digestSnapshot({ fileSystem, workspace, files }) !== sourceDigest) fail();
+    const apiRoutes = validateRoutes(fileSystem, workspace);
+    const artifactDigest = validateAndDigestArtifacts({
+      fileSystem,
+      workspace,
+      buildStartedAt,
+    });
+    result = Object.freeze({ sourceRevision, sourceDigest, artifactDigest, builder, apiRoutes });
   } catch (error) {
     auditError = error;
   }
   try {
-    cleanup(directory);
+    fileSystem.remove(directory);
   } catch {
     throw new Error("PHASE8_CLIENT_BUNDLE_CLEANUP_FAILED");
   }
-  if (fs.existsSync(directory)) throw new Error("PHASE8_CLIENT_BUNDLE_CLEANUP_FAILED");
-  if (auditError !== undefined) throw new Error("PHASE8_CLIENT_BUNDLE_AUDIT_FAILED");
+  if (fileSystem.exists(directory)) throw new Error("PHASE8_CLIENT_BUNDLE_CLEANUP_FAILED");
+  if (auditError !== undefined || result === undefined) fail();
+  return result;
 }
 
 export async function runPhase8ClientBundleAuditCli(input: {
-  readonly audit?: () => void | Promise<void>;
+  readonly audit?: () => Phase8ClientBundleAuditResult | Promise<Phase8ClientBundleAuditResult>;
   readonly write: (value: string) => unknown;
 }): Promise<number> {
   try {
-    await (input.audit ?? (() => runPhase8ClientBundleAudit({ projectRoot: process.cwd() })))();
-    input.write('{"ok":true,"category":"PHASE8_CLIENT_BUNDLE_AUDIT"}\n');
+    const result = await (input.audit ?? (() => runPhase8ClientBundleAudit({
+      projectRoot: process.cwd(),
+    })))();
+    input.write(`${JSON.stringify({
+      ok: true,
+      category: "PHASE8_CLIENT_BUNDLE_AUDIT",
+      sourceRevision: result.sourceRevision,
+      sourceDigest: result.sourceDigest,
+      artifactDigest: result.artifactDigest,
+      builder: result.builder,
+      apiRoutes: result.apiRoutes,
+    })}\n`);
     return 0;
   } catch {
     input.write('{"ok":false,"error":{"code":"PHASE8_CLIENT_BUNDLE_AUDIT_FAILED"}}\n');

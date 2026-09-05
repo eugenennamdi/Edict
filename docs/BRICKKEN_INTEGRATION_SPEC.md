@@ -58,13 +58,13 @@ No request body
 
 **DECISION** — The currently anonymous `/get-network-info` request returned `401`; implementation must not depend on that endpoint being public. Until resolved, Edict's readiness check reports the host as reachable but the public network-info contract as incompatible. No authenticated fallback was attempted in Phase 0.
 
-## Authenticated adapter connectivity check
+## Historical credential-bearing adapter connectivity check
 
-**VERIFIED** — On 2026-09-04, the human operator ran the opt-in `npm run test:brickken-live-read` command in a normal local terminal. The check made exactly one authenticated, read-only request through the Edict server adapter and passed. The request semantics were:
+**HISTORICAL OBSERVATION — 2026-09-04** — The human operator ran the opt-in `npm run test:brickken-live-read` command in a normal local terminal. A historical credential-bearing Brickken sandbox network-information request succeeded. The request semantics were:
 
 ```text
 GET https://api.sandbox.brickken.com/get-network-info?chainId=11155111
-Authenticated by the server-only adapter; credential details deliberately not recorded
+Sent through the server-only adapter with a credential-bearing header; credential details deliberately not recorded
 No request body
 ```
 
@@ -79,6 +79,8 @@ The sanitized adapter projection was:
 ```
 
 **HISTORICAL OBSERVATION — 2026-09-04** — A credential-bearing adapter request reached the sandbox and recorded the sanitized projection `Sepolia ETH` and `sepolia.etherscan.io`. This correction task did not repeat the request; current behavior remains unverified. The projection does not prove the raw response had no additional properties, nor that the credential was required, accepted as authority or independently authenticated. It does not change the earlier anonymous `401` observation or prove that the endpoint is public. A changed or additional current response must fail closed pending review.
+
+**OPEN QUESTION** — Current authentication semantics, credential necessity, signer approval, licensing, credits, prepare eligibility, wallet compatibility and write capability all remain unverified.
 
 **DECISION** — The check performed no prepare, sign, send, tokenize, whitelist, mint, or broadcast operation. It did not validate signer approval, tokenizer licensing, credits, prepared write responses, wallet compatibility, transaction finality, or any write behavior. No authenticated write has occurred.
 
