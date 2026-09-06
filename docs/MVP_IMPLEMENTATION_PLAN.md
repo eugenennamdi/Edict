@@ -72,6 +72,6 @@
 - **OPEN QUESTION** — Live prepare returns a `client-broadcast` encoding Phase 4 schemas accept (string fees and/or BigNumber objects) and `transactions.length === 1` for each Edict write.
 - **DECISION** — If any gate fails, update the integration spec and architecture before changing feature code.
 
-## Exact next task
+## Phase 9 offline closure
 
-**DECISION** — The first post-Phase-8 operator step is the offline preflight in [`PHASE_8_OPERATOR_PLAYBOOK.md`](PHASE_8_OPERATOR_PLAYBOOK.md): run `npm run check` and `npm run check:phase8-harness`, review the exact target and prerequisites, and stop. Any read or write action requires separate human authorization and an independently reviewed action-specific executor; production semantic authorization, Brickken writes and external-effect routes remain disabled.
+**DECISION** — Phase 9 closes TOKENIZE representational compatibility with tests and documentation only. `src/server/orchestration/wallet-intent.test.ts` composes the existing prepared parser, in-memory run transitions, strict wallet projection, server intent derivation and browser recomputation; existing focused suites retain primitive-field, write-gate, provider, route and golden-hash coverage. The [Phase 9 contract](WALLET_EXECUTION_SPEC.md#phase-9-offline-tokenize-compatibility) defines the supported representation and refusal codes. Production semantic authorization remains deny-all. Phase 8 is unchanged; whitelist, mint and Phase 10 are outside this work. Stop after offline verification and commit. Reopen only for a product scope change or concrete in-scope defect; account-backed evidence requires separate authorization and the authorized Brickken account holder or administrator.

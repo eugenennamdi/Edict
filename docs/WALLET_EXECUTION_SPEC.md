@@ -70,6 +70,40 @@ No public prepare, wallet-prompt, wallet-result, confirmation, polling, read-bac
 
 **DECISION** — Phase 8 resource ceilings are: provider name 100 code units, RDNS 255, icon data URI 65,536, 64 accounts, chain response 66 code units, challenge 4,096, typed-data serialization 16,384, signature 132, transaction hash 66, transaction object 16 properties, calldata 131,072 bytes, 256 access-list entries, 256 storage keys per entry and 4,096 total, 256-bit unsigned quantities, external depth 16 and 10,000 nodes, Brickken and trusted-RPC responses 1,048,576 code units each, compatibility evidence 262,144 code units, and harness bodies 65,536 bytes. Values are refused, never truncated.
 
+## Phase 9 offline TOKENIZE compatibility
+
+**DECISION** — Phase 9 establishes representational compatibility using existing production code only. The positive case is the unchanged `newTokenization.response.json` encoding A example; its provenance is recorded in `src/server/brickken/test-vectors/index.json` and the [wire-contract audit](BRICKKEN_WIRE_CONTRACT_AUDIT.md#5-prepared-transaction-and-browser-wallet-contract). Its truncated example calldata and placeholder destination are not live Brickken evidence or authorization metadata. No fixture or provenance was changed.
+
+**DECISION** — The focused composition lives in `src/server/orchestration/wallet-intent.test.ts`:
+
+```text
+checked-in prepare example
+→ parsePreparedOperation (single transaction, required fields, Sepolia)
+→ existing ExecutionRunService transitions in an in-memory repository
+→ deriveWalletPromptEnvelopeFromRun (exact required signer and chain)
+  → projectPreparedTransactionV1
+  → explicit test-only semantic policy
+  → createWalletPromptEnvelopeV1 / hashWalletIntentV1
+→ JSON round-trip
+→ validateWalletPromptEnvelopeV1 (the browser's existing recomputation)
+```
+
+**DECISION** — No compatibility API, result type, production module, route or persisted report is needed. Test-only policy injection reaches representation hashing; the actual `denyAllWalletSemanticPolicy` still refuses the same transaction before producing a prompt envelope. Compatibility grants no permission to prepare, sign, broadcast or confirm and proves no destination/calldata safety, tokenizer ownership, licensing or credits. No wallet-actionable output is enabled.
+
+| Signing field | Existing behavior exercised or retained |
+| --- | --- |
+| `from`, `to` | Validate addresses; canonical lowercase preserves address identity. Required signer must match exactly after normalization. |
+| `data` / `input` | Preserve bytes, normalize hex case; conflicting aliases fail. This prepared-parser contract still requires `data`. |
+| `gasLimit` / `gas` | Preserve integer value as minimal hex `gas`; conflicting aliases fail. The prepared parser still requires `gasLimit`. |
+| `value`, `nonce`, `type`, EIP-1559 fees | Preserve values through established quantity normalization, without defaults. Unsupported types, malformed quantities, unsafe numbers and conflicting fees fail. |
+| `chainId` | Require Sepolia; bind decimal chain in the intent and RPC chain in the provider precondition. Omit transaction-level chain only under the unchanged Phase 7 rule above. |
+| `gasPrice` | Never silently dropped: adding it to the accepted EIP-1559 shape is refused. Legacy-only prepares remain incomplete under the current required-field contract. |
+| `accessList` | Optional; retain order and normalized addresses/storage keys, deeply frozen. Synthetic structural coverage reuses existing projection-test values and proves no Brickken access-list behavior. |
+
+**DECISION** — Missing required fields and zero/multiple transactions fail closed; absent optional fields remain absent. Unknown signing properties are refused by strict projection. Tests assert deterministic requests/hashes, unchanged inputs, frozen public envelopes, browser tamper refusal and semantic denial. Stable existing errors are reused: `UNSUPPORTED_TRANSACTION_BATCH`, `UNSUPPORTED_CHAIN`, `PREPARED_TRANSACTION_INCOMPLETE`, `INVALID_EXTERNAL_RESPONSE`, `CONFLICTING_TRANSACTION_FIELDS`, `UNSUPPORTED_SIGNING_FIELD`, `MALFORMED_PREPARED_TRANSACTION`, `UNSAFE_NUMBER`, `EXECUTION_INVARIANT_FAILED` and `WALLET_INTENT_HASH_MISMATCH`. No new error framework is introduced.
+
+**DECISION** — TOKENIZE is the only Phase 9 operation. Whitelist and mint remain outside this phase. No live Brickken response was obtained, and no provider, wallet, RPC, Neon or blockchain operation occurred. Any later account-backed evidence requires separate authorization and handling by the authorized Brickken account holder or administrator. Phase 8 and provider-session/ambiguity rules remain unchanged. Phase 9 is closed after offline verification; do not reopen without a product scope change or concrete in-scope defect, and do not begin Phase 10 as part of this work.
+
 ## Evidence still required
 
 Before any wallet or Brickken execution path is enabled, a human-authorized sandbox test must establish all of the following without exposing credentials:
