@@ -40,7 +40,7 @@ Inspect `.env.example` for approved environment variables. For local development
 | `npm run test:database-live` | Opt-in Neon create/read/CAS/cleanup verification; excluded from default tests |
 | `npm run test:phase8` | Run only the offline Phase 8 adversarial and harness tests |
 | `npm run check:phase8-harness` | Compile-check the isolated harness, which is excluded from the production application build |
-| `npm run audit:phase8-client-bundle` | Copy the tracked source state, run a fresh network-disabled isolated production build with synthetic values, and scan its browser artifacts |
+| `npm run audit:phase8-client-bundle` | Build an isolated tracked-source snapshot with network denied, then scan build logs, browser artifacts and the real pre-bootstrap harness page |
 | `npm run phase8:brickken-read` | Separately authorized interactive sandbox network-information action; do not run as an offline check |
 | `npm run check` | Run all checks (`lint`, `typecheck`, `test`, `build`) in sequence |
 

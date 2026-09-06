@@ -4,13 +4,16 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PHASE8_CLIENT_AUDIT_SENTINEL,
+  capturePhase8HarnessPage,
   runPhase8ClientBundleAudit,
   runPhase8ClientBundleAuditCli,
   type Phase8AuditFileSystem,
   type Phase8AuditProcessBoundary,
   type Phase8BuildResult,
   type Phase8ClientBundleAuditOptions,
+  type Phase8HarnessPageCaptureInput,
 } from "./phase8-client-bundle-audit";
+import { renderHarnessPage } from "./runtime";
 
 const REVISION = "a".repeat(40);
 const TRACKED_FILES = ["package.json", "src/app/page.tsx"] as const;
@@ -76,6 +79,29 @@ function writeValidBuild(workspace: string, patch: {
   );
 }
 
+function writeHarnessCapture(
+  input: Phase8HarnessPageCaptureInput,
+  html = renderHarnessPage(),
+): void {
+  input.fileSystem.mkdir(input.artifactRoot, { recursive: true });
+  input.fileSystem.writeFile(path.join(input.artifactRoot, "index.html"), html);
+  input.fileSystem.writeFile(
+    path.join(input.artifactRoot, "response-headers.json"),
+    '[["content-type","text/html; charset=utf-8"]]',
+  );
+}
+
+function clientPath(workspace: string): string {
+  return path.join(workspace, ".next", "static", "chunks", "app.js");
+}
+
+function replaceClientWithRelativeLink(workspace: string, content: string): void {
+  const target = path.join(workspace, "linked-client.js");
+  fs.writeFileSync(target, content);
+  fs.rmSync(clientPath(workspace));
+  fs.symlinkSync(path.relative(path.dirname(clientPath(workspace)), target), clientPath(workspace));
+}
+
 function processBoundary(
   build: (input: Parameters<Phase8AuditProcessBoundary["runBuild"]>[0]) => Phase8BuildResult,
   files: readonly string[] = TRACKED_FILES,
@@ -92,6 +118,7 @@ function options(input: {
   readonly build: (value: Parameters<Phase8AuditProcessBoundary["runBuild"]>[0]) => Phase8BuildResult;
   readonly fileSystem?: Phase8AuditFileSystem;
   readonly files?: readonly string[];
+  readonly captureHarnessPage?: (value: Phase8HarnessPageCaptureInput) => void | Promise<void>;
 }): Phase8ClientBundleAuditOptions {
   const root = input.root ?? fixtureRoot();
   return {
@@ -100,6 +127,7 @@ function options(input: {
     dependencies: {
       fileSystem: input.fileSystem,
       process: processBoundary(input.build, input.files),
+      captureHarnessPage: input.captureHarnessPage,
     },
   };
 }
@@ -126,7 +154,7 @@ describe("fresh source-bound Phase 8 client artifact audit", () => {
   it("binds a fresh complete artifact set to the exact copied source digest", async () => {
     const build = vi.fn((input: Parameters<Phase8AuditProcessBoundary["runBuild"]>[0]) => {
       writeValidBuild(input.workspace);
-      return { status: 0, output: "built offline" };
+      return { status: 0, stdout: "built offline", stderr: "" };
     });
     const value = options({ build });
     await expect(runPhase8ClientBundleAudit(value)).resolves.toMatchObject({
@@ -153,16 +181,99 @@ describe("fresh source-bound Phase 8 client artifact audit", () => {
       if (input.builder === "turbopack") {
         fs.mkdirSync(path.join(input.workspace, ".next"));
         fs.writeFileSync(path.join(input.workspace, ".next", "stale"), "partial");
-        return { status: 1, output: "binding to a port: Operation not permitted" };
+        return { status: 1, stdout: "", stderr: "binding to a port: Operation not permitted" };
       }
       expect(fs.existsSync(path.join(input.workspace, ".next"))).toBe(false);
       writeValidBuild(input.workspace);
-      return { status: 0, output: "webpack built offline" };
+      return { status: 0, stdout: "webpack built offline", stderr: "" };
     });
     await expect(runPhase8ClientBundleAudit(options({ build }))).resolves.toMatchObject({
       builder: "webpack",
     });
     expect(build).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["symlink to sentinel-bearing JavaScript", (workspace: string) => {
+      replaceClientWithRelativeLink(workspace, PHASE8_CLIENT_AUDIT_SENTINEL);
+    }],
+    ["symlink to benign JavaScript", (workspace: string) => {
+      replaceClientWithRelativeLink(workspace, "globalThis.benign=true;");
+    }],
+    ["relative symlink", (workspace: string) => {
+      replaceClientWithRelativeLink(workspace, "globalThis.relative=true;");
+    }],
+    ["absolute symlink", (workspace: string) => {
+      const target = path.join(workspace, "absolute-client.js");
+      fs.writeFileSync(target, "globalThis.absolute=true;");
+      fs.rmSync(clientPath(workspace));
+      fs.symlinkSync(target, clientPath(workspace));
+    }],
+    ["broken symlink", (workspace: string) => {
+      fs.rmSync(clientPath(workspace));
+      fs.symlinkSync("../../../missing-client.js", clientPath(workspace));
+    }],
+    ["chained symlink", (workspace: string) => {
+      const target = path.join(workspace, "chain-target.js");
+      const intermediate = path.join(workspace, "chain-intermediate.js");
+      fs.writeFileSync(target, "globalThis.chain=true;");
+      fs.symlinkSync("chain-target.js", intermediate);
+      fs.rmSync(clientPath(workspace));
+      fs.symlinkSync(path.relative(path.dirname(clientPath(workspace)), intermediate), clientPath(workspace));
+    }],
+    ["symlinked directory", (workspace: string) => {
+      const target = path.join(workspace, "linked-directory");
+      fs.mkdirSync(target);
+      fs.symlinkSync(target, path.join(workspace, ".next", "static", "linked-directory"));
+    }],
+  ])("fails closed for a browser artifact %s", async (_label, addLink) => {
+    await expectCliFailure(options({
+      build: ({ workspace }) => {
+        writeValidBuild(workspace);
+        addLink(workspace);
+        return { status: 0, stdout: "built", stderr: "" };
+      },
+    }));
+  });
+
+  it("fails closed for a symlink in captured harness-page artifacts", async () => {
+    await expectCliFailure(options({
+      build: ({ workspace }) => {
+        writeValidBuild(workspace);
+        return { status: 0, stdout: "built", stderr: "" };
+      },
+      captureHarnessPage: (input) => {
+        input.fileSystem.mkdir(input.artifactRoot, { recursive: true });
+        const target = path.join(path.dirname(input.artifactRoot), "harness-page.html");
+        input.fileSystem.writeFile(target, renderHarnessPage());
+        fs.symlinkSync(target, path.join(input.artifactRoot, "index.html"));
+        input.fileSystem.writeFile(
+          path.join(input.artifactRoot, "response-headers.json"),
+          '[["content-type","text/html"]]',
+        );
+      },
+    }));
+  });
+
+  it("fails closed for an unsupported browser filesystem entry", async () => {
+    const base = nodeFileSystem();
+    await expectCliFailure(options({
+      build: ({ workspace }) => {
+        writeValidBuild(workspace);
+        return { status: 0, stdout: "built", stderr: "" };
+      },
+      fileSystem: nodeFileSystem({
+        lstat: (target) => target.endsWith(path.join("static", "chunks", "app.js"))
+          ? {
+              size: 1,
+              mtimeMs: Date.now(),
+              isDirectory: () => false,
+              isFile: () => false,
+              isSymbolicLink: () => false,
+            }
+          : base.lstat(target),
+      }),
+    }));
   });
 
   it.each([
@@ -216,13 +327,80 @@ describe("fresh source-bound Phase 8 client artifact audit", () => {
     await expectCliFailure(options({
       build: ({ workspace }) => {
         populate(workspace);
-        return { status: 0, output: "claimed success" };
+        return { status: 0, stdout: "claimed success", stderr: "" };
       },
     }));
   });
 
   it("fails closed for a failed build", async () => {
-    await expectCliFailure(options({ build: () => ({ status: 1, output: "build failed" }) }));
+    await expectCliFailure(options({
+      build: () => ({ status: 1, stdout: "build failed", stderr: "" }),
+    }));
+  });
+
+  it.each([
+    ["captured stdout sentinel", { stdout: PHASE8_CLIENT_AUDIT_SENTINEL, stderr: "" }],
+    ["captured stderr sentinel", { stdout: "", stderr: PHASE8_CLIENT_AUDIT_SENTINEL }],
+    ["captured credential name", { stdout: "BRICKKEN_API_KEY", stderr: "" }],
+    ["empty build output", { stdout: "", stderr: "" }],
+  ])("fails closed for %s", async (_label, streams) => {
+    await expectCliFailure(options({
+      build: ({ workspace }) => {
+        writeValidBuild(workspace);
+        return { status: 0, ...streams };
+      },
+    }));
+  });
+
+  it("captures the exact real pre-bootstrap harness page without starting a server", async () => {
+    const root = fixtureRoot();
+    const artifactRoot = path.join(root, "captured-harness-page");
+    await capturePhase8HarnessPage({ artifactRoot, fileSystem: nodeFileSystem() });
+    expect(fs.readFileSync(path.join(artifactRoot, "index.html"), "utf8"))
+      .toBe(renderHarnessPage());
+    expect(fs.readdirSync(artifactRoot).sort()).toEqual(["index.html", "response-headers.json"]);
+  });
+
+  it.each([
+    ["sentinel in emitted harness HTML", PHASE8_CLIENT_AUDIT_SENTINEL],
+    ["credential name in harness HTML", "BRICKKEN_API_KEY"],
+    ["target metadata before bootstrap", "phase8-client-artifact-audit"],
+  ])("fails closed for %s", async (_label, html) => {
+    await expectCliFailure(options({
+      build: ({ workspace }) => {
+        writeValidBuild(workspace);
+        return { status: 0, stdout: "built", stderr: "" };
+      },
+      captureHarnessPage: (input) => writeHarnessCapture(input, html),
+    }));
+  });
+
+  it("fails closed when real harness-page construction fails", async () => {
+    await expectCliFailure(options({
+      build: ({ workspace }) => {
+        writeValidBuild(workspace);
+        return { status: 0, stdout: "built", stderr: "" };
+      },
+      captureHarnessPage: () => { throw new Error("page construction failed"); },
+    }));
+  });
+
+  it("fails closed when captured harness-page scanning fails", async () => {
+    const base = nodeFileSystem();
+    await expectCliFailure(options({
+      build: ({ workspace }) => {
+        writeValidBuild(workspace);
+        return { status: 0, stdout: "built", stderr: "" };
+      },
+      fileSystem: nodeFileSystem({
+        readFile: (target) => {
+          if (target.endsWith(path.join(".phase8-audit-browser", "index.html"))) {
+            throw new Error("page scan failed");
+          }
+          return base.readFile(target);
+        },
+      }),
+    }));
   });
 
   it("fails closed for a client-artifact scan failure", async () => {
@@ -230,7 +408,7 @@ describe("fresh source-bound Phase 8 client artifact audit", () => {
     await expectCliFailure(options({
       build: ({ workspace }) => {
         writeValidBuild(workspace);
-        return { status: 0, output: "built" };
+        return { status: 0, stdout: "built", stderr: "" };
       },
       fileSystem: nodeFileSystem({
         readFile: (target) => {
@@ -248,7 +426,7 @@ describe("fresh source-bound Phase 8 client artifact audit", () => {
     await expectCliFailure(options({
       build: ({ workspace }) => {
         writeValidBuild(workspace);
-        return { status: 0, output: "built" };
+        return { status: 0, stdout: "built", stderr: "" };
       },
       fileSystem: nodeFileSystem({
         remove: (target) => {
@@ -263,7 +441,7 @@ describe("fresh source-bound Phase 8 client artifact audit", () => {
 
   it("fails closed when the temporary tracked-source copy is incomplete", async () => {
     const base = nodeFileSystem();
-    const build = vi.fn(() => ({ status: 0, output: "must not build" }));
+    const build = vi.fn(() => ({ status: 0, stdout: "must not build", stderr: "" }));
     await expectCliFailure(options({
       build,
       fileSystem: nodeFileSystem({
@@ -288,7 +466,7 @@ describe("fresh source-bound Phase 8 client artifact audit", () => {
     await expectCliFailure(options({
       root,
       files: [...TRACKED_FILES, ".env.production"],
-      build: () => ({ status: 0, output: "must not build" }),
+      build: () => ({ status: 0, stdout: "must not build", stderr: "" }),
       fileSystem: nodeFileSystem({ readFile }),
     }));
     expect(readFile).not.toHaveBeenCalledWith(environmentFile);

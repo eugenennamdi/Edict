@@ -6,9 +6,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { OneTimeBootstrapVerifier } from "./auth";
+import { expectedHarnessOrigin, readPhase8HarnessConfig } from "./config";
+import { Phase8HarnessRuntime, renderHarnessPage } from "./runtime";
 
 export const PHASE8_CLIENT_AUDIT_SENTINEL =
   "phase8-synthetic-client-credential-sentinel-7f6c";
+const PHASE8_BOOTSTRAP_AUDIT_SENTINEL =
+  "phase8-synthetic-bootstrap-verifier-sentinel-4d2a";
 
 const EXPECTED_API_ROUTES = Object.freeze([
   "/api/runs",
@@ -36,21 +41,46 @@ const REQUIRED_MANIFESTS = Object.freeze([
 
 const PROHIBITED_PUBLIC_TOKENS = Object.freeze([
   PHASE8_CLIENT_AUDIT_SENTINEL,
+  PHASE8_BOOTSTRAP_AUDIT_SENTINEL,
   "BRICKKEN_API_KEY",
   "NEXT_PUBLIC_BRICKKEN_API_KEY",
   "DATABASE_URL",
   "EDICT_SEPOLIA_RPC_URL",
   "EDICT_RUN_SECURITY_SECRET",
+  "EDICT_PHASE8_MODE",
+  "EDICT_PHASE8_HOST",
+  "EDICT_PHASE8_PORT",
+  "EDICT_PHASE8_ACTION",
+  "EDICT_PHASE8_RUN_ID",
+  "EDICT_PHASE8_OPERATION_KIND",
+  "EDICT_PHASE8_WALLET_REQUEST_HASH",
   "createBrickkenReadExecutor",
   "createBrickkenReadTransport",
+  "Phase8HarnessRuntime",
+  "OneTimeBootstrapVerifier",
+  "createBootstrapSecret",
+  "startPhase8HarnessServer",
   "tools/phase8-harness",
   "phase8-harness",
   "brickken-sdk",
   "node:crypto",
+  "node:http",
+  "node:net",
 ] as const);
 
 const MAX_AUDITED_FILE_BYTES = 64 * 1_024 * 1_024;
 const BUILD_TIMEOUT_MS = 180_000;
+const HARNESS_AUDIT_RUN_ID = "phase8-client-artifact-audit";
+const HARNESS_AUDIT_ORIGIN = "http://127.0.0.1:43119";
+const HARNESS_PROTECTED_TARGET_VALUES = Object.freeze([
+  "sandbox",
+  "127.0.0.1",
+  "43119",
+  HARNESS_AUDIT_ORIGIN,
+  "BRICKKEN_READ",
+  HARNESS_AUDIT_RUN_ID,
+  "TOKENIZE",
+] as const);
 
 interface AuditStats {
   readonly size: number;
@@ -74,7 +104,13 @@ export interface Phase8AuditFileSystem {
 
 export interface Phase8BuildResult {
   readonly status: number | null;
-  readonly output: string;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+export interface Phase8HarnessPageCaptureInput {
+  readonly artifactRoot: string;
+  readonly fileSystem: Phase8AuditFileSystem;
 }
 
 export interface Phase8AuditProcessBoundary {
@@ -90,6 +126,7 @@ export interface Phase8AuditProcessBoundary {
 export interface Phase8ClientBundleAuditDependencies {
   readonly fileSystem?: Phase8AuditFileSystem;
   readonly process?: Phase8AuditProcessBoundary;
+  readonly captureHarnessPage?: (input: Phase8HarnessPageCaptureInput) => void | Promise<void>;
 }
 
 export interface Phase8ClientBundleAuditOptions {
@@ -185,7 +222,8 @@ const NODE_PROCESS_BOUNDARY: Phase8AuditProcessBoundary = {
     });
     return {
       status: result.status,
-      output: `${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
     };
   },
 };
@@ -259,15 +297,26 @@ function digestSnapshot(input: {
 }
 
 function walkFiles(fileSystem: Phase8AuditFileSystem, root: string): string[] {
-  if (!fileSystem.exists(root) || !fileSystem.lstat(root).isDirectory()) return [];
+  let rootStat: AuditStats;
+  if (!fileSystem.exists(root)) {
+    try {
+      rootStat = fileSystem.lstat(root);
+    } catch {
+      return [];
+    }
+  } else {
+    rootStat = fileSystem.lstat(root);
+  }
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) artifactFail("UNSUPPORTED_ENTRY");
   const files: string[] = [];
   const visit = (directory: string): void => {
     for (const name of fileSystem.readDirectory(directory).sort()) {
       const target = path.join(directory, name);
       const stat = fileSystem.lstat(target);
-      if (stat.isSymbolicLink()) continue;
+      if (stat.isSymbolicLink()) artifactFail("SYMLINK");
       if (stat.isDirectory()) visit(target);
       else if (stat.isFile()) files.push(target);
+      else artifactFail("UNSUPPORTED_ENTRY");
     }
   };
   visit(root);
@@ -320,6 +369,7 @@ function validateRoutes(
 function browserArtifacts(
   fileSystem: Phase8AuditFileSystem,
   workspace: string,
+  harnessRoot: string,
 ): string[] {
   const staticRoot = path.join(workspace, ".next", "static");
   const staticFiles = walkFiles(fileSystem, staticRoot);
@@ -331,12 +381,92 @@ function browserArtifacts(
   const serverApp = walkFiles(fileSystem, path.join(workspace, ".next", "server", "app"))
     .filter((filename) => /\.(?:body|html|rsc|txt)$/.test(filename));
   const publicFiles = walkFiles(fileSystem, path.join(workspace, "public"));
-  return [...staticFiles, ...serverApp, ...publicFiles].sort();
+  const harnessFiles = walkFiles(fileSystem, harnessRoot);
+  if (harnessFiles.length === 0) artifactFail("HARNESS_PAGE_MISSING");
+  return [...staticFiles, ...serverApp, ...publicFiles, ...harnessFiles].sort();
+}
+
+function assertContentSafe(content: string | Buffer): void {
+  const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : content;
+  for (const token of PROHIBITED_PUBLIC_TOKENS) {
+    if (bytes.includes(Buffer.from(token, "utf8"))) artifactFail("PROHIBITED_TOKEN");
+  }
+}
+
+function assertBuildOutputSafe(build: Phase8BuildResult): void {
+  if (build.stdout.length === 0 && build.stderr.length === 0) artifactFail("BUILD_OUTPUT_EMPTY");
+  assertContentSafe(build.stdout);
+  assertContentSafe(build.stderr);
+}
+
+export async function capturePhase8HarnessPage(
+  input: Phase8HarnessPageCaptureInput,
+): Promise<void> {
+  const clock = Object.freeze({ nowMs: () => 1_000 });
+  const config = readPhase8HarnessConfig({
+    EDICT_PHASE8_MODE: "sandbox",
+    EDICT_PHASE8_HOST: "127.0.0.1",
+    EDICT_PHASE8_PORT: "43119",
+    EDICT_PHASE8_ACTION: "BRICKKEN_READ",
+    EDICT_PHASE8_RUN_ID: HARNESS_AUDIT_RUN_ID,
+    EDICT_PHASE8_OPERATION_KIND: "TOKENIZE",
+    BRICKKEN_API_KEY: PHASE8_CLIENT_AUDIT_SENTINEL,
+  });
+  const runtime = new Phase8HarnessRuntime({
+    config,
+    bootstrap: new OneTimeBootstrapVerifier(PHASE8_BOOTSTRAP_AUDIT_SENTINEL, clock),
+    executorFactory: () => { throw new Error("PHASE8_AUDIT_EXECUTOR_REFUSED"); },
+    clock,
+  });
+  const origin = expectedHarnessOrigin(config);
+  const response = await runtime.handle(new Request(`${origin}/`, {
+    method: "GET",
+    headers: { host: new URL(origin).host },
+  }));
+  const html = await response.text();
+  if (
+    response.status !== 200 || html.length === 0 || html !== renderHarnessPage() ||
+    HARNESS_PROTECTED_TARGET_VALUES.some((value) => html.includes(value))
+  ) artifactFail("HARNESS_PAGE_INVALID");
+  input.fileSystem.mkdir(input.artifactRoot, { recursive: true });
+  input.fileSystem.writeFile(path.join(input.artifactRoot, "index.html"), html);
+  input.fileSystem.writeFile(
+    path.join(input.artifactRoot, "response-headers.json"),
+    JSON.stringify([...response.headers.entries()].sort(([left], [right]) => left.localeCompare(right))),
+  );
+}
+
+function validateCapturedHarnessPage(
+  fileSystem: Phase8AuditFileSystem,
+  harnessRoot: string,
+): void {
+  const files = walkFiles(fileSystem, harnessRoot);
+  const htmlPath = path.join(harnessRoot, "index.html");
+  const headersPath = path.join(harnessRoot, "response-headers.json");
+  if (
+    files.length !== 2 || !files.includes(htmlPath) || !files.includes(headersPath) ||
+    fileSystem.lstat(htmlPath).size === 0 || fileSystem.lstat(headersPath).size === 0
+  ) artifactFail("HARNESS_PAGE_INVALID");
+  const html = fileSystem.readFile(htmlPath).toString("utf8");
+  assertContentSafe(html);
+  if (
+    html !== renderHarnessPage() ||
+    HARNESS_PROTECTED_TARGET_VALUES.some((value) => html.includes(value))
+  ) artifactFail("HARNESS_PAGE_INVALID");
+  const headers = fileSystem.readFile(headersPath);
+  assertContentSafe(headers);
+  try {
+    const parsed: unknown = JSON.parse(headers.toString("utf8"));
+    if (!Array.isArray(parsed) || parsed.length === 0) artifactFail("HARNESS_PAGE_INVALID");
+  } catch {
+    artifactFail("HARNESS_PAGE_INVALID");
+  }
 }
 
 function validateAndDigestArtifacts(input: {
   readonly fileSystem: Phase8AuditFileSystem;
   readonly workspace: string;
+  readonly harnessRoot: string;
   readonly buildStartedAt: number;
 }): `sha256:${string}` {
   const required = REQUIRED_MANIFESTS.map((relative) => path.join(input.workspace, relative));
@@ -367,7 +497,7 @@ function validateAndDigestArtifacts(input: {
   ) {
     artifactFail("MANIFEST_SHAPE");
   }
-  const artifacts = browserArtifacts(input.fileSystem, input.workspace);
+  const artifacts = browserArtifacts(input.fileSystem, input.workspace, input.harnessRoot);
   const hash = createHash("sha256");
   for (const filename of [...required, ...artifacts].sort()) {
     const stat = input.fileSystem.lstat(filename);
@@ -378,9 +508,7 @@ function validateAndDigestArtifacts(input: {
       artifactFail("FILE_STALE");
     }
     const content = input.fileSystem.readFile(filename);
-    for (const token of PROHIBITED_PUBLIC_TOKENS) {
-      if (content.includes(Buffer.from(token, "utf8"))) artifactFail("PROHIBITED_TOKEN");
-    }
+    assertContentSafe(content);
     updateDigest(hash, path.relative(input.workspace, filename).split(path.sep).join("/"), content);
   }
   return `sha256:${hash.digest("hex")}`;
@@ -395,8 +523,8 @@ function writeNetworkPolicy(fileSystem: Phase8AuditFileSystem, filename: string)
 
 function isTurbopackSandboxRestriction(result: Phase8BuildResult): boolean {
   return result.status !== 0 &&
-    result.output.includes("binding to a port") &&
-    result.output.includes("Operation not permitted");
+    `${result.stdout}\n${result.stderr}`.includes("binding to a port") &&
+    `${result.stdout}\n${result.stderr}`.includes("Operation not permitted");
 }
 
 export async function runPhase8ClientBundleAudit(
@@ -404,6 +532,7 @@ export async function runPhase8ClientBundleAudit(
 ): Promise<Phase8ClientBundleAuditResult> {
   const fileSystem = options.dependencies?.fileSystem ?? NODE_FILE_SYSTEM;
   const processBoundary = options.dependencies?.process ?? NODE_PROCESS_BOUNDARY;
+  const captureHarnessPage = options.dependencies?.captureHarnessPage ?? capturePhase8HarnessPage;
   const temporaryRoot = options.temporaryRoot ?? os.tmpdir();
   const directory = fileSystem.mkdtemp(path.join(temporaryRoot, "edict-phase8-client-audit-"));
   let auditError: unknown;
@@ -440,6 +569,7 @@ export async function runPhase8ClientBundleAudit(
       networkPolicy,
       builder,
     });
+    assertBuildOutputSafe(build);
     if (isTurbopackSandboxRestriction(build)) {
       fileSystem.remove(workspace);
       fileSystem.mkdir(workspace, { recursive: true });
@@ -459,13 +589,18 @@ export async function runPhase8ClientBundleAudit(
         networkPolicy,
         builder,
       });
+      assertBuildOutputSafe(build);
     }
     if (build.status !== 0) fail();
     if (digestSnapshot({ fileSystem, workspace, files }) !== sourceDigest) fail();
     const apiRoutes = validateRoutes(fileSystem, workspace);
+    const harnessRoot = path.join(workspace, ".phase8-audit-browser");
+    await captureHarnessPage({ artifactRoot: harnessRoot, fileSystem });
+    validateCapturedHarnessPage(fileSystem, harnessRoot);
     const artifactDigest = validateAndDigestArtifacts({
       fileSystem,
       workspace,
+      harnessRoot,
       buildStartedAt,
     });
     result = Object.freeze({ sourceRevision, sourceDigest, artifactDigest, builder, apiRoutes });
