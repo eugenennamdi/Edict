@@ -1,4 +1,6 @@
 import { PHASE8_ACTIONS, PHASE8_OPERATIONS, type Phase8Action, type Phase8HarnessConfig } from "./types";
+import { PHASE8_STATIC_PUBLIC_OUTPUTS } from "./public-output";
+import { Phase8OutputCollisionError } from "./safe-terminal";
 
 export type Phase8EnvironmentSource = Readonly<Record<string, string | undefined>>;
 
@@ -15,7 +17,18 @@ export function assertNoSensitivePublicCollision(
       sensitive.length === 0 ||
       publicValues.some((value) => value.includes(sensitive) || sensitive.includes(value))
     ) {
-      throw new Error("PHASE8_PUBLIC_METADATA_COLLISION");
+      throw new Phase8OutputCollisionError("PHASE8_PUBLIC_METADATA_COLLISION");
+    }
+  }
+}
+
+export function assertNoSensitiveOutputCollision(
+  publicValues: readonly string[],
+  sensitiveValues: readonly string[],
+): void {
+  for (const sensitive of sensitiveValues) {
+    if (sensitive.length === 0 || publicValues.some((value) => value.includes(sensitive))) {
+      throw new Phase8OutputCollisionError("PHASE8_PUBLIC_METADATA_COLLISION");
     }
   }
 }
@@ -106,6 +119,10 @@ export function readPhase8HarnessConfig(source: Phase8EnvironmentSource): Phase8
     allowedEnvironment: Object.freeze(allowedEnvironment),
   });
   assertPhase8PublicMetadataSafe(config);
+  assertNoSensitiveOutputCollision(
+    PHASE8_STATIC_PUBLIC_OUTPUTS,
+    Object.values(config.allowedEnvironment),
+  );
   return config;
 }
 

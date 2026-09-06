@@ -3,7 +3,10 @@ import { WALLET_BOUNDARY_LIMITS } from "../../src/shared/wallet/limits";
 import { hashCanonicalJson } from "../../src/core/hashing";
 import { z } from "zod";
 import { assertNoSensitivePublicCollision } from "./config";
+import { BRICKKEN_READ_LIMITATIONS, BRICKKEN_READ_REDACTIONS } from "./public-output";
 import type { Phase8PublicTarget } from "./types";
+
+export { BRICKKEN_READ_LIMITATIONS, BRICKKEN_READ_REDACTIONS } from "./public-output";
 
 const hash = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const isoUtc = z.string().refine(
@@ -22,26 +25,6 @@ const brickkenReadDetailsSchema = z.strictObject({
   adapterVersion: z.literal("1.0"),
   sdkVersion: z.literal("0.2.1"),
 });
-
-export const BRICKKEN_READ_LIMITATIONS = Object.freeze([
-  "Proves only that a credential-bearing Brickken sandbox network-information request succeeded.",
-  "Does not prove signer approval, license status, remaining credits, prepare eligibility, wallet compatibility, write capability, or blockchain execution readiness.",
-] as const);
-
-export const BRICKKEN_READ_REDACTIONS = Object.freeze([
-  "CREDENTIALS",
-  "RAW_EXTERNAL_RESPONSES",
-  "REQUEST_RESPONSE_HEADERS",
-  "DATABASE_RPC_URLS",
-  "RUN_CAPABILITIES",
-  "CHALLENGE_TOKENS",
-  "APPROVAL_SIGNATURES",
-  "PRIVATE_SIGNING_MATERIAL",
-  "TOKENIZER_EMAIL",
-  "CLAIMED_SIGNER_IDENTITY",
-  "COMPLETE_PREPARED_TRANSACTIONS",
-  "COMPLETE_CALLDATA",
-] as const);
 
 export const phase8ActionEvidenceV1Schema = z.strictObject({
   evidenceVersion: z.literal("1.0"),

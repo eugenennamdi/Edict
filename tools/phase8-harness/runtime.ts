@@ -8,36 +8,19 @@ import {
 } from "./auth";
 import {
   assertNoSensitivePublicCollision,
+  assertNoSensitiveOutputCollision,
   assertPhase8PublicMetadataSafe,
   expectedHarnessOrigin,
 } from "./config";
 import { validatePhase8ActionEvidenceV1 } from "./evidence";
+import { PHASE8_STATIC_PUBLIC_OUTPUTS, renderHarnessPage } from "./public-output";
 import type { Phase8ActionExecutor, Phase8HarnessConfig } from "./types";
+
+export { renderHarnessPage } from "./public-output";
 
 export const HARNESS_BODY_LIMIT_BYTES = 65_536;
 export const HARNESS_EXECUTION_DEADLINE_MS = 30_000;
 const COOKIE_NAME = "edict_phase8_session";
-const PUBLIC_RESPONSE_STATIC_VALUES = Object.freeze([
-  "ok",
-  "error",
-  "code",
-  "csrfToken",
-  "target",
-  "grantId",
-  "category",
-  "evidence",
-  "ORIGIN_REFUSED",
-  "HOST_REFUSED",
-  "NOT_FOUND",
-  "HARNESS_STOPPED",
-  "SESSION_REFUSED",
-  "BAD_REQUEST",
-  "BOOTSTRAP_REFUSED",
-  "ARM_REFUSED",
-  "EXECUTE_REFUSED",
-  "ACTION_DEADLINE_EXCEEDED",
-  "ACTION_FAILED",
-] as const);
 
 export interface Phase8HarnessTimers {
   setTimeout(callback: () => void, delayMs: number): unknown;
@@ -143,10 +126,11 @@ export class Phase8HarnessRuntime {
     readonly executionDeadlineMs?: number;
     readonly evidenceValidator?: typeof validatePhase8ActionEvidenceV1;
   }) {
-    assertPhase8PublicMetadataSafe(input.config, [
-      renderHarnessPage(),
-      ...PUBLIC_RESPONSE_STATIC_VALUES,
-    ]);
+    assertPhase8PublicMetadataSafe(input.config);
+    assertNoSensitiveOutputCollision(
+      PHASE8_STATIC_PUBLIC_OUTPUTS,
+      Object.values(input.config.allowedEnvironment),
+    );
     const deadline = input.executionDeadlineMs ?? HARNESS_EXECUTION_DEADLINE_MS;
     if (!Number.isSafeInteger(deadline) || deadline < 1 || deadline > 300_000) {
       throw new Error("PHASE8_CONFIGURATION_INVALID");
@@ -361,20 +345,4 @@ export class Phase8HarnessRuntime {
       if (this.#activeAbort === abort) this.#activeAbort = null;
     }
   }
-}
-
-export function renderHarnessPage(): string {
-  return `<!doctype html><meta charset="utf-8"><title>Edict Phase 8 Harness</title>
-<style>body{font:16px system-ui;max-width:52rem;margin:3rem auto;padding:0 1rem}button,input{font:inherit;margin:.4rem;padding:.6rem}pre{white-space:pre-wrap}</style>
-<h1>Edict Phase 8 one-action harness</h1><p id="target">Authenticate to reveal the fixed action target.</p>
-<label>One-time bootstrap secret <input id="secret" type="password" autocomplete="off" maxlength="256"></label>
-<button id="login">Establish session</button><button id="arm" disabled>Arm exact action</button>
-<button id="execute" disabled>Execute once</button><button id="stop" disabled>Stop</button><pre id="status"></pre>
-<script>'use strict';let target=null,csrfToken=null,grantId=null;
-const status=document.getElementById('status');
-async function post(path,value){const response=await fetch(path,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(value)});const result=await response.json();status.textContent=JSON.stringify(result);return result}
-document.getElementById('login').onclick=async()=>{const input=document.getElementById('secret');const result=await post('/session',{bootstrapSecret:input.value});input.value='';if(result.ok){target=result.target;csrfToken=result.csrfToken;document.getElementById('target').textContent=JSON.stringify(target);document.getElementById('arm').disabled=false;document.getElementById('stop').disabled=false}};
-document.getElementById('arm').onclick=async()=>{if(target===null)return;const result=await post('/arm',{csrfToken,...target});if(result.ok){grantId=result.grantId;document.getElementById('execute').disabled=false;document.getElementById('arm').disabled=true}};
-document.getElementById('execute').onclick=async()=>{document.getElementById('execute').disabled=true;await post('/execute',{csrfToken,grantId,confirmation:'EXECUTE'})};
-document.getElementById('stop').onclick=async()=>{await post('/stop',{csrfToken})};</script>`;
 }

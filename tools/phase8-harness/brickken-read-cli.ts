@@ -3,25 +3,28 @@ import "server-only";
 import { pathToFileURL } from "node:url";
 import { createBrickkenReadExecutor, type BrickkenReadExecutorDependencies } from "./brickken-read-executor";
 import {
-  PHASE8_BOOTSTRAP_OUTPUT_PREFIX,
   runPhase8HarnessCli,
   type InteractiveTerminal,
 } from "./cli";
 import type { Phase8EnvironmentSource } from "./config";
-import { Phase8CliSafeWriter, type Phase8TerminalSink } from "./safe-terminal";
-
-type HarnessRunner = typeof runPhase8HarnessCli;
-
-export const PHASE8_ARGUMENT_ERROR_OUTPUT =
-  '{"ok":false,"error":{"code":"PHASE8_ARGUMENTS_REFUSED"}}\n';
-export const PHASE8_START_ERROR_OUTPUT =
-  '{"ok":false,"error":{"code":"PHASE8_CLI_START_FAILED"}}\n';
-
-const BRICKKEN_READ_FIXED_CLI_OUTPUTS = Object.freeze([
-  PHASE8_BOOTSTRAP_OUTPUT_PREFIX,
+import {
   PHASE8_ARGUMENT_ERROR_OUTPUT,
   PHASE8_START_ERROR_OUTPUT,
-] as const);
+  PHASE8_STATIC_PUBLIC_OUTPUTS,
+} from "./public-output";
+import {
+  Phase8CliSafeWriter,
+  Phase8OutputCollisionError,
+  type Phase8TerminalSink,
+} from "./safe-terminal";
+
+type HarnessRunner = typeof runPhase8HarnessCli;
+type HarnessLifecycleDependencies = Pick<
+  Parameters<HarnessRunner>[0],
+  "clock" | "bootstrapFactory" | "runtimeFactory" | "serverStarter"
+>;
+
+export { PHASE8_ARGUMENT_ERROR_OUTPUT, PHASE8_START_ERROR_OUTPUT } from "./public-output";
 
 export function narrowBrickkenReadCliEnvironment(
   source: Phase8EnvironmentSource,
@@ -42,6 +45,7 @@ export async function runBrickkenReadHarnessCli(input: {
   readonly terminal: InteractiveTerminal;
   readonly executorDependencies?: BrickkenReadExecutorDependencies;
   readonly harnessRunner?: HarnessRunner;
+  readonly harnessDependencies?: HarnessLifecycleDependencies;
 }) {
   const environment = narrowBrickkenReadCliEnvironment(input.environment);
   const sensitiveValues = typeof environment.BRICKKEN_API_KEY === "string"
@@ -52,9 +56,10 @@ export async function runBrickkenReadHarnessCli(input: {
     stderr: input.terminal,
     sensitiveValues,
   });
-  safeWriter.preflight(BRICKKEN_READ_FIXED_CLI_OUTPUTS);
+  safeWriter.preflight(PHASE8_STATIC_PUBLIC_OUTPUTS);
   const harnessRunner = input.harnessRunner ?? runPhase8HarnessCli;
   return harnessRunner({
+    ...input.harnessDependencies,
     environment,
     terminal: input.terminal,
     executorFactory: () => createBrickkenReadExecutor(input.executorDependencies),
@@ -68,6 +73,7 @@ export async function runBrickkenReadHarnessMain(input: {
   readonly stderr: Phase8TerminalSink;
   readonly harnessRunner?: HarnessRunner;
   readonly executorDependencies?: BrickkenReadExecutorDependencies;
+  readonly harnessDependencies?: HarnessLifecycleDependencies;
 }): Promise<number> {
   const environment = narrowBrickkenReadCliEnvironment(input.environment);
   const sensitiveValues = typeof environment.BRICKKEN_API_KEY === "string"
@@ -79,7 +85,7 @@ export async function runBrickkenReadHarnessMain(input: {
     sensitiveValues,
   });
   try {
-    safeWriter.preflight(BRICKKEN_READ_FIXED_CLI_OUTPUTS);
+    safeWriter.preflight(PHASE8_STATIC_PUBLIC_OUTPUTS);
     if (input.argv.length !== 2) {
       safeWriter.writeStderr(PHASE8_ARGUMENT_ERROR_OUTPUT);
       return 1;
@@ -89,13 +95,15 @@ export async function runBrickkenReadHarnessMain(input: {
       terminal: input.stdout,
       harnessRunner: input.harnessRunner,
       executorDependencies: input.executorDependencies,
+      harnessDependencies: input.harnessDependencies,
     });
     return 0;
-  } catch {
+  } catch (error) {
+    if (error instanceof Phase8OutputCollisionError) return 1;
     try {
       safeWriter.writeStderr(PHASE8_START_ERROR_OUTPUT);
-    } catch {
-      // A colliding fallback must remain silent.
+    } catch (fallbackError) {
+      if (!(fallbackError instanceof Phase8OutputCollisionError)) throw fallbackError;
     }
     return 1;
   }

@@ -3,6 +3,13 @@ export interface Phase8TerminalSink {
   write(value: string): unknown;
 }
 
+export class Phase8OutputCollisionError extends Error {
+  constructor(message = "PHASE8_OUTPUT_COLLISION") {
+    super(message);
+    this.name = "Phase8OutputCollisionError";
+  }
+}
+
 export class Phase8CliSafeWriter {
   readonly #stdout: Phase8TerminalSink;
   readonly #stderr: Phase8TerminalSink;
@@ -20,7 +27,7 @@ export class Phase8CliSafeWriter {
 
   assertSafe(value: string): void {
     if (this.#sensitiveValues.some((secret) => value.includes(secret))) {
-      throw new Error("PHASE8_CLI_OUTPUT_COLLISION");
+      throw new Phase8OutputCollisionError("PHASE8_CLI_OUTPUT_COLLISION");
     }
   }
 

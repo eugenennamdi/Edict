@@ -4,10 +4,11 @@ import { Phase8HarnessRuntime } from "./runtime";
 import { Phase8CliSafeWriter, type Phase8TerminalSink } from "./safe-terminal";
 import { startPhase8HarnessServer } from "./server";
 import type { Phase8ActionExecutor } from "./types";
+import { PHASE8_BOOTSTRAP_OUTPUT_PREFIX, PHASE8_STATIC_PUBLIC_OUTPUTS } from "./public-output";
+
+export { PHASE8_BOOTSTRAP_OUTPUT_PREFIX } from "./public-output";
 
 export type InteractiveTerminal = Phase8TerminalSink;
-
-export const PHASE8_BOOTSTRAP_OUTPUT_PREFIX = "Edict Phase 8 one-time bootstrap secret: ";
 
 export async function runPhase8HarnessCli(input: {
   readonly environment: Phase8EnvironmentSource;
@@ -25,7 +26,7 @@ export async function runPhase8HarnessCli(input: {
     stderr: input.terminal,
     sensitiveValues: Object.values(config.allowedEnvironment),
   });
-  safeWriter.preflight([PHASE8_BOOTSTRAP_OUTPUT_PREFIX]);
+  safeWriter.preflight(PHASE8_STATIC_PUBLIC_OUTPUTS);
   const clock = input.clock ?? { nowMs: () => Date.now() };
   const bootstrap = (input.bootstrapFactory ?? createBootstrapSecret)(clock);
   safeWriter.writeStdout(`${PHASE8_BOOTSTRAP_OUTPUT_PREFIX}${bootstrap.secret}\n`);

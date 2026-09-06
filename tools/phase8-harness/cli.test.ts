@@ -6,6 +6,7 @@ import {
   runBrickkenReadHarnessMain,
 } from "./brickken-read-cli";
 import { PHASE8_BOOTSTRAP_OUTPUT_PREFIX, runPhase8HarnessCli } from "./cli";
+import { PHASE8_HARNESS_PAGE } from "./public-output";
 import { Phase8CliSafeWriter } from "./safe-terminal";
 
 const SAFE_KEY = "offline-cli-key-with-no-public-overlap";
@@ -60,35 +61,58 @@ describe("Phase 8 centralized CLI safe writer", () => {
   });
 
   it.each([
-    ["Edict", ["node", "cli"]],
-    [PHASE8_BOOTSTRAP_OUTPUT_PREFIX, ["node", "cli"]],
-    ["PHASE8_CLI_START_FAILED", ["node", "cli"]],
-    ["PHASE8_ARGUMENTS_REFUSED", ["node", "cli", "extra"]],
-    ["E", ["node", "cli"]],
-    ["CLI", ["node", "cli"]],
-  ])("fails silently before construction when fixed output collides with %s", async (apiKey, argv) => {
+    ["Edict", "Edict"],
+    ["csrf token key", "csrfToken"],
+    ["bootstrap label", "One-time bootstrap secret"],
+    ["session key", "bootstrapSecret"],
+    ["Arm key", "grantId"],
+    ["Execute key", "confirmation"],
+    ["action error code", "ACTION_FAILED"],
+    ["argument error code", "PHASE8_ARGUMENTS_REFUSED"],
+    ["startup error code", "PHASE8_CLI_START_FAILED"],
+    ["evidence key", "resultFingerprint"],
+    ["page text", "Authenticate to reveal"],
+    ["action name", "BRICKKEN_READ"],
+    ["one character", "E"],
+    ["short string", "csrf"],
+    ["long string", PHASE8_HARNESS_PAGE.split("\n")[1]!],
+  ])("fails silently before every construction boundary for %s", async (_label, apiKey) => {
     const stdout = terminal();
     const stderr = terminal();
+    const bootstrapFactory = vi.fn();
+    const runtimeFactory = vi.fn();
+    const serverStarter = vi.fn();
+    const executorFactory = vi.fn();
     const harnessRunner = vi.fn(async () => {
-      throw new Error("must not start");
+      bootstrapFactory();
+      runtimeFactory();
+      serverStarter();
+      executorFactory();
+      throw new Error("must not construct");
     });
     const fetch = vi.fn(async () => { throw new Error("must not request"); });
 
     await expect(runBrickkenReadHarnessMain({
-      argv,
+      argv: ["node", "cli"],
       environment: environment(apiKey),
       stdout: stdout.sink,
       stderr: stderr.sink,
       harnessRunner,
       executorDependencies: { fetch },
+      harnessDependencies: {
+        bootstrapFactory,
+        runtimeFactory: runtimeFactory as never,
+        serverStarter: serverStarter as never,
+      },
     })).resolves.toBe(1);
 
     expect(stdout.values).toEqual([]);
-    const safeFallback = PHASE8_START_ERROR_OUTPUT.includes(apiKey)
-      ? []
-      : [PHASE8_START_ERROR_OUTPUT];
-    expect(stderr.values).toEqual(safeFallback);
+    expect(stderr.values).toEqual([]);
     expect(harnessRunner).not.toHaveBeenCalled();
+    expect(bootstrapFactory).not.toHaveBeenCalled();
+    expect(runtimeFactory).not.toHaveBeenCalled();
+    expect(serverStarter).not.toHaveBeenCalled();
+    expect(executorFactory).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
 
