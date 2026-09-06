@@ -56,7 +56,14 @@ Inspect `.env.example` for approved environment variables. For local development
 - **Phase 7: Browser Wallet Authorization and Transaction Boundary** — Complete offline. The vendor-neutral EIP-6963/EIP-1193 boundary provides explicit provider selection, exact server-issued EIP-712 approval requests, strict immutable transaction projection, canonical wallet-intent integrity, and durable prompt-before-send/hash-handoff ordering. No named wallet or live write is verified. See [`docs/WALLET_EXECUTION_SPEC.md`](docs/WALLET_EXECUTION_SPEC.md).
 - **Phase 8: Adversarial Boundary and Compatibility Harness** — Complete offline. Provider hardening, bounded deadlines, exact trusted-RPC transaction/receipt evidence, backward-compatible `ExecutionRunV3`, an isolated one-action operator harness, and the strict `BRICKKEN_READ` sandbox network-information executor are implemented. The executor has not been run, no named wallet is privileged or verified, the V3 migration is generated but unapplied, and production semantic authorization remains deny-all. See [`docs/PHASE_8_OPERATOR_PLAYBOOK.md`](docs/PHASE_8_OPERATOR_PLAYBOOK.md).
 - **Phase 9: Offline TOKENIZE Representational Compatibility** — Closed through composition tests of the existing prepared parser, wallet projection, server intent derivation and browser recomputation. No production code or external-effect surface was added; semantic authorization remains deny-all. See [the Phase 9 contract](docs/WALLET_EXECUTION_SPEC.md#phase-9-offline-tokenize-compatibility).
-- **Stop:** Phase 9 must not be reopened without a product scope change or a concrete in-scope defect. Phase 10 and live actions are not authorized by this closure.
+- **Phase 10: Run Planning Workspace** — Closed after offline verification. The root page provides a guided mandate form, server-normalized manifest and deterministic plan review, public status/revision and hashes, manual refresh, and legal cancellation with the exact expected revision. Stale cancellation rereads the run; disabled APIs show an honest unavailable state. Execution and wallet controls remain unavailable.
+- **Stop:** Phase 11 and live actions are not authorized by this closure. Account-backed compatibility evidence remains separate work for the authorized Brickken account holder or administrator.
+
+## Run planning workspace
+
+The UI uses only `POST /api/runs`, `GET /api/runs/[runId]`, and `POST /api/runs/[runId]/cancel`. The existing five-route production inventory is unchanged; approval and external-effect controls are absent. Server normalization, plans and hashes remain authoritative. Browser validation provides input feedback without generating identities or hashes.
+
+One active run stays in current page memory; keep the page open to refresh or cancel it. The existing HttpOnly capability cookie authorizes reads and mutations. Browser GET reads may omit `Origin`; present origins must match and cross-site Fetch Metadata is refused. Mutations still require the exact trusted origin. No capability or security material is placed in browser storage. See [`docs/RUN_API_SPEC.md`](docs/RUN_API_SPEC.md).
 
 ## Durable Database Gate
 
