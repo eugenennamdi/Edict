@@ -2,8 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { OneTimeBootstrapVerifier } from "./auth";
+import * as harnessAuth from "./auth";
 import { runPhase8HarnessCli } from "./cli";
 import { readPhase8HarnessConfig } from "./config";
+import { phase8Response, PHASE8_JSON_HEADERS, PHASE8_HTML_HEADERS } from "./public-output";
 import {
   BRICKKEN_READ_LIMITATIONS,
   BRICKKEN_READ_REDACTIONS,
@@ -605,6 +607,10 @@ describe("Phase 8 public metadata and trusted evidence", () => {
 
   it.each([
     ["rendered page", "Authenticate to reveal"],
+    ["HTML header", "nosniff"],
+    ["JSON default header", "no-store"],
+    ["cookie header", "HttpOnly"],
+    ["serialized evidence", '"harnessVersion":"1.0"'],
     ["session response", "csrfToken"],
     ["Arm response", "grantId"],
     ["Execute response", "evidence"],
@@ -707,5 +713,44 @@ describe("Phase 8 production isolation", () => {
         expect(content, filename).not.toContain("NEXT_PUBLIC_");
       }
     }
+  });
+});
+
+
+describe("Phase 8 final response containment", () => {
+  it.each(["body", "header name", "header value"])("refuses an unforeseen dynamic collision in %s", (location) => {
+    const secret = "synthetic-unforeseen-output-value";
+    const headers = new Headers(PHASE8_JSON_HEADERS);
+    if (location === "header name") headers.set(secret, "public");
+    if (location === "header value") headers.set("x-result", secret);
+    expect(() => phase8Response(200, location === "body" ? secret : "{}", headers, [secret]))
+      .toThrow("PHASE8_OUTPUT_COLLISION");
+  });
+
+  it("makes a late generated-token collision terminal without a fallback response", async () => {
+    const key = "synthetic-dynamic-token-collision-not-in-static-output";
+    const executorFactory = vi.fn();
+    const runtime = new Phase8HarnessRuntime({
+      config: { ...config(), allowedEnvironment: Object.freeze({ BRICKKEN_API_KEY: key }) },
+      bootstrap: new OneTimeBootstrapVerifier(SECRET, { nowMs: () => 1_000 }),
+      executorFactory, clock: { nowMs: () => 1_000 },
+    });
+    const token = vi.spyOn(harnessAuth, "randomOpaqueToken").mockReturnValue(key);
+    try {
+      await expect(runtime.handle(request("/session", { bootstrapSecret: SECRET })))
+        .rejects.toThrow("PHASE8_OUTPUT_COLLISION");
+      expect(runtime.stopped).toBe(true);
+      expect(executorFactory).not.toHaveBeenCalled();
+    } finally { token.mockRestore(); }
+  });
+
+  it("checks the actual HTML and normalized default headers", async () => {
+    expect(() => phase8Response(200, renderHarnessPage(), PHASE8_HTML_HEADERS, ["nosniff"]))
+      .toThrow("PHASE8_OUTPUT_COLLISION");
+    expect(() => phase8Response(400, "{}", PHASE8_JSON_HEADERS, ["no-store"]))
+      .toThrow("PHASE8_OUTPUT_COLLISION");
+    const response = phase8Response(200, renderHarnessPage(), PHASE8_HTML_HEADERS, ["safe-unique-synthetic-key"]);
+    expect(await response.text()).toBe(renderHarnessPage());
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
   });
 });

@@ -1,4 +1,6 @@
-import { PHASE8_ACTIONS, PHASE8_OPERATIONS } from "./types";
+import { PHASE8_ACTIONS, PHASE8_OPERATIONS, type Phase8Action, type Phase8Operation, type Phase8PublicTarget } from "./types";
+import type { Phase8ActionEvidenceV1 } from "./evidence";
+import { Phase8OutputCollisionError } from "./safe-terminal";
 
 export const PHASE8_BOOTSTRAP_OUTPUT_PREFIX = "Edict Phase 8 one-time bootstrap secret: ";
 export const PHASE8_ARGUMENT_ERROR_OUTPUT =
@@ -40,35 +42,101 @@ document.getElementById('arm').onclick=async()=>{if(target===null)return;const r
 document.getElementById('execute').onclick=async()=>{document.getElementById('execute').disabled=true;await post('/execute',{csrfToken,grantId,confirmation:'EXECUTE'})};
 document.getElementById('stop').onclick=async()=>{await post('/stop',{csrfToken})};</script>`;
 
-const RUNTIME_STATIC_TOKENS = [
-  "ok", "error", "code", "csrfToken", "target", "grantId", "category", "evidence",
-  "bootstrapSecret", "action", "runId", "operation", "walletRequestHash", "confirmation",
+// These definitions generate both actual responses and their preflight inventory.
+export const PHASE8_PUBLIC_ERRORS = Object.freeze([
   "ORIGIN_REFUSED", "HOST_REFUSED", "NOT_FOUND", "HARNESS_STOPPED", "SESSION_REFUSED",
   "BAD_REQUEST", "BOOTSTRAP_REFUSED", "ARM_REFUSED", "EXECUTE_REFUSED",
-  "ACTION_DEADLINE_EXCEEDED", "ACTION_FAILED", "EXECUTE", "edict_phase8_session",
-] as const;
-
-const EVIDENCE_STATIC_TOKENS = [
-  "evidenceVersion", "harnessVersion", "observedAt", "evidenceStatus", "resultFingerprint",
-  "details", "limitations", "redactions", "PASSED", "checkKind", "checkVersion",
-  "environment", "requestedChainId", "currencyName", "blockExplorerHost",
-  "credentialBearingRequestSucceeded", "resultCategory", "adapterVersion", "sdkVersion",
-  "BRICKKEN_SANDBOX_NETWORK_INFO", "1.0", "sandbox", "11155111", "Sepolia ETH",
-  "sepolia.etherscan.io", "BRICKKEN_NETWORK_READ_PASSED", "0.2.1",
-] as const;
-
-export const PHASE8_STATIC_PUBLIC_OUTPUTS = Object.freeze([
-  PHASE8_BOOTSTRAP_OUTPUT_PREFIX,
-  PHASE8_ARGUMENT_ERROR_OUTPUT,
-  PHASE8_START_ERROR_OUTPUT,
-  PHASE8_HARNESS_PAGE,
-  ...RUNTIME_STATIC_TOKENS,
-  ...EVIDENCE_STATIC_TOKENS,
-  ...PHASE8_ACTIONS,
-  ...PHASE8_OPERATIONS,
-  ...BRICKKEN_READ_LIMITATIONS,
-  ...BRICKKEN_READ_REDACTIONS,
+  "ACTION_DEADLINE_EXCEEDED", "ACTION_FAILED",
 ] as const);
+export type Phase8PublicError = (typeof PHASE8_PUBLIC_ERRORS)[number];
+export const PHASE8_COOKIE_NAME = "edict_phase8_session";
+export const PHASE8_SESSION_TTL_MS = 15 * 60 * 1_000;
+export const PHASE8_JSON_HEADERS = Object.freeze({
+  "content-type": "application/json; charset=utf-8", "cache-control": "no-store",
+});
+export const PHASE8_HTML_HEADERS = Object.freeze({
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": "no-store",
+  "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+});
+export function phase8SessionHeaders(token: string) {
+  return { "set-cookie": `${PHASE8_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${PHASE8_SESSION_TTL_MS / 1_000}` };
+}
+export const BRICKKEN_READ_DETAILS = Object.freeze({
+  checkKind: "BRICKKEN_SANDBOX_NETWORK_INFO", checkVersion: "1.0", environment: "sandbox",
+  requestedChainId: "11155111", currencyName: "Sepolia ETH", blockExplorerHost: "sepolia.etherscan.io",
+  credentialBearingRequestSucceeded: true, resultCategory: "BRICKKEN_NETWORK_READ_PASSED",
+  adapterVersion: "1.0", sdkVersion: "0.2.1",
+} as const);
+export function brickkenReadEvidence(input: {
+  observedAt: string; runId: string; operation: Phase8Operation; resultFingerprint: `sha256:${string}`;
+}): Phase8ActionEvidenceV1 {
+  return {
+    evidenceVersion: "1.0", harnessVersion: "1.0", observedAt: input.observedAt,
+    action: "BRICKKEN_READ", runId: input.runId, operation: input.operation, walletRequestHash: null,
+    evidenceStatus: "PASSED", resultFingerprint: input.resultFingerprint, details: BRICKKEN_READ_DETAILS,
+    limitations: [...BRICKKEN_READ_LIMITATIONS], redactions: [...BRICKKEN_READ_REDACTIONS],
+  };
+}
+export const phase8Bodies = Object.freeze({
+  error: (code: Phase8PublicError) => ({ ok: false, error: { code } }),
+  session: (csrfToken: string, target: Phase8PublicTarget) => ({ ok: true, csrfToken, target }),
+  arm: (grantId: string, target: Phase8PublicTarget) => ({ ok: true, grantId, target }),
+  execute: (action: Phase8Action, evidence: Phase8ActionEvidenceV1) => ({ ok: true, category: action, evidence }),
+  stopped: () => ({ ok: true, category: "HARNESS_STOPPED" }),
+});
+
+// Used by every application response, including HTML and server-level fallbacks.
+// Check the fully merged, normalized headers, not only caller-supplied overrides.
+export function phase8Response(status: number, body: string, headers: HeadersInit, sensitive: readonly string[]): Response {
+  const normalized = new Headers(headers);
+  const publicValues = [body, JSON.stringify([...normalized]), ...[...normalized].flat()];
+  if (sensitive.some((secret) => secret.length === 0 || publicValues.some((value) => value.includes(secret)))) {
+    throw new Phase8OutputCollisionError();
+  }
+  return new Response(body, { status, headers: normalized });
+}
+
+// A marker denotes unpredictable fields; splitting serialized samples preserves
+// every fixed fragment, including quotes, separators and adjacent fixed fields.
+const DYNAMIC = "@@PHASE8_DYNAMIC@@";
+function inventoryFragments(value: unknown): string[] {
+  const serialized = JSON.stringify(value);
+  const result = serialized.split(DYNAMIC).filter(Boolean);
+  if (typeof value === "string") result.push(...value.split(DYNAMIC).filter(Boolean));
+  else if (value !== null && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) result.push(key, ...inventoryFragments(child));
+  }
+  return result;
+}
+export function phase8Target(action: Phase8Action, runId: string, operation: Phase8Operation, walletRequestHash: `sha256:${string}` | null): Phase8PublicTarget {
+  return Object.freeze({ action, runId, operation, walletRequestHash });
+}
+function responseSamples(targets: readonly Phase8PublicTarget[]): unknown[] {
+  // Adding a response builder requires adding its preflight sample here.
+  const bodies: Record<keyof typeof phase8Bodies, unknown[]> = {
+    error: PHASE8_PUBLIC_ERRORS.map(phase8Bodies.error), session: [], arm: [], execute: [],
+    stopped: [phase8Bodies.stopped()],
+  };
+  for (const target of targets) {
+    const evidence = brickkenReadEvidence({ observedAt: DYNAMIC, runId: target.runId, operation: target.operation, resultFingerprint: DYNAMIC as `sha256:${string}` });
+    bodies.session.push(phase8Bodies.session(DYNAMIC, target));
+    bodies.arm.push(phase8Bodies.arm(DYNAMIC, target));
+    bodies.execute.push(phase8Bodies.execute(target.action, evidence));
+  }
+  const headers = [PHASE8_JSON_HEADERS, PHASE8_HTML_HEADERS, phase8SessionHeaders(DYNAMIC)]
+    .flatMap((value) => [value, [...new Headers(value)]]);
+  return [...headers, ...Object.values(bodies).flat()];
+}
+export function phase8PublicOutputsForTarget(target: Phase8PublicTarget): string[] {
+  return responseSamples([target]).flatMap(inventoryFragments);
+}
+export const PHASE8_STATIC_PUBLIC_OUTPUTS: readonly string[] = Object.freeze([...new Set([
+  PHASE8_BOOTSTRAP_OUTPUT_PREFIX, PHASE8_ARGUMENT_ERROR_OUTPUT, PHASE8_START_ERROR_OUTPUT,
+  PHASE8_HARNESS_PAGE, ...responseSamples(PHASE8_ACTIONS.flatMap((action) => PHASE8_OPERATIONS.map((operation) => phase8Target(action, DYNAMIC, operation, null)))).flatMap(inventoryFragments),
+])]);
 
 export function renderHarnessPage(): string {
   return PHASE8_HARNESS_PAGE;

@@ -14,15 +14,15 @@ import {
 import type { BrickkenServerAdapter } from "../../src/server/brickken/types";
 import { createBrickkenReadTransport } from "./brickken-read-transport";
 import {
-  BRICKKEN_READ_LIMITATIONS,
-  BRICKKEN_READ_REDACTIONS,
   brickkenReadFingerprintProjection,
   type Phase8ActionEvidenceV1,
 } from "./evidence";
 import type { Phase8ActionContext, Phase8ActionExecutor } from "./types";
 
-export const BRICKKEN_READ_ADAPTER_VERSION = "1.0";
-export const BRICKKEN_READ_SDK_VERSION = "0.2.1";
+import { BRICKKEN_READ_DETAILS, brickkenReadEvidence } from "./public-output";
+
+export const BRICKKEN_READ_ADAPTER_VERSION = BRICKKEN_READ_DETAILS.adapterVersion;
+export const BRICKKEN_READ_SDK_VERSION = BRICKKEN_READ_DETAILS.sdkVersion;
 export const BRICKKEN_READ_DEADLINE_MS = 15_000;
 
 export type BrickkenReadFailureCode =
@@ -204,48 +204,14 @@ export function createBrickkenReadExecutor(
         return refuse("BRICKKEN_NETWORK_CHAIN_MISMATCH");
       }
 
-      const details = Object.freeze({
-        checkKind: "BRICKKEN_SANDBOX_NETWORK_INFO" as const,
-        checkVersion: "1.0" as const,
-        environment: "sandbox" as const,
-        requestedChainId: "11155111" as const,
-        currencyName: "Sepolia ETH" as const,
-        blockExplorerHost: "sepolia.etherscan.io" as const,
-        credentialBearingRequestSucceeded: true as const,
-        resultCategory: "BRICKKEN_NETWORK_READ_PASSED" as const,
-        adapterVersion: BRICKKEN_READ_ADAPTER_VERSION,
-        sdkVersion: BRICKKEN_READ_SDK_VERSION,
-      });
+      const details = BRICKKEN_READ_DETAILS;
       const fingerprint = await hashCanonicalJson(brickkenReadFingerprintProjection(details));
       const observedAt = (dependencies.now?.() ?? new Date()).toISOString();
 
-      const evidence: Phase8ActionEvidenceV1 = {
-        evidenceVersion: "1.0",
-        harnessVersion: "1.0",
-        observedAt,
-        action: "BRICKKEN_READ",
-        runId: inspected.target.runId,
-        operation: inspected.target.operation,
-        walletRequestHash: null,
-        evidenceStatus: "PASSED",
+      const evidence = brickkenReadEvidence({
+        observedAt, runId: inspected.target.runId, operation: inspected.target.operation,
         resultFingerprint: fingerprint.hash,
-        details,
-        limitations: [BRICKKEN_READ_LIMITATIONS[0], BRICKKEN_READ_LIMITATIONS[1]],
-        redactions: [
-          BRICKKEN_READ_REDACTIONS[0],
-          BRICKKEN_READ_REDACTIONS[1],
-          BRICKKEN_READ_REDACTIONS[2],
-          BRICKKEN_READ_REDACTIONS[3],
-          BRICKKEN_READ_REDACTIONS[4],
-          BRICKKEN_READ_REDACTIONS[5],
-          BRICKKEN_READ_REDACTIONS[6],
-          BRICKKEN_READ_REDACTIONS[7],
-          BRICKKEN_READ_REDACTIONS[8],
-          BRICKKEN_READ_REDACTIONS[9],
-          BRICKKEN_READ_REDACTIONS[10],
-          BRICKKEN_READ_REDACTIONS[11],
-        ],
-      };
+      });
       return deepFreeze(evidence);
     },
   });

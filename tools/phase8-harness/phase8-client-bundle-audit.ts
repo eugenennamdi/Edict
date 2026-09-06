@@ -100,6 +100,7 @@ export interface Phase8AuditFileSystem {
   readFile(target: string): Buffer;
   remove(target: string): void;
   writeFile(target: string, value: string | Uint8Array): void;
+  writeNewFile(target: string, value: string | Uint8Array): void;
 }
 
 export interface Phase8BuildResult {
@@ -159,6 +160,10 @@ const NODE_FILE_SYSTEM: Phase8AuditFileSystem = {
   readFile: (target) => fs.readFileSync(target),
   remove: (target) => { fs.rmSync(target, { recursive: true }); },
   writeFile: (target, value) => { fs.writeFileSync(target, value); },
+  writeNewFile: (target, value) => {
+    const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    try { fs.writeFileSync(fd, value); } finally { fs.closeSync(fd); }
+  },
 };
 
 function commandResult(command: string, args: readonly string[], cwd: string) {
@@ -296,17 +301,18 @@ function digestSnapshot(input: {
   return `sha256:${hash.digest("hex")}`;
 }
 
-function walkFiles(fileSystem: Phase8AuditFileSystem, root: string): string[] {
-  let rootStat: AuditStats;
-  if (!fileSystem.exists(root)) {
-    try {
-      rootStat = fileSystem.lstat(root);
-    } catch {
-      return [];
-    }
-  } else {
-    rootStat = fileSystem.lstat(root);
+function lstatIfPresent(fileSystem: Phase8AuditFileSystem, target: string): AuditStats | undefined {
+  try {
+    return fileSystem.lstat(target);
+  } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
   }
+}
+
+function walkFiles(fileSystem: Phase8AuditFileSystem, root: string): string[] {
+  const rootStat = lstatIfPresent(fileSystem, root);
+  if (rootStat === undefined) return [];
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) artifactFail("UNSUPPORTED_ENTRY");
   const files: string[] = [];
   const visit = (directory: string): void => {
@@ -402,6 +408,9 @@ function assertBuildOutputSafe(build: Phase8BuildResult): void {
 export async function capturePhase8HarnessPage(
   input: Phase8HarnessPageCaptureInput,
 ): Promise<void> {
+  // Never reuse build-created capture paths, even ordinary directories. Exclusive
+  // creation refuses symlinks and special entries before any artifact write.
+  input.fileSystem.mkdir(input.artifactRoot);
   const clock = Object.freeze({ nowMs: () => 1_000 });
   const config = readPhase8HarnessConfig({
     EDICT_PHASE8_MODE: "sandbox",
@@ -428,9 +437,8 @@ export async function capturePhase8HarnessPage(
     response.status !== 200 || html.length === 0 || html !== renderHarnessPage() ||
     HARNESS_PROTECTED_TARGET_VALUES.some((value) => html.includes(value))
   ) artifactFail("HARNESS_PAGE_INVALID");
-  input.fileSystem.mkdir(input.artifactRoot, { recursive: true });
-  input.fileSystem.writeFile(path.join(input.artifactRoot, "index.html"), html);
-  input.fileSystem.writeFile(
+  input.fileSystem.writeNewFile(path.join(input.artifactRoot, "index.html"), html);
+  input.fileSystem.writeNewFile(
     path.join(input.artifactRoot, "response-headers.json"),
     JSON.stringify([...response.headers.entries()].sort(([left], [right]) => left.localeCompare(right))),
   );
@@ -595,6 +603,7 @@ export async function runPhase8ClientBundleAudit(
     if (digestSnapshot({ fileSystem, workspace, files }) !== sourceDigest) fail();
     const apiRoutes = validateRoutes(fileSystem, workspace);
     const harnessRoot = path.join(workspace, ".phase8-audit-browser");
+    if (lstatIfPresent(fileSystem, harnessRoot) !== undefined) artifactFail("HARNESS_PATH_EXISTS");
     await captureHarnessPage({ artifactRoot: harnessRoot, fileSystem });
     validateCapturedHarnessPage(fileSystem, harnessRoot);
     const artifactDigest = validateAndDigestArtifacts({

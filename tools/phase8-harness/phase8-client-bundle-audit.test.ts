@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -53,6 +54,10 @@ function nodeFileSystem(
     readFile: (target) => fs.readFileSync(target),
     remove: (target) => { fs.rmSync(target, { recursive: true }); },
     writeFile: (target, value) => { fs.writeFileSync(target, value); },
+    writeNewFile: (target, value) => {
+    const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    try { fs.writeFileSync(fd, value); } finally { fs.closeSync(fd); }
+  },
     ...overrides,
   };
 }
@@ -273,6 +278,80 @@ describe("fresh source-bound Phase 8 client artifact audit", () => {
             }
           : base.lstat(target),
       }),
+    }));
+  });
+
+  it.each(["EACCES", "EIO", "ENOTDIR"])("fails closed when optional root inspection returns %s", async (code) => {
+    const base = nodeFileSystem();
+    await expectCliFailure(options({
+      build: ({ workspace }) => { writeValidBuild(workspace); return { status: 0, stdout: "built", stderr: "" }; },
+      fileSystem: nodeFileSystem({
+        exists: (target) => target.endsWith("/public") ? false : base.exists(target),
+        lstat: (target) => {
+          if (target.endsWith("/public")) throw Object.assign(new Error("synthetic inspection failure"), { code });
+          return base.lstat(target);
+        },
+      }),
+    }));
+  });
+
+  it.each(["directory link", "broken link", "file link", "existing directory", "FIFO"])(
+    "refuses a build-created capture root (%s) before touching its target", async (kind) => {
+      const root = fixtureRoot();
+      const target = path.join(root, "protected-target");
+      fs.mkdirSync(target);
+      const protectedFile = path.join(target, "original");
+      fs.writeFileSync(protectedFile, "must remain unchanged");
+      const capture = vi.fn(capturePhase8HarnessPage);
+      const writeNewFile = vi.fn(nodeFileSystem().writeNewFile);
+      await expectCliFailure(options({
+        root, captureHarnessPage: capture, fileSystem: nodeFileSystem({ writeNewFile }),
+        build: ({ workspace }) => {
+          writeValidBuild(workspace);
+          const captureRoot = path.join(workspace, ".phase8-audit-browser");
+          if (kind === "existing directory") fs.mkdirSync(captureRoot);
+          else if (kind === "FIFO") execFileSync("/usr/bin/mkfifo", [captureRoot]);
+          else fs.symlinkSync(kind === "directory link" ? target : kind === "file link" ? protectedFile : path.join(target, "missing"), captureRoot);
+          return { status: 0, stdout: "built", stderr: "" };
+        },
+      }));
+      expect(capture).not.toHaveBeenCalled();
+      expect(writeNewFile).not.toHaveBeenCalled();
+      expect(fs.readdirSync(target)).toEqual(["original"]);
+      expect(fs.readFileSync(protectedFile, "utf8")).toBe("must remain unchanged");
+    },
+  );
+
+  it.each(["symlink", "FIFO"])("exclusive capture file creation refuses an injected %s without following it", async (kind) => {
+    const root = fixtureRoot();
+    const target = path.join(root, "protected-file");
+    fs.writeFileSync(target, "unchanged");
+    const base = nodeFileSystem();
+    await expectCliFailure(options({
+      root,
+      build: ({ workspace }) => { writeValidBuild(workspace); return { status: 0, stdout: "built", stderr: "" }; },
+      fileSystem: nodeFileSystem({
+        writeNewFile: (filename, value) => {
+          if (filename.endsWith("/index.html")) {
+            if (kind === "symlink") fs.symlinkSync(target, filename);
+            else execFileSync("/usr/bin/mkfifo", [filename]);
+          }
+          base.writeNewFile(filename, value);
+        },
+      }),
+    }));
+    expect(fs.readFileSync(target, "utf8")).toBe("unchanged");
+  });
+
+  it.each([".next/static", ".next/server/app", "public"])("refuses a broken link at browser root %s", async (relative) => {
+    await expectCliFailure(options({
+      build: ({ workspace }) => {
+        writeValidBuild(workspace);
+        const entry = path.join(workspace, relative);
+        fs.rmSync(entry, { recursive: true, force: true });
+        fs.symlinkSync("missing-synthetic-target", entry);
+        return { status: 0, stdout: "built", stderr: "" };
+      },
     }));
   });
 

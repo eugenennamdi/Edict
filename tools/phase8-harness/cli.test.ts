@@ -71,6 +71,13 @@ describe("Phase 8 centralized CLI safe writer", () => {
     ["argument error code", "PHASE8_ARGUMENTS_REFUSED"],
     ["startup error code", "PHASE8_CLI_START_FAILED"],
     ["evidence key", "resultFingerprint"],
+    ["HTML response header", "nosniff"],
+    ["default JSON header", "no-store"],
+    ["cookie attribute", "HttpOnly"],
+    ["cookie fragment", "; Path=/; HttpOnly; SameSite=Strict"],
+    ["serialized evidence field", '"harnessVersion":"1.0"'],
+    ["adjacent evidence fields", '"evidenceVersion":"1.0","harnessVersion":"1.0"'],
+    ["serialized error", '"error":{"code":"ACTION_FAILED"}'],
     ["page text", "Authenticate to reveal"],
     ["action name", "BRICKKEN_READ"],
     ["one character", "E"],
@@ -140,6 +147,23 @@ describe("Phase 8 centralized CLI safe writer", () => {
     expect(runtimeFactory).not.toHaveBeenCalled();
     expect(serverStarter).not.toHaveBeenCalled();
     expect(executorFactory).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("rejects header collisions silently with invalid arguments=%s", async (invalidArguments) => {
+    const stdout = terminal();
+    const stderr = terminal();
+    const bootstrapFactory = vi.fn();
+    const runtimeFactory = vi.fn();
+    const serverStarter = vi.fn();
+    const fetch = vi.fn();
+    await expect(runBrickkenReadHarnessMain({
+      argv: invalidArguments ? ["node", "cli", "extra"] : ["node", "cli"],
+      environment: environment("nosniff"), stdout: stdout.sink, stderr: stderr.sink,
+      executorDependencies: { fetch },
+      harnessDependencies: { bootstrapFactory, runtimeFactory, serverStarter },
+    })).resolves.toBe(1);
+    expect([...stdout.values, ...stderr.values]).toEqual([]);
+    for (const boundary of [bootstrapFactory, runtimeFactory, serverStarter, fetch]) expect(boundary).not.toHaveBeenCalled();
   });
 
   it("keeps noncolliding argument and startup failures stable and sanitized", async () => {

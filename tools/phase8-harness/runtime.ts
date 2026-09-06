@@ -7,20 +7,24 @@ import {
   type OneTimeBootstrapVerifier,
 } from "./auth";
 import {
-  assertNoSensitivePublicCollision,
   assertNoSensitiveOutputCollision,
   assertPhase8PublicMetadataSafe,
   expectedHarnessOrigin,
 } from "./config";
 import { validatePhase8ActionEvidenceV1 } from "./evidence";
-import { PHASE8_STATIC_PUBLIC_OUTPUTS, renderHarnessPage } from "./public-output";
+import {
+  PHASE8_STATIC_PUBLIC_OUTPUTS, renderHarnessPage, PHASE8_COOKIE_NAME,
+  PHASE8_JSON_HEADERS, PHASE8_HTML_HEADERS, phase8SessionHeaders, phase8Bodies,
+  phase8Response, phase8PublicOutputsForTarget, type Phase8PublicError,
+} from "./public-output";
+import { Phase8OutputCollisionError } from "./safe-terminal";
 import type { Phase8ActionExecutor, Phase8HarnessConfig } from "./types";
 
 export { renderHarnessPage } from "./public-output";
 
 export const HARNESS_BODY_LIMIT_BYTES = 65_536;
 export const HARNESS_EXECUTION_DEADLINE_MS = 30_000;
-const COOKIE_NAME = "edict_phase8_session";
+const COOKIE_NAME = PHASE8_COOKIE_NAME;
 
 export interface Phase8HarnessTimers {
   setTimeout(callback: () => void, delayMs: number): unknown;
@@ -41,13 +45,6 @@ interface SessionRecord {
 interface Grant {
   readonly idDigest: string;
   readonly sessionDigest: string;
-}
-
-function json(status: number, body: unknown, headers: HeadersInit = {}): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers },
-  });
 }
 
 function cookieValue(request: Request): string | null {
@@ -128,7 +125,7 @@ export class Phase8HarnessRuntime {
   }) {
     assertPhase8PublicMetadataSafe(input.config);
     assertNoSensitiveOutputCollision(
-      PHASE8_STATIC_PUBLIC_OUTPUTS,
+      [...PHASE8_STATIC_PUBLIC_OUTPUTS, ...phase8PublicOutputsForTarget(input.config.target)],
       Object.values(input.config.allowedEnvironment),
     );
     const deadline = input.executionDeadlineMs ?? HARNESS_EXECUTION_DEADLINE_MS;
@@ -148,16 +145,27 @@ export class Phase8HarnessRuntime {
     return this.#stopped;
   }
 
-  #json(status: number, responseBody: unknown, headers: HeadersInit = {}): Response {
-    assertNoSensitivePublicCollision(
-      [JSON.stringify(responseBody), JSON.stringify(headers)],
-      Object.values(this.#config.allowedEnvironment),
-    );
-    return json(status, responseBody, headers);
+  #response(status: number, body: string, headers: HeadersInit): Response {
+    try {
+      return phase8Response(status, body, headers, Object.values(this.#config.allowedEnvironment));
+    } catch (error) {
+      if (error instanceof Phase8OutputCollisionError) this.#terminate("FAILED");
+      throw error;
+    }
   }
 
-  #fail(status: number, code: string): Response {
-    return this.#json(status, { ok: false, error: { code } });
+  #json(status: number, responseBody: unknown, headers: HeadersInit = {}): Response {
+    const merged = new Headers(PHASE8_JSON_HEADERS);
+    new Headers(headers).forEach((value, name) => merged.set(name, value));
+    return this.#response(status, JSON.stringify(responseBody), merged);
+  }
+
+  #fail(status: number, code: Phase8PublicError): Response {
+    return this.#json(status, phase8Bodies.error(code));
+  }
+
+  badRequestResponse(): Response {
+    return this.#fail(400, "BAD_REQUEST");
   }
 
   async handle(request: Request): Promise<Response> {
@@ -174,15 +182,7 @@ export class Phase8HarnessRuntime {
       const url = new URL(request.url);
       if (url.origin !== origin) return this.#fail(403, "ORIGIN_REFUSED");
       if (request.method === "GET" && url.pathname === "/") {
-        return new Response(renderHarnessPage(), {
-          headers: {
-            "content-type": "text/html; charset=utf-8",
-            "cache-control": "no-store",
-            "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
-            "x-content-type-options": "nosniff",
-            "referrer-policy": "no-referrer",
-          },
-        });
+        return this.#response(200, renderHarnessPage(), PHASE8_HTML_HEADERS);
       }
       if (request.method !== "POST") return this.#fail(404, "NOT_FOUND");
       const parsed = await body(request);
@@ -196,10 +196,11 @@ export class Phase8HarnessRuntime {
       if (url.pathname === "/stop") {
         if (!exactKeys(parsed, ["csrfToken"])) return this.#fail(400, "BAD_REQUEST");
         this.#terminate("STOPPED");
-        return this.#json(200, { ok: true, category: "HARNESS_STOPPED" });
+        return this.#json(200, phase8Bodies.stopped());
       }
       return this.#fail(404, "NOT_FOUND");
-    } catch {
+    } catch (error) {
+      if (error instanceof Phase8OutputCollisionError) throw error;
       return this.#fail(400, "BAD_REQUEST");
     }
   }
@@ -216,9 +217,7 @@ export class Phase8HarnessRuntime {
       csrfDigest: tokenDigest(csrfToken),
       expiresAt: this.#clock.nowMs() + SESSION_TTL_MS,
     };
-    return this.#json(200, { ok: true, csrfToken, target: this.#config.target }, {
-      "set-cookie": `${COOKIE_NAME}=${sessionToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_MS / 1_000}`,
-    });
+    return this.#json(200, phase8Bodies.session(csrfToken, this.#config.target), phase8SessionHeaders(sessionToken));
   }
 
   #authenticate(request: Request, parsed: Record<string, unknown>): SessionRecord | null {
@@ -243,7 +242,7 @@ export class Phase8HarnessRuntime {
     const id = randomOpaqueToken();
     this.#grant = { idDigest: tokenDigest(id), sessionDigest: session.sessionDigest };
     if (this.#stopped) return this.#fail(410, "HARNESS_STOPPED");
-    return this.#json(200, { ok: true, grantId: id, target: this.#config.target });
+    return this.#json(200, phase8Bodies.arm(id, this.#config.target));
   }
 
   #terminate(reason: "STOPPED" | "DEADLINE" | "FAILED" | "SUCCEEDED"): void {
@@ -330,11 +329,12 @@ export class Phase8HarnessRuntime {
         );
       }
       this.#assertActive(generation);
-      const result = { ok: true, category: this.#config.target.action, evidence } as const;
+      const result = phase8Bodies.execute(this.#config.target.action, evidence);
       this.#assertActive(generation);
       this.#terminate("SUCCEEDED");
       return this.#json(200, result);
-    } catch {
+    } catch (error) {
+      if (error instanceof Phase8OutputCollisionError) throw error;
       const reason = this.#terminalReason;
       if (!this.#stopped) this.#terminate("FAILED");
       if (reason === "STOPPED") return this.#fail(410, "HARNESS_STOPPED");

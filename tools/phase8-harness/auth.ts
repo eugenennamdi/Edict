@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 export const BOOTSTRAP_SECRET_TTL_MS = 5 * 60 * 1_000;
-export const SESSION_TTL_MS = 15 * 60 * 1_000;
+export { PHASE8_SESSION_TTL_MS as SESSION_TTL_MS } from "./public-output";
 
 export interface HarnessClock {
   nowMs(): number;

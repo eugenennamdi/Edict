@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { Phase8OutputCollisionError } from "./safe-terminal";
 import type { AddressInfo } from "node:net";
 import { HARNESS_BODY_LIMIT_BYTES, Phase8HarnessRuntime } from "./runtime";
 
@@ -43,11 +44,14 @@ export function startPhase8HarnessServer(runtime: Phase8HarnessRuntime, input: {
       });
       await send(outgoing, await runtime.handle(request));
       if (runtime.stopped) server.close();
-    } catch {
-      await send(outgoing, new Response('{"ok":false,"error":{"code":"BAD_REQUEST"}}', {
-        status: 400,
-        headers: { "content-type": "application/json; charset=utf-8" },
-      }));
+    } catch (error) {
+      try {
+        if (error instanceof Phase8OutputCollisionError) throw error;
+        await send(outgoing, runtime.badRequestResponse());
+      } catch {
+        outgoing.destroy();
+      }
+      if (runtime.stopped) server.close();
     }
   });
   return new Promise<{ readonly close: () => Promise<void>; readonly address: AddressInfo }>((resolve, reject) => {

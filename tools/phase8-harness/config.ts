@@ -1,5 +1,5 @@
 import { PHASE8_ACTIONS, PHASE8_OPERATIONS, type Phase8Action, type Phase8HarnessConfig } from "./types";
-import { PHASE8_STATIC_PUBLIC_OUTPUTS } from "./public-output";
+import { PHASE8_STATIC_PUBLIC_OUTPUTS, phase8Target, phase8PublicOutputsForTarget } from "./public-output";
 import { Phase8OutputCollisionError } from "./safe-terminal";
 
 export type Phase8EnvironmentSource = Readonly<Record<string, string | undefined>>;
@@ -110,17 +110,12 @@ export function readPhase8HarnessConfig(source: Phase8EnvironmentSource): Phase8
     mode: "sandbox",
     host: host as "127.0.0.1" | "::1",
     port: Number(rawPort),
-    target: Object.freeze({
-      action: selectedAction,
-      runId,
-      operation: operation as (typeof PHASE8_OPERATIONS)[number],
-      walletRequestHash: hashRequired ? requestHash as `sha256:${string}` : null,
-    }),
+    target: phase8Target(selectedAction, runId, operation as (typeof PHASE8_OPERATIONS)[number], hashRequired ? requestHash as `sha256:${string}` : null),
     allowedEnvironment: Object.freeze(allowedEnvironment),
   });
   assertPhase8PublicMetadataSafe(config);
   assertNoSensitiveOutputCollision(
-    PHASE8_STATIC_PUBLIC_OUTPUTS,
+    [...PHASE8_STATIC_PUBLIC_OUTPUTS, ...phase8PublicOutputsForTarget(config.target)],
     Object.values(config.allowedEnvironment),
   );
   return config;
