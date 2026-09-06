@@ -60,12 +60,14 @@ function runtime(options?: RunApiHandlerOptions): RunApiRuntime {
   return (options?.runtime ?? createRunApiRuntime)();
 }
 
-function guardedConfig(request: Request, options?: RunApiHandlerOptions): RunApiDeploymentConfig | Response {
+function guardedConfig(request: Request, options?: RunApiHandlerOptions, allowOriginlessGet = false): RunApiDeploymentConfig | Response {
   const config = deployment(options);
   if (!config.enabled || config.trustedOrigin === null) return failure(404, "API_DISABLED");
-  if (request.headers.get("origin") !== config.trustedOrigin) return failure(403, "FORBIDDEN");
+  const browserRead = allowOriginlessGet && request.method === "GET";
+  const origin = request.headers.get("origin");
+  if (!(browserRead && origin === null) && origin !== config.trustedOrigin) return failure(403, "FORBIDDEN");
   const fetchSite = request.headers.get("sec-fetch-site");
-  if (fetchSite !== null && fetchSite !== "same-origin") return failure(403, "FORBIDDEN");
+  if (browserRead ? fetchSite === "cross-site" : fetchSite !== null && fetchSite !== "same-origin") return failure(403, "FORBIDDEN");
   return config;
 }
 
@@ -197,7 +199,7 @@ export async function createRunHandler(request: Request, options?: RunApiHandler
 }
 
 export async function getRunHandler(request: Request, runId: string, options?: RunApiHandlerOptions): Promise<Response> {
-  const guard = guardedConfig(request, options);
+  const guard = guardedConfig(request, options, true);
   if (guard instanceof Response) return guard;
   try {
     const api = runtime(options);

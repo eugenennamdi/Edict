@@ -26,6 +26,8 @@
 
 ## Run capability
 
+**DECISION** — The read-only `GET /api/runs/[runId]` accepts an absent `Origin` for ordinary browser reads. A present `Origin` must exactly match the trusted origin; present `Sec-Fetch-Site: cross-site` is refused, and absent Fetch Metadata is allowed. Capability verification still precedes repository lookup. Reads perform no mutation, remain `no-store`, and grant no CORS permissions. Host, forwarded headers and referrer are not origin authority. Every mutation retains the exact trusted-origin requirement.
+
 **DECISION** — Creation issues one 24-hour bearer capability in `__Host-edict_run_access` with `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and no `Domain`. It is never returned in JSON, placed in a URL, logged or persisted. Creating another run replaces the browser's active capability, which is an accepted MVP limitation.
 
 **DECISION** — Local development retains `Secure`; use localhost as a secure context in a supporting browser or local HTTPS. Do not weaken cookie attributes for development.
