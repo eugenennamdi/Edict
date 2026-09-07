@@ -25,6 +25,21 @@ npm install
 
 Inspect `.env.example` for approved environment variables. For local development, server variables may be placed in an uncommitted `.env.local` file (which is gitignored). Never populate secret values in `.env.example` or commit credentials.
 
+`.env.example` is documentation; Next.js does not load it as runtime configuration. For local run planning, configure these four server-only variables in the environment used to launch the development server:
+
+| Variable | Required format |
+| --- | --- |
+| `EDICT_RUN_API_ENABLED` | Exactly `1`; empty, `0`, `true`, or whitespace-padded values do not enable the gate. |
+| `EDICT_TRUSTED_ORIGIN` | The exact browser origin: scheme, hostname and port, with no trailing slash, path, query, fragment or embedded credentials. `http://localhost:3000` is supported; use the actual local port. HTTPS origins are also supported. |
+| `EDICT_RUN_SECURITY_SECRET` | **Secret:** unpadded base64url (`A–Z`, `a–z`, `0–9`, `_`, `-`) encoding at least 32 cryptographically random bytes. Never use a sample or predictable string. |
+| `DATABASE_URL` | **Secret:** the actual Neon Postgres connection URI, starting with `postgresql://` or `postgres://`, without surrounding whitespace. The existing run tables must be available and the database reachable for real persistence. |
+
+Stop and restart `npm run dev` after local configuration changes; launch it from the environment containing the settings and use the matching browser origin. Do not paste the secret or database URI into chat, screenshots, logs or commits. Local development retains the capability cookie's `Secure` attribute.
+
+`Run creation is not enabled in this environment.` means the server returned `API_DISABLED`: the flag was not exactly `1`, or the configured origin was missing or invalid. A configured trailing slash disables the gate; a valid origin with a different browser port instead returns `FORBIDDEN`. Missing capability or database configuration is checked later and does not produce `API_DISABLED`. Configure all four variables before creating a run.
+
+Planning can be enabled independently of Brickken execution. No Brickken API key or live-test flag is required to create a plan. Brickken writes and semantic authorization remain disabled; planning enablement does not activate wallets, RPC, transaction preparation, broadcasting, confirmation, polling or Phase 8 actions. Configure preview access or rate limiting before exposing run creation beyond local development.
+
 ## Available Scripts
 
 | Command | Description |
