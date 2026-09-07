@@ -30,9 +30,11 @@
 
 **DECISION** — The read-only `GET /api/runs/[runId]` accepts an absent `Origin` for ordinary browser reads. A present `Origin` must exactly match the trusted origin; present `Sec-Fetch-Site: cross-site` is refused, and absent Fetch Metadata is allowed. Capability verification still precedes repository lookup. Reads perform no mutation, remain `no-store`, and grant no CORS permissions. Host, forwarded headers and referrer are not origin authority. Every mutation retains the exact trusted-origin requirement.
 
-**DECISION** — Creation issues one 24-hour bearer capability in `__Host-edict_run_access` with `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and no `Domain`. It is never returned in JSON, placed in a URL, logged or persisted. Creating another run replaces the browser's active capability, which is an accepted MVP limitation.
+**DECISION** — HTTPS and production creation issue one 24-hour bearer capability in `__Host-edict_run_access` with `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and no `Domain`. It is never returned in JSON, placed in a URL, logged or persisted. Creating another run replaces the browser's active capability, which is an accepted MVP limitation.
 
-**DECISION** — Local development retains `Secure`; use localhost as a secure context in a supporting browser or local HTTPS. Do not weaken cookie attributes for development.
+**DECISION** — With `NODE_ENV=development` or `test` and an explicitly configured exact HTTP loopback origin (`localhost`, `127.0.0.1`, or `[::1]`), use only `edict_run_access_dev`: HttpOnly, SameSite=Strict, Path=/, no Domain, and Secure=false. This avoids dependence on browser-specific Secure-cookie exceptions for HTTP localhost. Production, HTTPS and unknown runtime modes always retain the secure policy. The policy is selected from server configuration, never Host, forwarded headers or referrer. Mutation origins must still match exactly; the existing originless browser GET rule remains unchanged.
+
+**DECISION** — Creation, all run-scoped authorization and cookie serialization/clearing select the same policy, with no fallback to the other name. Clearing uses Max-Age=0 with the selected name and scope; cancellation preserves access for terminal-state review. Rotating the security secret and restarting invalidates older capabilities, so reload and create a fresh run. This cookie policy does not enable Brickken writes, wallets, RPC or external execution.
 
 **DECISION** — Capability and approval-challenge MACs are Web Crypto HMAC-SHA-256 values using purpose-specific keys derived from one server secret. A token from one purpose cannot authenticate the other.
 

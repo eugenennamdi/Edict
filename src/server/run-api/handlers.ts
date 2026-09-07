@@ -8,7 +8,7 @@ import {
   type ExecutionRun,
 } from "../execution";
 import { SecurityTokenError } from "../security";
-import { RUN_ACCESS_COOKIE, runAccessCookieOptions } from "../security/run-access";
+import { runAccessCookieOptions, serializeRunAccessCookie } from "../security/run-access";
 import { readRunApiDeploymentConfig, type RunApiDeploymentConfig } from "./config";
 import { createRunApiRuntime, type RunApiRuntime } from "./runtime";
 
@@ -25,6 +25,7 @@ const approvalSchema = z.strictObject({
 export interface RunApiHandlerOptions {
   readonly config?: RunApiDeploymentConfig;
   readonly runtime?: () => RunApiRuntime;
+  readonly nodeEnv?: string;
 }
 
 type ErrorCode =
@@ -71,13 +72,13 @@ function guardedConfig(request: Request, options?: RunApiHandlerOptions, allowOr
   return config;
 }
 
-function cookieValue(request: Request): string | undefined {
+function cookieValue(request: Request, cookieName: string): string | undefined {
   const header = request.headers.get("cookie");
   if (header === null || header.length > 8192) return undefined;
   for (const part of header.split(";")) {
     const separator = part.indexOf("=");
     if (separator < 0) continue;
-    if (part.slice(0, separator).trim() === RUN_ACCESS_COOKIE) {
+    if (part.slice(0, separator).trim() === cookieName) {
       const value = part.slice(separator + 1).trim();
       return value.length <= 8192 ? value : undefined;
     }
@@ -173,9 +174,9 @@ function mapError(error: unknown): Response {
   return failure(400, "BAD_REQUEST");
 }
 
-async function authorize(request: Request, runId: string, api: RunApiRuntime): Promise<void> {
+async function authorize(request: Request, runId: string, api: RunApiRuntime, cookieName: string): Promise<void> {
   if (!RUN_ID.test(runId)) throw new SecurityTokenError();
-  await api.access.verify(cookieValue(request), runId);
+  await api.access.verify(cookieValue(request, cookieName), runId);
 }
 
 export async function createRunHandler(request: Request, options?: RunApiHandlerOptions): Promise<Response> {
@@ -189,9 +190,9 @@ export async function createRunHandler(request: Request, options?: RunApiHandler
     const run = await api.runs.createRun(validated.value);
     const token = await api.access.issue(run.id);
     const { manifest, plan } = await publicPlan(run);
-    const cookie = runAccessCookieOptions();
+    const cookie = runAccessCookieOptions(guard.trustedOrigin, options?.nodeEnv);
     return response(201, { ok: true, run: projectRun(run), manifest, plan }, {
-      "set-cookie": `${RUN_ACCESS_COOKIE}=${token}; Path=${cookie.path}; Max-Age=${cookie.maxAge}; HttpOnly; Secure; SameSite=Strict`,
+      "set-cookie": serializeRunAccessCookie(cookie, token),
     });
   } catch (error) {
     return mapError(error);
@@ -203,7 +204,7 @@ export async function getRunHandler(request: Request, runId: string, options?: R
   if (guard instanceof Response) return guard;
   try {
     const api = runtime(options);
-    await authorize(request, runId, api);
+    await authorize(request, runId, api, runAccessCookieOptions(guard.trustedOrigin, options?.nodeEnv).name);
     const run = await api.runs.getRun(runId);
     const { plan } = await publicPlan(run);
     return response(200, { ok: true, run: projectRun(run), plan });
@@ -217,7 +218,7 @@ export async function approvalChallengeHandler(request: Request, runId: string, 
   if (guard instanceof Response) return guard;
   try {
     const api = runtime(options);
-    await authorize(request, runId, api);
+    await authorize(request, runId, api, runAccessCookieOptions(guard.trustedOrigin, options?.nodeEnv).name);
     const body = revisionBodySchema.parse(await readJson(request, 1024));
     const run = await api.runs.getRun(runId);
     if (run.revision !== body.expectedRevision) throw new RepositoryRevisionConflictError();
@@ -233,7 +234,7 @@ export async function approveRunHandler(request: Request, runId: string, options
   if (guard instanceof Response) return guard;
   try {
     const api = runtime(options);
-    await authorize(request, runId, api);
+    await authorize(request, runId, api, runAccessCookieOptions(guard.trustedOrigin, options?.nodeEnv).name);
     const body = approvalSchema.parse(await readJson(request, 8 * 1024));
     const run = await api.runs.getRun(runId);
     if (run.revision !== body.expectedRevision) throw new RepositoryRevisionConflictError();
@@ -254,7 +255,7 @@ export async function cancelRunHandler(request: Request, runId: string, options?
   if (guard instanceof Response) return guard;
   try {
     const api = runtime(options);
-    await authorize(request, runId, api);
+    await authorize(request, runId, api, runAccessCookieOptions(guard.trustedOrigin, options?.nodeEnv).name);
     const body = revisionBodySchema.parse(await readJson(request, 1024));
     const cancelled = await api.runs.cancelRun(runId, body.expectedRevision);
     return response(200, { ok: true, run: projectRun(cancelled) });

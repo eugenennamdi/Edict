@@ -69,6 +69,7 @@ describe("run capability security", () => {
     ).rejects.toBeInstanceOf(SecurityTokenError);
     expect(RUN_ACCESS_COOKIE).toBe("__Host-edict_run_access");
     expect(runAccessCookieOptions()).toEqual({
+      name: RUN_ACCESS_COOKIE,
       httpOnly: true,
       secure: true,
       sameSite: "strict",

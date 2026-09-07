@@ -14,7 +14,7 @@ describe("run API deployment gate", () => {
     }
   });
 
-  it("permits an exact localhost origin without weakening the independently fixed Secure cookie", () => {
+  it("permits an exact localhost origin for the separately selected cookie policy", () => {
     expect(readRunApiDeploymentConfig({ EDICT_RUN_API_ENABLED: "1", EDICT_TRUSTED_ORIGIN: "http://localhost:3000" })).toEqual({ enabled: true, trustedOrigin: "http://localhost:3000" });
   });
 });

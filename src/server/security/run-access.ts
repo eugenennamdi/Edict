@@ -5,6 +5,7 @@ import type { NonceSource, TokenClock } from "./tokens";
 import { bytesToHex, DomainSeparatedTokenMac, SecurityTokenError } from "./tokens";
 
 export const RUN_ACCESS_COOKIE = "__Host-edict_run_access";
+export const RUN_ACCESS_DEV_COOKIE = "edict_run_access_dev";
 export const RUN_ACCESS_MAX_AGE_SECONDS = 24 * 60 * 60;
 
 const capabilitySchema = z.strictObject({
@@ -28,20 +29,43 @@ export interface VerifiedRunAccess {
   readonly expiresAt: number;
 }
 
-export function runAccessCookieOptions(): Readonly<{
-  httpOnly: true;
-  secure: true;
-  sameSite: "strict";
-  path: "/";
-  maxAge: number;
-}> {
+export interface RunAccessCookiePolicy {
+  readonly name: typeof RUN_ACCESS_COOKIE | typeof RUN_ACCESS_DEV_COOKIE;
+  readonly httpOnly: true;
+  readonly secure: boolean;
+  readonly sameSite: "strict";
+  readonly path: "/";
+  readonly maxAge: number;
+}
+
+// Select only from explicit server configuration, never request host/forwarding headers.
+// Callers must pass the origin gate before issuing or consuming either cookie.
+export function runAccessCookieOptions(
+  trustedOrigin?: string | null,
+  runtimeEnvironment: string | undefined = process.env.NODE_ENV,
+): Readonly<RunAccessCookiePolicy> {
+  let localHttp = false;
+  if (trustedOrigin && (runtimeEnvironment === "development" || runtimeEnvironment === "test")) {
+    try {
+      const url = new URL(trustedOrigin);
+      localHttp = url.origin === trustedOrigin && url.protocol === "http:"
+        && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+        && url.username === "" && url.password === "";
+    } catch { /* Unknown or malformed configuration retains the secure policy. */ }
+  }
   return Object.freeze({
+    name: localHttp ? RUN_ACCESS_DEV_COOKIE : RUN_ACCESS_COOKIE,
     httpOnly: true,
-    secure: true,
+    secure: !localHttp,
     sameSite: "strict",
     path: "/",
     maxAge: RUN_ACCESS_MAX_AGE_SECONDS,
   });
+}
+
+/** A null value clears only the selected cookie, with the same scope and attributes. */
+export function serializeRunAccessCookie(policy: RunAccessCookiePolicy, token: string | null): string {
+  return `${policy.name}=${token ?? ""}; Path=${policy.path}; Max-Age=${token === null ? 0 : policy.maxAge}; HttpOnly${policy.secure ? "; Secure" : ""}; SameSite=Strict`;
 }
 
 export class RunAccessService {
