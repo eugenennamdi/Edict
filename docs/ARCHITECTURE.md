@@ -28,6 +28,8 @@
 
 **DECISION** — Phase 8 preflight derives fixed public output from the same response, header and evidence builders used by the runtime. A final guard checks every application-controlled HTTP body and normalized header before emission, including HTML and server errors. Dynamic collisions terminate the runtime without an error fallback. Its offline artifact audit uses exclusive capture paths and fails on filesystem inspection errors other than missing optional roots; the operator playbook defines the remaining platform and build-environment limits.
 
+**DECISION** — Durable planning recovery uses `/runs/[runId]` as the canonical recorded-run page while `/` remains the new-mandate page. The URL contains only the public run locator. The existing selected HttpOnly capability authorizes an independently complete `GET /api/runs/[runId]` response containing a strict public run projection, server-normalized manifest and server-rederived seven-operation plan. Reload is read-only, preserves revision, and performs no wallet, Brickken, RPC or execution action. Creating a later run continues to replace browser access to the earlier run.
+
 
 **VERIFIED** — On 2026-09-04, the Neon migration completed without error and the explicitly opted-in live database test passed create, read, atomic compare-and-swap update, stale-revision refusal, and cleanup of its uniquely created run. Durable persistence is verified. The test made no Brickken request or blockchain operation and emitted no credential.
 
@@ -47,7 +49,7 @@
 
 ```text
 Browser UI
-  ├─ manifest/form + plan viewer
+  ├─ `/` manifest/form and `/runs/[runId]` durable plan viewer
   ├─ wallet connector and client-broadcast adapter
   └─ run status / verification / receipt viewer
           │ public run commands and txHash only

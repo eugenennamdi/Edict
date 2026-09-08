@@ -82,4 +82,10 @@
 
 **DECISION** — The separately committed GET correction accepts absent browser `Origin`, validates any present origin, rejects cross-site Fetch Metadata and verifies capability before lookup. All mutations retain exact origin checks; [the run API contract](RUN_API_SPEC.md#run-capability) owns this rule. The UI reuses domain validation and public plan types without computing hashes or granting semantic authority. Focused request/projection tests, static rendering, zero-network import assertions, the offline suite, lint/typecheck, isolated production build and route/boundary/golden checks establish closure.
 
-**DECISION** — No wallet or external-effect controls, new routes, dependencies, schemas, migrations or execution-state behavior are introduced. Execution remains unavailable. Account-backed compatibility work is separate and belongs to the authorized Brickken account holder or administrator. Stop after the two authorized commits; do not begin Phase 11.
+**DECISION** — No wallet or external-effect controls, API routes, dependencies, persistence schemas, migrations or execution-state behavior were introduced by Phase 10. Execution remains unavailable. Account-backed compatibility work is separate and belongs to the authorized Brickken account holder or administrator.
+
+## Durable recovery checkpoint
+
+**DECISION —** Public recovery contract and durable route work are implemented as a separate approved checkpoint. `POST /api/runs` and authorized `GET /api/runs/[runId]` return the same independently complete strict record. `/` remains the new-mandate page; `/runs/[runId]` is the canonical record page and rehydrates with GET only. The URL contains no capability, and refresh/new-tab recovery depends on the unchanged one-active-run HttpOnly cookie. Recovery never mutates revision or invokes wallet, approval, Brickken, RPC or execution code.
+
+**DECISION —** Approval activation remains unimplemented pending a separate review of later Phase 9 plan checkpoints. This checkpoint stops after recovery and does not compose provider discovery, account access, chain switching, challenge issuance, typed-data signing or approval submission.

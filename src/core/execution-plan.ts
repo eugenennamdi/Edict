@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { canonicalizeJson } from "./canonical-json";
 import { hashAssetManifestV1, hashCanonicalJson } from "./hashing";
 import { deepFreeze, type DeepReadonly } from "./immutable";
 import {
@@ -176,6 +177,10 @@ const executionPlanV1Schema = executionPlanBodyV1Schema.extend({
 type ExecutionPlanV1Data = z.infer<typeof executionPlanV1Schema>;
 export type ExecutionPlanV1 = DeepReadonly<ExecutionPlanV1Data>;
 
+export type ExecutionPlanValidationResult =
+  | Readonly<{ ok: true; value: ExecutionPlanV1 }>
+  | Readonly<{ ok: false }>;
+
 export class ExecutionPlanBuildError extends Error {
   readonly code: "INTERNAL_PLAN_INVARIANT" | "INVALID_NORMALIZED_MANIFEST";
   readonly path = "$";
@@ -188,6 +193,23 @@ export class ExecutionPlanBuildError extends Error {
     );
     this.name = "ExecutionPlanBuildError";
     this.code = code;
+  }
+}
+
+/**
+ * Strictly validates an untrusted JSON representation of an execution plan.
+ * This does not derive a plan or grant it authority; callers must separately
+ * compare it with the server-derived plan and durable run identity.
+ */
+export function validateExecutionPlanV1(input: unknown): ExecutionPlanValidationResult {
+  try {
+    const json = JSON.parse(canonicalizeJson(input));
+    const result = executionPlanV1Schema.safeParse(json);
+    return result.success
+      ? deepFreeze({ ok: true as const, value: deepFreeze(result.data) })
+      : deepFreeze({ ok: false as const });
+  } catch {
+    return deepFreeze({ ok: false as const });
   }
 }
 

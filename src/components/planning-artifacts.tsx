@@ -382,9 +382,9 @@ export function RecordDetails({
           </div>
 
           <div className="rounded-lg bg-amber-500/10 border border-amber-500/20 p-3 text-xs text-amber-800 dark:text-amber-300">
-            <strong className="font-semibold">Session memory notice:</strong>
+            <strong className="font-semibold">Run access:</strong>
             <p className="pt-1 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
-              This run is retained in page memory. Refreshing returns to an empty mandate form.
+              This durable record can be reopened at its run URL only while this browser holds the valid run capability. The run ID alone does not grant access.
             </p>
           </div>
         </CardContent>

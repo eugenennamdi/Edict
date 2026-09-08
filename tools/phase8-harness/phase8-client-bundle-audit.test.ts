@@ -21,6 +21,7 @@ const TRACKED_FILES = ["package.json", "src/app/page.tsx"] as const;
 const EXPECTED_APP_PATHS = {
   "/_not-found/page": "app/_not-found/page.js",
   "/page": "app/page.js",
+  "/runs/[runId]/page": "app/runs/[runId]/page.js",
   "/api/runs/route": "app/api/runs/route.js",
   "/api/runs/[runId]/route": "app/api/runs/[runId]/route.js",
   "/api/runs/[runId]/approval/route": "app/api/runs/[runId]/approval/route.js",

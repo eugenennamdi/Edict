@@ -111,6 +111,25 @@ describe("offline browser create → immediate read contract", () => {
     expect(network).not.toHaveBeenCalled(); logs.forEach((log) => expect(log).not.toHaveBeenCalled());
   });
 
+  it("supports refresh and a second-tab-equivalent read without mutating revision", async () => {
+    const h = setup();
+    const created = await h.create();
+    const body = await created.json();
+    const cookie = acceptCookie(created.headers.get("set-cookie")!, h.origin);
+    const update = vi.spyOn(h.repository, "update");
+    const firstRead = await h.get(body.run.id, cookie);
+    const secondRead = await h.get(body.run.id, cookie);
+    expect(firstRead.status).toBe(200);
+    expect(secondRead.status).toBe(200);
+    const firstBody = await firstRead.json();
+    const secondBody = await secondRead.json();
+    expect(firstBody).toEqual(secondBody);
+    expect(firstBody.manifest).toEqual(body.manifest);
+    expect(firstBody.plan.operations).toHaveLength(7);
+    expect(firstBody.run.revision).toBe(body.run.revision);
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it.each([[httpsOrigin, "production"], [localOrigin, "production"], [httpsOrigin, "development"], [localOrigin, "development"]])("reads only its selected name with no alternate-name fallback %#", async (origin, mode) => {
     const h = setup(origin, mode); const response = await h.create();
     expect(response.status).toBe(201);

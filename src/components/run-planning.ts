@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { validateAssetManifestV1, type ManifestValidationErrorCode, type NormalizedAssetManifestV1 } from "@/core/manifest";
 import type { ExecutionPlanV1 } from "@/core/execution-plan";
+import {
+  parsePublicPlanningRecordResponse,
+  parsePublicRunMutationResponse,
+  publicRunIdSchema,
+  type PublicRunProjection,
+} from "@/shared/run";
 
 export function creationRequest(form: Pick<FormData, "get">) {
   const text = (name: string) => String(form.get(name) ?? "");
@@ -13,40 +19,10 @@ export function creationRequest(form: Pick<FormData, "get">) {
   } };
 }
 
-const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/);
-const signer = z.object({ role: z.literal("tokenizer"), walletAddress: z.string().regex(/^0x[0-9a-f]{40}$/) });
-const runSchema = z.object({
-  id: z.uuid(), environment: z.literal("sandbox"), chainId: z.literal("11155111"),
-  requiredSigner: signer, manifestHash: digest, planHash: digest,
-  phase: z.enum(["PLAN", "TOKENIZATION", "WHITELIST", "MINT", "VERIFICATION"]),
-  status: z.enum(["AWAITING_APPROVAL", "PREPARING", "AWAITING_WALLET", "BROADCAST_RECORDED", "CONFIRMING", "SUCCEEDED", "TIMED_OUT", "FAILED", "RECONCILIATION_REQUIRED"]),
-  terminalOutcome: z.enum(["FAILED", "VERIFICATION_FAILED", "CANCELLED"]).nullable(),
-  approved: z.boolean(), revision: z.number().int().positive(),
-  createdAt: z.iso.datetime(), updatedAt: z.iso.datetime(),
-  operations: z.array(z.object({ blockchainTxHash: z.string().nullable() })).length(3),
-}).transform(({ operations, ...run }) => ({
-  ...run,
-  canCancel: run.terminalOutcome === null && run.status !== "RECONCILIATION_REQUIRED"
-    && operations.every((operation) => operation.blockchainTxHash === null),
-}));
-
-type PlanOperation = Pick<ExecutionPlanV1["operations"][number], "id" | "sequence" | "kind" | "mode" | "summary">;
-const operationSchema = z.object({
-  id: z.enum(["tokenize", "confirm-tokenization", "whitelist-investor", "confirm-whitelist", "mint", "confirm-mint", "verify-deployment"]),
-  sequence: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6), z.literal(7)]),
-  kind: z.enum(["TOKENIZE", "CONFIRM_TOKENIZATION", "WHITELIST_INVESTOR", "CONFIRM_WHITELIST", "MINT", "CONFIRM_MINT", "VERIFY_DEPLOYMENT"]),
-  mode: z.enum(["WALLET_TRANSACTION", "CONFIRM_AND_READ", "FINAL_VERIFICATION"]),
-  summary: z.string().min(1).max(2000),
-}) satisfies z.ZodType<PlanOperation>;
-const planSchema = z.object({
-  planVersion: z.literal("1.0"), environment: z.literal("sandbox"), chainId: z.literal("11155111"),
-  manifestHash: digest, planHash: digest, requiredSigner: signer,
-  operations: z.array(operationSchema).length(7).refine((operations) => operations.every((op, index) => op.sequence === index + 1)),
-});
 export type PlanningView = {
-  run: z.output<typeof runSchema>;
+  run: PublicRunProjection & { readonly canCancel: boolean };
   manifest: NormalizedAssetManifestV1;
-  plan: z.output<typeof planSchema>;
+  plan: ExecutionPlanV1;
 };
 
 const messages = {
@@ -59,6 +35,7 @@ const messages = {
   SERVICE_UNAVAILABLE: "Edict is temporarily unavailable. Your displayed run has not been updated.",
   INVALID_RESPONSE: "Edict could not read the response. No result has been confirmed.",
   NETWORK_ERROR: "Edict could not confirm the request. Check your connection. If a run is displayed, refresh it before trying again.",
+  INVALID_ROUTE: "This run link is invalid or unavailable.",
 } as const;
 type ErrorCode = keyof typeof messages;
 export type PlanningIssue = { code: ManifestValidationErrorCode; path: string };
@@ -70,26 +47,60 @@ class PlanningError extends Error {
   constructor(readonly code: ErrorCode, readonly issues: readonly PlanningIssue[] = []) { super(messages[code]); }
 }
 
-// Pick only public presentation fields. Neither internal data nor unknown error text reaches the view.
-export function readProjection(body: unknown, previous?: PlanningView, cancellation = false): PlanningView {
-  const envelope = z.object({ ok: z.literal(true), run: runSchema, plan: z.unknown().optional(), manifest: z.unknown().optional() }).safeParse(body);
-  if (!envelope.success) throw new PlanningError("INVALID_RESPONSE");
-  const run = envelope.data.run;
-  const parsedPlan = planSchema.safeParse(cancellation ? previous?.plan : envelope.data.plan);
-  const manifest = previous?.manifest ?? (() => {
-    const result = validateAssetManifestV1(envelope.data.manifest);
-    if (!result.ok) throw new PlanningError("INVALID_RESPONSE");
-    return result.value;
-  })();
-  if (!parsedPlan.success) throw new PlanningError("INVALID_RESPONSE");
-  const plan = parsedPlan.data;
-  if (plan.manifestHash !== run.manifestHash || plan.planHash !== run.planHash
-    || plan.requiredSigner.walletAddress !== run.requiredSigner.walletAddress
-    || manifest.tokenizer.walletAddress !== run.requiredSigner.walletAddress
-    || (previous && (run.id !== previous.run.id || run.revision < previous.run.revision
-      || run.planHash !== previous.run.planHash || run.manifestHash !== previous.run.manifestHash))
-    || (cancellation && run.terminalOutcome !== "CANCELLED")) throw new PlanningError("INVALID_RESPONSE");
-  return { run, manifest, plan };
+function planningRun(run: PublicRunProjection): PlanningView["run"] {
+  return Object.freeze({
+    ...run,
+    canCancel: run.terminalOutcome === null && run.status !== "RECONCILIATION_REQUIRED"
+      && run.operations.every((operation) => operation.blockchainTxHash === null),
+  });
+}
+
+// Accept only the strict public DTO. Browser parsing validates transport shape;
+// the server remains authoritative for manifest normalization, plan derivation, and hashes.
+export function readProjection(
+  body: unknown,
+  previous?: PlanningView,
+  cancellation = false,
+  expectedRunId?: string,
+): PlanningView {
+  try {
+    const parsed = cancellation
+      ? (() => {
+          if (!previous) throw new Error("INVALID_RESPONSE");
+          return {
+            run: parsePublicRunMutationResponse(body),
+            manifest: previous.manifest,
+            plan: previous.plan,
+          };
+        })()
+      : parsePublicPlanningRecordResponse(body);
+    const run = planningRun(parsed.run);
+    const manifest = parsed.manifest;
+    const plan = parsed.plan;
+    if (
+      (expectedRunId !== undefined && run.id !== expectedRunId) ||
+      plan.manifestHash !== run.manifestHash ||
+      plan.planHash !== run.planHash ||
+      plan.environment !== run.environment ||
+      plan.chainId !== run.chainId ||
+      plan.requiredSigner.walletAddress !== run.requiredSigner.walletAddress ||
+      manifest.environment !== run.environment ||
+      manifest.chainId !== run.chainId ||
+      manifest.tokenizer.walletAddress !== run.requiredSigner.walletAddress ||
+      (previous && (
+        run.id !== previous.run.id ||
+        run.revision < previous.run.revision ||
+        run.planHash !== previous.run.planHash ||
+        run.manifestHash !== previous.run.manifestHash
+      )) ||
+      (cancellation && run.terminalOutcome !== "CANCELLED")
+    ) {
+      throw new Error("INVALID_RESPONSE");
+    }
+    return Object.freeze({ run, manifest, plan });
+  } catch {
+    throw new PlanningError("INVALID_RESPONSE");
+  }
 }
 
 type Transport = (path: string, options: RequestInit) => Promise<Response>;
@@ -120,7 +131,7 @@ async function request(transport: Transport, path: string, body?: unknown): Prom
 
 export type WorkspaceState = {
   view: PlanningView | null;
-  pending: "create" | "refresh" | "cancel" | null;
+  pending: "create" | "recover" | "refresh" | "cancel" | null;
   error: string | null;
   notice: string | null;
   unavailable: boolean;
@@ -131,8 +142,14 @@ export type WorkspaceState = {
 export const initialWorkspace: WorkspaceState = { view: null, pending: null, error: null, notice: null, unavailable: false, issues: [], errorCode: null, retrievedAt: null };
 
 // One active run and one in-flight action; the synchronous guard also catches clicks before React renders.
-export function createPlanningWorkspace(publish: (state: WorkspaceState) => void, transport: Transport = (path, options) => fetch(path, options)) {
+export function createPlanningWorkspace(
+  publish: (state: WorkspaceState) => void,
+  transport: Transport = (path, options) => fetch(path, options),
+  options: { readonly onCreated?: (runId: string) => void } = {},
+) {
   let state = initialWorkspace;
+  let recoveryGeneration = 0;
+  let activeRecoveryId: string | null = null;
   const update = (patch: Partial<WorkspaceState>) => { state = { ...state, ...patch }; publish(state); };
   const runPath = (view: PlanningView) => `/api/runs/${view.run.id}`;
   async function act(action: NonNullable<WorkspaceState["pending"]>, form?: Pick<FormData, "get">) {
@@ -148,7 +165,9 @@ export function createPlanningWorkspace(publish: (state: WorkspaceState) => void
           update({ error: validation.errors.map((issue) => issue.message).filter((message, index, all) => all.indexOf(message) === index).join(" "), issues: validation.errors, errorCode: "BAD_REQUEST" });
           return;
         }
-        update({ view: readProjection(await request(transport, "/api/runs", body)), notice: null });
+        const view = readProjection(await request(transport, "/api/runs", body));
+        update({ view, notice: null });
+        try { options.onCreated?.(view.run.id); } catch { /* A confirmed run remains valid if client navigation fails. */ }
       } else if (previous) {
         if (action === "refresh") {
           update({ view: readProjection(await request(transport, runPath(previous)), previous), notice: "Run refreshed from the server." });
@@ -168,5 +187,44 @@ export function createPlanningWorkspace(publish: (state: WorkspaceState) => void
       update({ error: owned.message, errorCode: owned.code, issues: owned.issues, unavailable: owned.code === "API_DISABLED" });
     } finally { update({ pending: null }); }
   }
-  return { create: (form: Pick<FormData, "get">) => act("create", form), refresh: () => act("refresh"), cancel: () => act("cancel") };
+
+  async function recover(runId: string): Promise<void> {
+    if (!publicRunIdSchema.safeParse(runId).success) {
+      recoveryGeneration += 1;
+      activeRecoveryId = null;
+      update({ view: null, pending: null, error: messages.INVALID_ROUTE, errorCode: "INVALID_ROUTE", notice: null, issues: [], unavailable: false, retrievedAt: null });
+      return;
+    }
+    if (state.pending !== null && !(state.pending === "recover" && activeRecoveryId !== runId)) return;
+    if (state.pending === "recover" && activeRecoveryId === runId) return;
+    const generation = ++recoveryGeneration;
+    activeRecoveryId = runId;
+    update({ view: null, pending: "recover", error: null, errorCode: null, notice: null, issues: [], unavailable: false, retrievedAt: null });
+    try {
+      const view = readProjection(
+        await request(transport, `/api/runs/${runId}`),
+        undefined,
+        false,
+        runId,
+      );
+      if (generation !== recoveryGeneration) return;
+      update({ view, retrievedAt: new Date().toISOString() });
+    } catch (error) {
+      if (generation !== recoveryGeneration) return;
+      const owned = error instanceof PlanningError ? error : new PlanningError("INVALID_RESPONSE");
+      update({ error: owned.message, errorCode: owned.code, issues: owned.issues, unavailable: owned.code === "API_DISABLED" });
+    } finally {
+      if (generation === recoveryGeneration) {
+        activeRecoveryId = null;
+        update({ pending: null });
+      }
+    }
+  }
+
+  return {
+    create: (form: Pick<FormData, "get">) => act("create", form),
+    recover,
+    refresh: () => act("refresh"),
+    cancel: () => act("cancel"),
+  };
 }

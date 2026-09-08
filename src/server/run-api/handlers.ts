@@ -1,6 +1,7 @@
 import "server-only";
 
-import { buildExecutionPlanV1, validateAssetManifestV1 } from "@/core";
+import { validateAssetManifestV1 } from "@/core";
+import { publicRunIdSchema } from "@/shared/run";
 import { z } from "zod";
 import {
   ExecutionError,
@@ -10,9 +11,9 @@ import {
 import { SecurityTokenError } from "../security";
 import { runAccessCookieOptions, serializeRunAccessCookie } from "../security/run-access";
 import { readRunApiDeploymentConfig, type RunApiDeploymentConfig } from "./config";
+import { projectPublicPlanningRecord } from "./projection";
 import { createRunApiRuntime, type RunApiRuntime } from "./runtime";
 
-const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const revisionSchema = z.number().int().positive();
 const createSchema = z.strictObject({ manifest: z.unknown() });
 const revisionBodySchema = z.strictObject({ expectedRevision: revisionSchema });
@@ -151,16 +152,6 @@ function projectRun(run: ExecutionRun) {
   };
 }
 
-async function publicPlan(run: ExecutionRun) {
-  const manifest = validateAssetManifestV1(run.manifest);
-  if (!manifest.ok) throw new Error("INVARIANT");
-  const plan = await buildExecutionPlanV1(manifest.value);
-  if (plan.manifestHash !== run.manifestHash || plan.planHash !== run.planHash) {
-    throw new Error("INVARIANT");
-  }
-  return { manifest: manifest.value, plan };
-}
-
 function mapError(error: unknown): Response {
   if (error instanceof SecurityTokenError) return failure(403, "FORBIDDEN");
   if (error instanceof RepositoryRevisionConflictError) return failure(409, "REVISION_CONFLICT");
@@ -175,7 +166,7 @@ function mapError(error: unknown): Response {
 }
 
 async function authorize(request: Request, runId: string, api: RunApiRuntime, cookieName: string): Promise<void> {
-  if (!RUN_ID.test(runId)) throw new SecurityTokenError();
+  if (!publicRunIdSchema.safeParse(runId).success) throw new SecurityTokenError();
   await api.access.verify(cookieValue(request, cookieName), runId);
 }
 
@@ -189,9 +180,9 @@ export async function createRunHandler(request: Request, options?: RunApiHandler
     const api = runtime(options);
     const run = await api.runs.createRun(validated.value);
     const token = await api.access.issue(run.id);
-    const { manifest, plan } = await publicPlan(run);
+    const record = await projectPublicPlanningRecord(run);
     const cookie = runAccessCookieOptions(guard.trustedOrigin, options?.nodeEnv);
-    return response(201, { ok: true, run: projectRun(run), manifest, plan }, {
+    return response(201, { ok: true, ...record }, {
       "set-cookie": serializeRunAccessCookie(cookie, token),
     });
   } catch (error) {
@@ -206,8 +197,8 @@ export async function getRunHandler(request: Request, runId: string, options?: R
     const api = runtime(options);
     await authorize(request, runId, api, runAccessCookieOptions(guard.trustedOrigin, options?.nodeEnv).name);
     const run = await api.runs.getRun(runId);
-    const { plan } = await publicPlan(run);
-    return response(200, { ok: true, run: projectRun(run), plan });
+    const record = await projectPublicPlanningRecord(run);
+    return response(200, { ok: true, ...record });
   } catch (error) {
     return mapError(error);
   }

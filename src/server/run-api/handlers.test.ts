@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createValidRawManifest } from "@/core/test-fixtures";
 import { ExecutionRunService } from "../execution/run-service";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
+import { createApprovalProofFixture } from "../execution/test-fixtures";
 import type { Clock, IdGenerator } from "../execution/infrastructure";
 import { DomainSeparatedTokenMac, type NonceSource, type TokenClock } from "../security/tokens";
 import { RunAccessService, RUN_ACCESS_COOKIE } from "../security/run-access";
@@ -72,8 +73,33 @@ describe("run API HTTP boundaries", () => {
     const fetched = await getRunHandler(new Request("https://edict.example/api/runs/11111111-1111-4111-8111-111111111111", { headers: { origin: config.trustedOrigin, cookie: `${RUN_ACCESS_COOKIE}=${token}` } }), "11111111-1111-4111-8111-111111111111", { config, runtime: () => api });
     expect(fetched.status).toBe(200);
     const text = await fetched.text();
+    const body = JSON.parse(text);
+    expect(body.manifest.asset.name).toBe("Café Receivables");
+    expect(body.plan.operations.map((operation: { id: string }) => operation.id)).toEqual([
+      "tokenize",
+      "confirm-tokenization",
+      "whitelist-investor",
+      "confirm-whitelist",
+      "mint",
+      "confirm-mint",
+      "verify-deployment",
+    ]);
+    expect(body.run.revision).toBe(1);
     expect(text).not.toContain("publicSignature");
     expect(text).not.toContain("challengeNonce");
+    expect(text).not.toContain("unsignedTransaction");
+    expect(text).not.toContain('"events"');
+    expect(text).not.toContain('"observations"');
+  });
+
+  it("returns independently complete and equivalent create and read planning records", async () => {
+    const api = createRuntime();
+    const created = await createRunHandler(request("https://edict.example/api/runs", { manifest: createValidRawManifest() }), { config, runtime: () => api });
+    const createdBody = await created.clone().json();
+    const cookie = created.headers.get("set-cookie")!.split(";")[0]!;
+    const fetched = await getRunHandler(new Request(`https://edict.example/api/runs/${createdBody.run.id}`, { headers: { cookie } }), createdBody.run.id, { config, runtime: () => api });
+    expect(fetched.status).toBe(200);
+    expect(await fetched.json()).toEqual(createdBody);
   });
 
   it("rejects an absent capability before revealing whether a run exists", async () => {
@@ -81,6 +107,53 @@ describe("run API HTTP boundaries", () => {
     const result = await getRunHandler(new Request("https://edict.example/api/runs/11111111-1111-4111-8111-111111111111", { headers: { origin: config.trustedOrigin } }), "11111111-1111-4111-8111-111111111111", { config, runtime: () => api });
     expect(result.status).toBe(403);
     expect(await result.json()).toEqual({ ok: false, error: { code: "FORBIDDEN" } });
+  });
+
+  it("maps an unsafe server reconstruction to service unavailable without partial data", async () => {
+    const api = createRuntime();
+    const created = await createRunHandler(request("https://edict.example/api/runs", { manifest: createValidRawManifest() }), { config, runtime: () => api });
+    const createdBody = await created.clone().json();
+    const cookie = created.headers.get("set-cookie")!.split(";")[0]!;
+    const durable = await api.runs.getRun(createdBody.run.id);
+    vi.spyOn(api.runs, "getRun").mockResolvedValue({
+      ...durable,
+      planHash: `sha256:${"0".repeat(64)}`,
+    });
+    const fetched = await getRunHandler(new Request(`https://edict.example/api/runs/${durable.id}`, { headers: { cookie } }), durable.id, { config, runtime: () => api });
+    expect(fetched.status).toBe(503);
+    expect(await fetched.json()).toEqual({ ok: false, error: { code: "SERVICE_UNAVAILABLE" } });
+  });
+
+  it("projects operation state without persisted approval, event, observation, or unsigned-transaction details", async () => {
+    const api = createRuntime();
+    const created = await createRunHandler(request("https://edict.example/api/runs", { manifest: createValidRawManifest() }), { config, runtime: () => api });
+    const createdBody = await created.clone().json();
+    const cookie = created.headers.get("set-cookie")!.split(";")[0]!;
+    const initial = await api.runs.getRun(createdBody.run.id);
+    const proof = createApprovalProofFixture(initial, "2026-09-04T12:00:00.000Z");
+    const approved = await api.runs.approvePlan(initial.id, initial.revision, {
+      planHash: initial.planHash,
+      approvedByWallet: initial.requiredSigner.walletAddress,
+      proof,
+    });
+    const preparing = await api.runs.beginPrepare(approved.id, approved.revision, "TOKENIZE");
+    await api.runs.recordPrepared(preparing.id, preparing.revision, "TOKENIZE", {
+      txId: "prepared-id",
+      unsignedTransaction: { data: "INTERNAL_UNSIGNED_SENTINEL" },
+    });
+
+    const fetched = await getRunHandler(new Request(`https://edict.example/api/runs/${initial.id}`, { headers: { cookie } }), initial.id, { config, runtime: () => api });
+    expect(fetched.status).toBe(200);
+    const text = await fetched.text();
+    const body = JSON.parse(text);
+    expect(body.run.approved).toBe(true);
+    expect(body.run.operations[0].preparedTxId).toBe("prepared-id");
+    expect(text).not.toContain("INTERNAL_UNSIGNED_SENTINEL");
+    expect(text).not.toContain("unsignedTransaction");
+    expect(text).not.toContain("publicSignature");
+    expect(text).not.toContain("challengeNonce");
+    expect(text).not.toContain('"events"');
+    expect(text).not.toContain('"observations"');
   });
 });
 
@@ -139,6 +212,15 @@ describe("browser run reads", () => {
     const headers = new Headers({ host: "edict.example", forwarded: "host=edict.example", "x-forwarded-host": "edict.example", referer: `${config.trustedOrigin}/` });
     if (kind !== "missing") headers.set("cookie", kind === "malformed" ? `${RUN_ACCESS_COOKIE}=invalid` : cookie);
     const response = await getRunHandler(new Request(`${config.trustedOrigin}/api/runs/${target}`, { headers }), target, options);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ ok: false, error: { code: "FORBIDDEN" } });
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("refuses a malformed run locator before repository lookup", async () => {
+    const { api, options, cookie } = await setup();
+    const lookup = vi.spyOn(api.runs, "getRun");
+    const response = await getRunHandler(new Request(`${config.trustedOrigin}/api/runs/not-a-run`, { headers: { cookie } }), "not-a-run", options);
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ ok: false, error: { code: "FORBIDDEN" } });
     expect(lookup).not.toHaveBeenCalled();
