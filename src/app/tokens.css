@@ -1,0 +1,19 @@
+:root {
+  color-scheme: light;
+  --canvas: #f4f3ef;
+  --paper: #fdfcf9;
+  --artifact: #eceee8;
+  --ink: #202522;
+  --muted: #59615c;
+  --line: #c9cec7;
+  --control: #788179;
+  --focus: #214fd0;
+  --match: #276348;
+  --attention: #795510;
+  --danger: #a13232;
+  --shell: #18211e;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-data: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --radius: 4px;
+  --feedback-duration: 140ms;
+}

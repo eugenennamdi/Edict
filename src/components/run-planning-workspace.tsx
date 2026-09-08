@@ -1,145 +1,92 @@
 "use client";
 
-import { useEffect, useRef, useState, type InputHTMLAttributes, type ReactNode } from "react";
-import { createPlanningWorkspace, initialWorkspace, type PlanningView } from "./run-planning";
-
-function Field({ label, hint, name, ...props }: InputHTMLAttributes<HTMLInputElement> & { label: string; hint?: string; name: string }) {
-  return <div className="field">
-    <label htmlFor={name}>{label}</label>
-    <input id={name} name={name} required aria-describedby={hint ? `${name}-hint` : undefined} {...props} />
-    {hint && <p id={`${name}-hint`} className="field-hint">{hint}</p>}
-  </div>;
-}
-
-function Detail({ label, children }: { label: string; children: ReactNode }) {
-  return <div className="detail"><dt>{label}</dt><dd>{children}</dd></div>;
-}
-
-function CopyValue({ label, value }: { label: string; value: string }) {
-  const [notice, setNotice] = useState("");
-  async function copy() {
-    try { await navigator.clipboard.writeText(value); setNotice(`${label} copied.`); }
-    catch { setNotice("Select and copy the value manually."); }
-  }
-  return <div className="copy-value">
-    <div className="copy-label"><span>{label}</span><button type="button" className="text-button" onClick={copy} aria-label={`Copy ${label.toLowerCase()}`}>Copy</button></div>
-    <code>{value}</code><span className="copy-notice" role="status">{notice}</span>
-  </div>;
-}
-
-function PlanReview({ view }: { view: PlanningView }) {
-  const { run, manifest, plan } = view;
-  return <>
-    <section className="workspace-section" aria-labelledby="manifest-heading">
-      <div className="section-heading"><span className="step-number">01</span><div><h2 id="manifest-heading">Normalized manifest</h2><p>The mandate recorded by Edict. These values are returned by the server.</p></div></div>
-      <dl className="detail-grid">
-        <Detail label="Asset name">{manifest.asset.name}</Detail>
-        <Detail label="Symbol">{manifest.asset.symbol}</Detail>
-        <Detail label="Token type">{manifest.asset.tokenType}</Detail>
-        <Detail label="Supply cap">{manifest.asset.supplyCap} whole tokens</Detail>
-        <Detail label="Documentation"><span className="identifier">{manifest.asset.documentationUrl}</span></Detail>
-        <Detail label="Manifest version">{manifest.schemaVersion}</Detail>
-        <Detail label="Tokenizer email">{manifest.tokenizer.email}</Detail>
-        <Detail label="Investor email">{manifest.investor.email}</Detail>
-        <Detail label="Investor address"><code>{manifest.investor.walletAddress}</code></Detail>
-        <Detail label="Planned mint amount">{manifest.investor.mintAmount} whole tokens</Detail>
-      </dl>
-      <CopyValue label="Required tokenizer signer" value={run.requiredSigner.walletAddress} />
-    </section>
-    <section className="workspace-section" aria-labelledby="plan-heading">
-      <div className="section-heading"><span className="step-number">02</span><div><h2 id="plan-heading">Deterministic execution plan</h2><p>Server-generated order · Plan version {plan.planVersion}. Listed operations have not been started by this workspace.</p></div></div>
-      <ol className="operation-list">
-        {plan.operations.map((operation) => <li key={operation.id}>
-          <span className="operation-number" aria-hidden="true">{String(operation.sequence).padStart(2, "0")}</span>
-          <div><h3>{operation.kind.toLowerCase().replaceAll("_", " ")}</h3><p>{operation.summary}</p></div>
-          <span className="operation-mode">{operation.mode === "WALLET_TRANSACTION" ? "On-chain operation" : operation.mode === "CONFIRM_AND_READ" ? "Confirmation & read" : "Final verification"}</span>
-        </li>)}
-      </ol>
-    </section>
-    <section className="workspace-section" aria-labelledby="identity-heading">
-      <div className="section-heading"><span className="step-number">03</span><div><h2 id="identity-heading">Run identity</h2><p>Server-generated identifiers for this immutable mandate and plan.</p></div></div>
-      <CopyValue label="Run ID" value={run.id} />
-      <CopyValue label="Manifest hash" value={run.manifestHash} />
-      <CopyValue label="Plan hash" value={run.planHash} />
-      <dl className="detail-grid run-metadata">
-        <Detail label="Public status">{run.status}</Detail><Detail label="Phase">{run.phase}</Detail>
-        <Detail label="Revision">{run.revision}</Detail><Detail label="Approval">{run.approved ? "Recorded" : "Pending"}</Detail>
-        <Detail label="Created (UTC)"><time dateTime={run.createdAt}>{run.createdAt.replace("T", " ").replace("Z", " UTC")}</time></Detail>
-        <Detail label="Updated (UTC)"><time dateTime={run.updatedAt}>{run.updatedAt.replace("T", " ").replace("Z", " UTC")}</time></Detail>
-      </dl>
-    </section>
-  </>;
-}
+import { useEffect, useRef, useState } from "react";
+import { createPlanningWorkspace, initialWorkspace } from "./run-planning";
+import { draftForm, draftIssues, emptyDraft, fields, issueMessage, recordStatus, type FieldName } from "./planning-presentation";
+import { MandateForm } from "./planning-form";
+import { DraftSummary, PlanDocument, RecordedManifest, RecordDetails } from "./planning-artifacts";
 
 export default function RunPlanningWorkspace() {
   const [state, setState] = useState(initialWorkspace);
   const [workspace] = useState(() => createPlanningWorkspace(setState));
+  const [draft, setDraft] = useState(emptyDraft);
+  const [touched, setTouched] = useState<ReadonlySet<FieldName>>(new Set());
+  const [submitted, setSubmitted] = useState(false);
+  const [mode, setMode] = useState<"primary" | "artifact" | "details">("primary");
+  const [cancelRevision, setCancelRevision] = useState<number | null>(null);
+  const [submittedDraft, setSubmittedDraft] = useState(draft);
   const heading = useRef<HTMLHeadingElement>(null);
   const error = useRef<HTMLDivElement>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const confirmButton = useRef<HTMLButtonElement>(null);
   const view = state.view;
   const runId = view?.run.id;
   const canceled = view?.run.terminalOutcome === "CANCELLED";
   useEffect(() => { if (runId) heading.current?.focus(); }, [runId, canceled]);
-  useEffect(() => { if (state.error) error.current?.focus(); }, [state.error]);
 
-  return <div className="workspace-shell">
+  const issues = draftIssues(draft);
+  const serverIssues = submittedDraft === draft ? state.issues : [];
+  const visibleIssues = [...issues.filter(issue => submitted || fields.some(field => field.path === issue.path && touched.has(field.name))), ...serverIssues.filter(issue => !issues.some(local => local.path === issue.path))];
+  const validationErrors = !view && submitted && visibleIssues.length > 0;
+  const requestError = state.error && (state.errorCode !== "BAD_REQUEST" || submittedDraft === draft);
+  const showError = validationErrors || requestError;
+  const filled = fields.filter(field => draft[field.name].trim().length > 0).length;
+  const cancelOpen = view?.run.canCancel && cancelRevision === view.run.revision;
+
+  async function create() {
+    setSubmitted(true); setSubmittedDraft(draft); setMode("primary");
+    await workspace.create(draftForm(draft));
+    requestAnimationFrame(() => error.current?.focus());
+  }
+  function focusField(name: FieldName) {
+    setMode("primary");
+    requestAnimationFrame(() => {
+      const field = document.getElementById(name);
+      const section = field?.closest("details");
+      if (section) section.open = true;
+      field?.focus();
+    });
+  }
+  async function refresh() {
+    setCancelRevision(null); await workspace.refresh();
+    requestAnimationFrame(() => error.current?.focus());
+  }
+  async function cancel() {
+    await workspace.cancel(); setCancelRevision(null);
+    requestAnimationFrame(() => { if (error.current) error.current.focus(); else cancelButton.current?.focus(); });
+  }
+
+  return <div className="edict-workspace">
     <a className="skip-link" href="#workspace">Skip to workspace</a>
-    <header className="site-header"><span className="wordmark">edict<span aria-hidden="true">.</span></span><span className="brand-caption">Tokenization, as code.</span><span className="environment-tag">Sandbox · Sepolia</span></header>
-    <main id="workspace">
-      <div className="page-heading">
-        <p className="eyebrow">Run planning workspace</p>
-        <h1 ref={heading} tabIndex={-1}>{canceled ? "Run canceled." : view ? "Review your run." : "Define your mandate."}</h1>
-        <p className="lede">{canceled ? "This run is closed. Its recorded mandate and plan remain available for review." : view ? "Inspect the normalized mandate and deterministic plan before any future approval." : "Turn a structured tokenization mandate into a clear, deterministic execution plan."}</p>
+    <header className="site-header"><div className="header-inner"><span className="wordmark">edict<span>.</span></span><span className="brand-caption">Tokenization, as code.</span><div className="environment"><span className="environment-symbol" aria-hidden="true">◇</span><span>Sandbox<span className="environment-network"> / Ethereum Sepolia</span></span></div></div></header>
+    <main id="workspace" className="workspace-shell">
+      <div className="context-line"><span>Workspace <span aria-hidden="true">/</span> {view ? "Run record" : "New mandate"}</span><span className="context-right">{view ? `Revision ${view.run.revision}` : "Planning / 01"}</span></div>
+      <div className="page-heading"><div><h1 ref={heading} tabIndex={-1}>{canceled ? "Run canceled." : view ? view.manifest.asset.name : "Define your mandate."}</h1><p>{canceled ? "The run is closed. Its mandate and plan remain available for review." : view ? "A recorded mandate. A deterministic plan. Ready for your review." : "Set the intent. Inspect the structure. Make it a record."}</p></div><div className="heading-note">{view ? <><span className="small-label">Run state</span><span>{recordStatus(view.run)}</span></> : <><span className="small-label">Intent → structure</span><span>Human-defined. Server-recorded.</span></>}</div></div>
+      <div className="workspace-nav"><nav className="reading-modes" aria-label="Workspace reading mode">
+        <button type="button" aria-pressed={mode === "primary"} aria-controls="primary-panel" onClick={() => setMode("primary")}><span aria-hidden="true">{view ? "02" : "01"}</span>{view ? "Execution plan" : "Mandate"}</button>
+        <button type="button" className="artifact-mode-button" aria-pressed={mode === "artifact"} aria-controls="artifact-panel" onClick={() => setMode("artifact")}>{view ? "Manifest" : "Draft summary"}</button>
+        {view && <button type="button" aria-pressed={mode === "details"} aria-controls="primary-panel" onClick={() => setMode("details")}>Record details</button>}
+      </nav><span className="nav-provenance">{view ? "Server recorded" : "Draft / Not submitted"}</span></div>
+      {showError && <div ref={error} tabIndex={-1} role="alert" className="feedback error"><span className="feedback-mark" aria-hidden="true">!</span><div><strong>{validationErrors ? "Review the highlighted fields." : state.errorCode === "FORBIDDEN" && !view ? "This request is not authorized in this environment." : state.error}</strong>
+        {validationErrors && <ul>{fields.filter(field => visibleIssues.some(issue => issue.path === field.path)).map(field => <li key={field.name}><a href={`#${field.name}`} onClick={event => { event.preventDefault(); focusField(field.name); }}>{field.label}: {issueMessage(visibleIssues.find(issue => issue.path === field.path)!)}</a></li>)}</ul>}
+        {view && <p>The last accepted record remains below. Refresh the record before taking another action.</p>}
+        {!view && state.errorCode === "NETWORK_ERROR" && <p>Plan creation may have completed. No automatic retry will be made.</p>}
+      </div></div>}
+      <div role="status" aria-live="polite" className={state.notice ? "record-notice" : "sr-only"}>{state.notice ?? ""}</div>
+      {view && <div className="record-toolbar" aria-busy={state.pending !== null}><span><span className="record-indicator" aria-hidden="true" />{canceled ? "Closed record" : view.run.approved ? "Plan approval recorded" : "Plan approval not recorded"}</span><div className="record-actions">
+        <button type="button" className="button secondary" onClick={() => void refresh()} disabled={!!state.pending || state.unavailable}><span aria-hidden="true">↻</span>{state.pending === "refresh" ? "Refreshing…" : "Refresh record"}</button>
+        {view.run.canCancel && <button ref={cancelButton} type="button" className="button quiet" disabled={!!state.pending || state.unavailable} onClick={() => { setCancelRevision(view.run.revision); requestAnimationFrame(() => confirmButton.current?.focus()); }}>Cancel run</button>}
+      </div></div>}
+      {cancelOpen && <div className="cancel-confirmation"><div><strong>Cancel this run?</strong><p>This closes the run without executing its plan. Its recorded mandate and plan remain available.</p></div><div className="record-actions"><button ref={confirmButton} type="button" className="button danger" disabled={!!state.pending || state.unavailable} onClick={() => void cancel()}>{state.pending === "cancel" ? "Canceling…" : "Confirm cancellation"}</button><button type="button" className="button secondary" disabled={!!state.pending} onClick={() => { setCancelRevision(null); cancelButton.current?.focus(); }}>Keep run</button></div></div>}
+      <div className="work-grid" data-reading-mode={mode}>
+        <div id="primary-panel" className="primary-panel">{view ? mode === "details" ? <RecordDetails view={view} retrievedAt={state.retrievedAt} /> : <PlanDocument view={view} /> : <MandateForm draft={draft} setDraft={setDraft} errors={visibleIssues} onBlur={name => setTouched(previous => new Set([...previous, name]))} pending={state.pending === "create"} unavailable={state.unavailable} onSubmit={() => void create()} />}</div>
+        <aside id="artifact-panel" className="artifact-panel" aria-label={view ? "Recorded manifest" : "Provisional draft summary"}>
+          {view ? <RecordedManifest view={view} /> : <DraftSummary draft={draft} ready={issues.length === 0} filled={filled} />}
+          {!view && <button type="button" className="button secondary return-to-mandate" onClick={() => setMode("primary")}>Return to mandate <span aria-hidden="true">←</span></button>}
+        </aside>
       </div>
-      <ol className="workflow" aria-label="Planning workflow">
-        <li aria-current={!view ? "step" : undefined}><span>01</span> Mandate</li>
-        <li aria-current={view ? "step" : undefined}><span>02</span> Manifest & plan</li>
-        <li><span>03</span> {canceled ? "Canceled" : view?.run.approved ? "Approval recorded" : "Approval pending"}</li>
-      </ol>
-      <div className="scope-note"><strong>Execution is not enabled.</strong><span>This workspace creates and reviews plans. Wallet approval and on-chain execution are unavailable.</span></div>
-      {state.error && <div ref={error} tabIndex={-1} role="alert" className="feedback error">{state.error}</div>}
-      <div role="status" aria-live="polite" className={state.notice ? "feedback" : "sr-only"}>{state.notice ?? ""}</div>
-      {view ? <>
-        <div className="run-toolbar" aria-busy={state.pending !== null}>
-          <div><span className="status-tag">{canceled ? "Canceled" : view.run.terminalOutcome?.replaceAll("_", " ") ?? view.run.status.replaceAll("_", " ")}</span><p>{view.run.environment} · Sepolia ({view.run.chainId}) · Revision {view.run.revision}</p></div>
-          <div className="button-group">
-            <button type="button" className="secondary-button" onClick={() => void workspace.refresh()} disabled={!!state.pending || state.unavailable}>{state.pending === "refresh" ? "Refreshing…" : "Refresh run"}</button>
-            {view.run.canCancel && <button type="button" className="cancel-button" onClick={() => void workspace.cancel()} disabled={!!state.pending || state.unavailable}>{state.pending === "cancel" ? "Canceling…" : "Cancel run"}</button>}
-          </div>
-        </div>
-        <PlanReview view={view} />
-      </> : <form onSubmit={(event) => { event.preventDefault(); void workspace.create(new FormData(event.currentTarget)); }} aria-busy={state.pending === "create"}>
-        <p className="form-intro">All fields are required. Network: Ethereum Sepolia (11155111). Token type: RWA_TOKEN.</p>
-        <fieldset disabled={!!state.pending || state.unavailable}>
-          <legend><span className="step-number">01</span> Asset</legend>
-          <p className="section-description">Define the asset and the maximum number of whole tokens.</p>
-          <div className="form-grid">
-            <Field name="assetName" label="Asset name" maxLength={240} hint="A descriptive name, up to 120 characters." />
-            <Field name="symbol" label="Token symbol" maxLength={5} pattern="[A-Za-z0-9]{3,5}" hint="3–5 letters or digits. Edict normalizes to uppercase." autoCapitalize="characters" spellCheck={false} />
-            <Field name="supplyCap" label="Supply cap" inputMode="numeric" pattern="[0-9]+" maxLength={100} hint="A positive whole-token amount." />
-            <Field name="documentationUrl" label="Documentation URL" type="url" maxLength={2048} hint="An HTTPS document URL without embedded credentials." />
-          </div>
-        </fieldset>
-        <fieldset disabled={!!state.pending || state.unavailable}>
-          <legend><span className="step-number">02</span> Tokenizer</legend>
-          <p className="section-description">Identify the tokenizer and the public address required to sign the future plan.</p>
-          <div className="form-grid">
-            <Field name="tokenizerEmail" label="Tokenizer email" type="email" maxLength={254} autoCapitalize="none" spellCheck={false} />
-            <Field name="tokenizerWallet" label="Tokenizer wallet address" pattern="0x[0-9a-fA-F]{40}" maxLength={42} hint="Public Ethereum address: 0x followed by 40 hexadecimal characters." spellCheck={false} autoCapitalize="none" />
-          </div>
-        </fieldset>
-        <fieldset disabled={!!state.pending || state.unavailable}>
-          <legend><span className="step-number">03</span> Investor allocation</legend>
-          <p className="section-description">The complete mandate includes the intended investor and allocation for the later execution plan.</p>
-          <div className="form-grid">
-            <Field name="investorEmail" label="Investor email" type="email" maxLength={254} hint="Must differ from the tokenizer email." autoCapitalize="none" spellCheck={false} />
-            <Field name="investorWallet" label="Investor wallet address" pattern="0x[0-9a-fA-F]{40}" maxLength={42} hint="The investor’s public Ethereum address." spellCheck={false} autoCapitalize="none" />
-            <Field name="mintAmount" label="Planned mint amount" inputMode="numeric" pattern="[0-9]+" maxLength={100} hint="Positive whole tokens, no greater than the supply cap." />
-          </div>
-        </fieldset>
-        <div className="form-actions"><p>Edict validates and normalizes your mandate on the server.<br />Creating a plan does not approve or execute it.</p><button className="primary-button" type="submit" disabled={!!state.pending || state.unavailable}>{state.pending === "create" ? "Creating run…" : "Create execution plan"}<span aria-hidden="true"> →</span></button></div>
-      </form>}
+      <div className="scope-note"><span className="scope-symbol" aria-hidden="true">└</span><div><strong>Execution is not enabled.</strong><span> This workspace creates and reviews plans. Wallet approval and on-chain execution are unavailable.</span></div></div>
     </main>
-    <footer className="site-footer"><span>Edict / Run planning</span><span>{view ? "Keep this page open to manage this run." : "Sandbox planning · Execution unavailable"}</span></footer>
+    <footer className="site-footer workspace-shell"><span>Edict <span aria-hidden="true">/</span> Planning workspace</span><span>{view ? "One run. Keep this page open to retain this view." : "Intent first. Authority follows."}</span></footer>
   </div>;
 }

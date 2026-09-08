@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { validateAssetManifestV1, type NormalizedAssetManifestV1 } from "@/core/manifest";
+import { validateAssetManifestV1, type ManifestValidationErrorCode, type NormalizedAssetManifestV1 } from "@/core/manifest";
 import type { ExecutionPlanV1 } from "@/core/execution-plan";
 
 export function creationRequest(form: Pick<FormData, "get">) {
@@ -61,8 +61,13 @@ const messages = {
   NETWORK_ERROR: "Edict could not confirm the request. Check your connection. If a run is displayed, refresh it before trying again.",
 } as const;
 type ErrorCode = keyof typeof messages;
+export type PlanningIssue = { code: ManifestValidationErrorCode; path: string };
+const issuesSchema = z.array(z.object({
+  code: z.enum(["EMAILS_MUST_DIFFER", "INVALID_ASSET_NAME", "INVALID_CHAIN_ID", "INVALID_DOCUMENTATION_URL", "INVALID_ENVIRONMENT", "INVALID_FIELD_TYPE", "INVALID_INVESTOR_EMAIL", "INVALID_POSITIVE_INTEGER", "INVALID_ROOT", "INVALID_SCHEMA_VERSION", "INVALID_TOKENIZER_EMAIL", "INVALID_TOKEN_SYMBOL", "INVALID_TOKEN_TYPE", "INVALID_WALLET_ADDRESS", "MINT_EXCEEDS_SUPPLY", "REQUIRED_FIELD", "UNKNOWN_FIELD"]),
+  path: z.enum(["asset.name", "asset.symbol", "asset.supplyCap", "asset.documentationUrl", "tokenizer.email", "tokenizer.walletAddress", "investor.email", "investor.walletAddress", "investor.mintAmount"]),
+})).max(30);
 class PlanningError extends Error {
-  constructor(readonly code: ErrorCode) { super(messages[code]); }
+  constructor(readonly code: ErrorCode, readonly issues: readonly PlanningIssue[] = []) { super(messages[code]); }
 }
 
 // Pick only public presentation fields. Neither internal data nor unknown error text reaches the view.
@@ -106,7 +111,9 @@ async function request(transport: Transport, path: string, body?: unknown): Prom
     const parsed = z.object({ ok: z.literal(false), error: z.object({ code: z.enum([
       "API_DISABLED", "BAD_REQUEST", "FORBIDDEN", "NOT_FOUND", "REVISION_CONFLICT", "STATE_CONFLICT", "SERVICE_UNAVAILABLE",
     ]) }) }).safeParse(json);
-    throw new PlanningError(parsed.success ? parsed.data.error.code : "INVALID_RESPONSE");
+    const issues = issuesSchema.safeParse((json as { error?: { issues?: unknown } })?.error?.issues);
+    throw new PlanningError(parsed.success ? parsed.data.error.code : "INVALID_RESPONSE",
+      parsed.success && parsed.data.error.code === "BAD_REQUEST" && issues.success ? issues.data : []);
   }
   return json;
 }
@@ -117,8 +124,11 @@ export type WorkspaceState = {
   error: string | null;
   notice: string | null;
   unavailable: boolean;
+  issues: readonly PlanningIssue[];
+  errorCode: ErrorCode | null;
+  retrievedAt: string | null;
 };
-export const initialWorkspace: WorkspaceState = { view: null, pending: null, error: null, notice: null, unavailable: false };
+export const initialWorkspace: WorkspaceState = { view: null, pending: null, error: null, notice: null, unavailable: false, issues: [], errorCode: null, retrievedAt: null };
 
 // One active run and one in-flight action; the synchronous guard also catches clicks before React renders.
 export function createPlanningWorkspace(publish: (state: WorkspaceState) => void, transport: Transport = (path, options) => fetch(path, options)) {
@@ -128,14 +138,14 @@ export function createPlanningWorkspace(publish: (state: WorkspaceState) => void
   async function act(action: NonNullable<WorkspaceState["pending"]>, form?: Pick<FormData, "get">) {
     if (state.pending || state.unavailable || (action === "create" ? state.view !== null : state.view === null)) return;
     if (action === "cancel" && !state.view?.run.canCancel) return;
-    update({ pending: action, error: null, notice: null });
+    update({ pending: action, error: null, notice: null, issues: [], errorCode: null });
     const previous = state.view;
     try {
       if (action === "create" && form) {
         const body = creationRequest(form);
         const validation = validateAssetManifestV1(body.manifest);
         if (!validation.ok) {
-          update({ error: validation.errors.map((issue) => issue.message).filter((message, index, all) => all.indexOf(message) === index).join(" ") });
+          update({ error: validation.errors.map((issue) => issue.message).filter((message, index, all) => all.indexOf(message) === index).join(" "), issues: validation.errors, errorCode: "BAD_REQUEST" });
           return;
         }
         update({ view: readProjection(await request(transport, "/api/runs", body)), notice: "Run created. Review the normalized mandate and plan." });
@@ -152,9 +162,10 @@ export function createPlanningWorkspace(publish: (state: WorkspaceState) => void
           }
         }
       }
+      if (state.view) update({ retrievedAt: new Date().toISOString() });
     } catch (error) {
       const owned = error instanceof PlanningError ? error : new PlanningError("INVALID_RESPONSE");
-      update({ error: owned.message, unavailable: owned.code === "API_DISABLED" });
+      update({ error: owned.message, errorCode: owned.code, issues: owned.issues, unavailable: owned.code === "API_DISABLED" });
     } finally { update({ pending: null }); }
   }
   return { create: (form: Pick<FormData, "get">) => act("create", form), refresh: () => act("refresh"), cancel: () => act("cancel") };
