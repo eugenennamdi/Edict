@@ -86,6 +86,8 @@
 
 ## Durable recovery checkpoint
 
-**DECISION —** Public recovery contract and durable route work are implemented as a separate approved checkpoint. `POST /api/runs` and authorized `GET /api/runs/[runId]` return the same independently complete strict record. `/` remains the new-mandate page; `/runs/[runId]` is the canonical record page and rehydrates with GET only. The URL contains no capability, and refresh/new-tab recovery depends on the unchanged one-active-run HttpOnly cookie. Recovery never mutates revision or invokes wallet, approval, Brickken, RPC or execution code.
+**DECISION —** Public recovery contract and durable route work are implemented as a separate approved checkpoint. `POST /api/runs` and authorized `GET /api/runs/[runId]` return the same independently complete strict record. `/` remains the new-mandate page; `/records/[runId]` is the canonical record page and rehydrates with GET only. The URL contains no capability, and refresh/new-tab recovery depends on the unchanged one-active-run HttpOnly cookie. Recovery never mutates revision or invokes wallet, approval, Brickken, RPC or execution code.
+
+**DECISION —** Phase 9C implements and verifies the dormant production approval HTTP gateway and coordinator uncertainty result. It introduces no route or UI: provider discovery, wallet selection, account access, chain switching, signing and approval controls remain pending separate authorization. One approval submission is followed by exactly one durable read; only the exact recorded post-state establishes approval.
 
 **DECISION —** Approval activation remains unimplemented pending a separate review of later Phase 9 plan checkpoints. This checkpoint stops after recovery and does not compose provider discovery, account access, chain switching, challenge issuance, typed-data signing or approval submission.

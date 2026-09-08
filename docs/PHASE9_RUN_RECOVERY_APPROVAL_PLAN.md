@@ -1,6 +1,6 @@
 # Durable run recovery and approval activation plan
 
-**Status: architecture approved with amendments. Public recovery contract and durable route implementation are authorized; approval/wallet checkpoints remain unauthorized.**
+**Status: architecture approved with amendments. Public recovery, `/records/[runId]` durable routing, and Phase C approval HTTP gateway/uncertainty semantics are implemented. Provider, signing, approval UI and execution checkpoints remain unauthorized.**
 
 Repository assessment: 2026-09-08 at commit `95ac92d` on branch `feat/run-recovery-approval`. The working tree was clean before this document was created. This plan is based on the committed code and documentation; it does not authorize application code, dependency, migration, live-wallet, Brickken, RPC, or transaction-execution changes.
 
@@ -30,11 +30,11 @@ Reading convention:
 5. **Approval composition gap.** The approved workspace imports no wallet code and renders no provider, account, network, challenge, signing, submission, or durable approval state.
 6. **Uncertainty/staleness gap.** The approval coordinator requires a final durable reread on the success path, but it has no application-owned HTTP error taxonomy or explicit recovery result for a lost submission response, failed final reread, or revision conflict. The UI must never infer approval from a returned signature or the approval POST alone.
 7. **Lifecycle integration gap.** Provider discovery/session objects have no React/controller owner that starts passive discovery, handles late/colliding announcements, disposes replaced sessions, invalidates readiness after provider events, or serializes explicit approval actions.
-8. **Audit gap.** The Phase 8 client-artifact audit currently allowlists only the root page plus five API routes. A new `/runs/[runId]` page must be added to its expected application path inventory without changing the five-route API inventory.
+8. **Audit gap.** The Phase 8 client-artifact audit currently allowlists only the root page plus five API routes. A new `/records/[runId]` page must be added to its expected application path inventory without changing the five-route API inventory.
 
 ### Recommended scope
 
-**DECISION —** Add one canonical durable user route, `/runs/[runId]`; make the existing GET response a complete, strictly validated public planning record; navigate to the canonical route only after a successfully parsed create response; and recover that record with one read-only GET on route mount.
+**DECISION —** Add one canonical durable user route, `/records/[runId]`; make the existing GET response a complete, strictly validated public planning record; navigate to the canonical route only after a successfully parsed create response; and recover that record with one read-only GET on route mount.
 
 **DECISION —** Activate only plan approval by composing the existing wallet and approval modules through a strict same-origin gateway and a small in-page authority section. Preserve the current server transition: a successful approval moves the persisted run from `PLAN/AWAITING_APPROVAL` to `TOKENIZATION/PREPARING`, increments revision once, and records approval. In this phase `PREPARING` is only the existing post-approval state name: no prepare service or external effect is invoked or exposed.
 
@@ -128,7 +128,7 @@ Approval evidence is persisted in V2 as public signature-recovery evidence, but 
 
 ### Route strategy
 
-**DECISION —** Use `/runs/[runId]` as the canonical durable run surface. Keep `/` as the new-mandate surface.
+**DECISION —** Use `/records/[runId]` as the canonical durable run surface. Keep `/` as the new-mandate surface. Internal APIs and domain terminology remain `/api/runs`, `runId`, and `ExecutionRun`.
 
 This is an architectural choice, not a visual one:
 
@@ -140,11 +140,11 @@ This is an architectural choice, not a visual one:
 
 Do not put a capability, challenge, signature, email, wallet session, or approval result in route params, query params, fragments, navigation state, or browser storage.
 
-After `POST /api/runs` returns 201 and the complete response passes strict validation, navigate with `router.replace('/runs/' + encodeURIComponent(run.id))`. Replacement makes the durable record—not an already-submitted form—the current history entry. The destination performs a normal authorized GET. Do not navigate on a network error, malformed response, or non-201 response, and do not repeat POST automatically if navigation/recovery fails.
+After `POST /api/runs` returns 201 and the complete response passes strict validation, navigate with `router.replace('/records/' + encodeURIComponent(run.id))`. Replacement makes the durable record—not an already-submitted form—the current history entry. The destination performs a normal authorized GET. Do not navigate on a network error, malformed response, or non-201 response, and do not repeat POST automatically if navigation/recovery fails.
 
 ### Run reconstruction
 
-`src/app/runs/[runId]/page.tsx` should remain a server component whose only responsibility is to pass a syntactically validated, bounded public run ID to the client workspace. It must not query Neon directly, duplicate capability verification, or serialize the capability. A malformed parameter renders the same safe unavailable surface without an API request.
+`src/app/records/[runId]/page.tsx` should remain a server component whose only responsibility is to pass a syntactically validated, bounded public run ID to the client workspace. It must not query Neon directly, duplicate capability verification, or serialize the capability. A malformed parameter renders the same safe unavailable surface without an API request.
 
 The client workspace receives `initialRunId` and performs exactly one recovery action after mount for that ID. That action:
 
@@ -185,7 +185,7 @@ The HTTPS/production cookie remains `__Host-edict_run_access`, `HttpOnly`, `Secu
 
 ### Reload, new tab, and reopening behavior
 
-- Refreshing `/runs/<id>` within the capability lifetime reconstructs from the server and does not change revision.
+- Refreshing `/records/<id>` within the capability lifetime reconstructs from the server and does not change revision.
 - Closing and reopening the same URL in the same browser/profile works while the persistent cookie remains valid, has not been replaced, and the server secret/origin policy is unchanged.
 - Pasting the URL into another tab in the same browser/profile works under the same conditions because the capability cookie is shared. Each tab has independent local wallet readiness; neither tab auto-selects or auto-prompts a wallet.
 - A new browser/profile/incognito context has no capability and receives the generic 403 access state even though it knows the run ID.
@@ -274,7 +274,7 @@ No secret or capability enters a React prop, URL, log, analytics event, browser 
 
 ### Exact user action sequence
 
-1. Recover or display the server-recorded plan at `/runs/[runId]`.
+1. Recover or display the server-recorded plan at `/records/[runId]`.
 2. Keep asset, plan hash, revision, required signer, Sepolia/sandbox, recipient, mint allocation, and the three future wallet operations visible.
 3. The user explicitly opens/selects the authority section; mounting alone may start only passive EIP-6963 announcement collection.
 4. The user explicitly selects one available, non-collision provider. No first/default provider is chosen.
@@ -451,7 +451,7 @@ Every path below is expected future work after explicit approval. Paths marked �
 | `src/server/run-api/handlers.ts` | Use projector; add manifest to GET; retain auth-before-lookup and all request gates | Complete recovery response | No capability or raw proof expansion |
 | `src/server/run-api/handlers.test.ts` | Assert exact strict GET/create shapes, manifest recovery, projection corruption, approval response, and omissions | Contract evidence | Guards public/private boundary |
 | `src/server/run-api/cookies.test.ts` | Add direct/reload/new-tab-equivalent reads, malformed ID, valid nonexistent run, expiry/replacement coverage | Recovery authority evidence | Proves lookup never precedes capability |
-| `src/app/runs/[runId]/page.tsx` (add) | Dynamic user page passing only bounded run ID to workspace | Durable locator | URL remains non-authoritative and capability-free |
+| `src/app/records/[runId]/page.tsx` (add) | Dynamic user page passing only bounded run ID to workspace | Durable locator | URL remains non-authoritative and capability-free |
 | `src/app/page.tsx` | Continue rendering new-mandate workspace with no run ID | Preserve approved entry flow | No automatic access/cookie inspection |
 | `src/components/run-planning.ts` | Consume shared strict DTO; add idempotent `recover(runId)` and accept complete GET artifacts; retain monotonic prior-view checks | Controller supports route hydration | No local manifest/hash authority; no mutation on reload |
 | `src/components/run-planning-workspace.tsx` | Accept optional initial run ID; show recovery/access states; navigate after confirmed creation; host approval section; update truthful copy | Minimal composition in approved UI | Mount performs GET only; no wallet prompt/effect |
@@ -469,7 +469,7 @@ Every path below is expected future work after explicit approval. Paths marked �
 | `src/client/wallet/session.test.ts` | Retain/add account-order, disconnect, chain-change, rejected switch, and cleanup cases used by UI | Readiness evidence | Prevents first-account and stale-generation shortcuts |
 | `src/client/wallet/boundary.test.ts` | Recursively cover new approval gateway/controller modules for no storage, secrets, logging, fallback signing, or execution calls | Existing static guard must follow moved/new code | Prevents review gaps from file placement |
 | `src/server/run-api/boundary.test.ts` | Keep exactly five API routes; include new client/page directories in import-boundary checks where applicable | Preserve public surface | Proves approval activation adds no execution route |
-| `tools/phase8-harness/phase8-client-bundle-audit.ts` | Add `/runs/[runId]/page` to allowed/required app paths, leave API route result exactly five | Audit new page artifacts | Ensures new client bundle is scanned for secrets |
+| `tools/phase8-harness/phase8-client-bundle-audit.ts` | Add `/records/[runId]/page` to allowed/required app paths, leave API route result exactly five | Audit new page artifacts | Ensures new client bundle is scanned for secrets |
 | `tools/phase8-harness/phase8-client-bundle-audit.test.ts` | Update valid manifest fixture and assert missing/extra dynamic page failure | Audit regression | Prevents new page escaping artifact inventory |
 
 No expected change: package dependencies/lockfile, `.env.example`, database schema/migrations, core manifest/plan derivation, persistence aggregate/codec, server security token semantics, Brickken adapter, orchestration write gate, wallet execution/transaction modules, or Phase 8 action harness runtime.
@@ -479,7 +479,7 @@ No expected change: package dependencies/lockfile, `.env.example`, database sche
 ### Recovery contract and UI
 
 1. Create response and GET response independently parse to the same complete planning record.
-2. Fresh `/runs/<id>` direct navigation issues one GET and renders manifest/plan/run state with no prior component memory.
+2. Fresh `/records/<id>` direct navigation issues one GET and renders manifest/plan/run state with no prior component memory.
 3. Refresh reconstructs the same record without repository `create/update`, revision change, POST, hash recomputation as authority, wallet call, or execution call.
 4. A valid capability succeeds and is never returned in body/props/storage/logs.
 5. Missing, malformed, expired, rotated, and wrong-run/replaced capabilities return the same 403 before repository lookup.
@@ -560,7 +560,7 @@ Acceptance: complete GET is independently sufficient, authorization precedes loo
 
 ### B. Durable route and rehydration
 
-Add `/runs/[runId]`, initial read-only controller state, post-create canonical navigation, monotonic reread behavior, and truthful reload/access copy. Update the artifact audit path allowlist and route tests.
+Add `/records/[runId]`, initial read-only controller state, post-create canonical navigation, monotonic reread behavior, and truthful reload/access copy. Update the artifact audit path allowlist and route tests.
 
 Acceptance: refresh/direct navigation/same-browser new tab work with a valid capability; absent/expired/replaced access fails closed; mount performs only GET.
 
@@ -626,7 +626,7 @@ Do not run `npm run phase8:brickken-read`, `npm run test:brickken-live-read`, a 
 
 Manual browser checks use only controlled local/synthetic API responses or an explicitly configured durable run API:
 
-- refresh and reopen `/runs/[runId]`;
+- refresh and reopen `/records/[runId]`;
 - second tab in same browser versus clean profile;
 - expired/replaced capability messaging;
 - keyboard-only provider selection/account/switch/approve flow with fake provider;

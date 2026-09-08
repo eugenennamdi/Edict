@@ -18,6 +18,7 @@ function source(path: string): string {
 describe("wallet trust-boundary invariants", () => {
   it("keeps runtime wallet modules explicitly client-only", () => {
     for (const path of [
+      "src/client/run-api/approval-gateway.ts",
       "src/client/wallet/approval.ts",
       "src/client/wallet/discovery.ts",
       "src/client/wallet/errors.ts",
@@ -44,13 +45,20 @@ describe("wallet trust-boundary invariants", () => {
   });
 
   it("contains no vendor privilege, fallback signing, browser persistence, logging, or secret access", () => {
-    const walletSource = filesBelow(join(root, "src/client/wallet"))
+    const walletSource = ["src/client/wallet", "src/client/run-api"]
+      .flatMap((directory) => filesBelow(join(root, directory)))
       .filter((path) => path.endsWith(".ts") && !path.endsWith(".test.ts"))
       .map((path) => readFileSync(path, "utf8"))
       .join("\n");
     expect(walletSource).not.toMatch(/MetaMask|Rabby|Coinbase|WalletConnect|personal_sign|eth_signTransaction|eth_sendRawTransaction/iu);
-    expect(walletSource).not.toMatch(/localStorage|sessionStorage|BRICKKEN_API_KEY|DATABASE_URL|console\./u);
+    expect(walletSource).not.toMatch(/localStorage|sessionStorage|document\.cookie|BRICKKEN_API_KEY|DATABASE_URL|console\./u);
     expect(walletSource).not.toMatch(/window\.ethereum/u);
+  });
+
+  it("keeps the approval HTTP gateway outside provider and execution boundaries", () => {
+    const gateway = source("src/client/run-api/approval-gateway.ts");
+    expect(gateway).not.toMatch(/wallet\/(?:discovery|session|execution)|eth_signTypedData_v4|eth_sendTransaction|window\.|document\.|Storage/u);
+    expect(gateway).not.toMatch(/capability|cookie|challenge.*(?:mac|purpose)|console\./iu);
   });
 
   it("marks invocation immediately before the direct provider call with no await boundary", () => {
@@ -63,7 +71,7 @@ describe("wallet trust-boundary invariants", () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     vi.resetModules();
-    await import("./index");
+    await Promise.all([import("./index"), import("../run-api/approval-gateway")]);
     expect(fetchSpy).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });

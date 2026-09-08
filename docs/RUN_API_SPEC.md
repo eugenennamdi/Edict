@@ -12,11 +12,11 @@
 
 **DECISION** — Prepare, wallet prompt/result, confirmation, polling, read-back and final-verification methods exist only on the injected internal orchestration boundary. They are deliberately not public routes in Phase 6.
 
-**DECISION** — Phase 7 does not expand this surface. Its browser coordinator uses an injected gateway contract for offline verification only; no public external-effect route or production gateway composition exists. Brickken writes and transaction semantic authorization remain disabled. See [`WALLET_EXECUTION_SPEC.md`](WALLET_EXECUTION_SPEC.md).
+**DECISION** — Phase 7 did not expand this surface. Phase 9C supplies the existing browser coordinator with a dormant production same-origin gateway for GET, approval challenge and approval submission; it adds no route or UI composition. Brickken writes and transaction semantic authorization remain disabled. See [`WALLET_EXECUTION_SPEC.md`](WALLET_EXECUTION_SPEC.md).
 
 **DECISION** — Phase 8 also leaves this surface unchanged at exactly five routes. `ExecutionRunV3` evidence is persisted only through internal validated transitions; the existing run projection omits raw unsigned transactions and detailed evidence. The compatibility harness lives under `tools/phase8-harness/`, is excluded from the production build, and is not a Next.js route. Production semantic authorization and Brickken writes remain disabled.
 
-**DECISION** — The durable recovery checkpoint leaves the API surface at exactly five routes and adds the user page `/runs/[runId]`. `POST /api/runs` and authorized `GET /api/runs/[runId]` now return the same independently complete strict planning record: the allowlisted public run projection, server-normalized manifest and complete server-derived seven-operation plan. A run ID remains only a locator; the selected HttpOnly run capability remains the authority.
+**DECISION** — The durable recovery checkpoint leaves the API surface at exactly five routes and adds the user page `/records/[runId]`. `POST /api/runs` and authorized `GET /api/runs/[runId]` now return the same independently complete strict planning record: the allowlisted public run projection, server-normalized manifest and complete server-derived seven-operation plan. A run ID remains only a locator; the selected HttpOnly run capability remains the authority.
 
 ## Deployment and request gates
 
@@ -40,11 +40,13 @@
 
 **DECISION** — Capability and approval-challenge MACs are Web Crypto HMAC-SHA-256 values using purpose-specific keys derived from one server secret. A token from one purpose cannot authenticate the other.
 
-**DECISION** — `/runs/[runId]` passes only a syntactically validated public run ID to the client workspace. On mount it makes one read-only GET and no mutation, wallet, Brickken or RPC action. Refresh and another tab in the same browser/profile can reconstruct while the capability is valid. Missing, expired, replaced, rotated or wrong-run capabilities fail generically before lookup. A different browser/profile cannot recover from the URL alone.
+**DECISION** — `/records/[runId]` passes only a syntactically validated public run ID to the client workspace. On mount it makes one read-only GET and no mutation, wallet, Brickken or RPC action. Refresh and another tab in the same browser/profile can reconstruct while the capability is valid. Missing, expired, replaced, rotated or wrong-run capabilities fail generically before lookup. A different browser/profile cannot recover from the URL alone.
 
 ## Wallet approval
 
 **DECISION** — Approval is an EIP-712 EOA signature over fixed fields binding run ID, manifest and plan SHA-256 values represented as `bytes32`, sandbox environment, Sepolia chain, approval revision, required signer, nonce, timestamps and approval version. The server recovers the exact tokenizer signer with pinned `viem@2.56.3`; it does not accept a claimed address or personal-sign fallback and makes no RPC request. EIP-1271 contract-wallet approval is unsupported.
+
+**DECISION** — The production browser gateway calls only `GET /api/runs/[runId]`, `POST /api/runs/[runId]/approval-challenges`, and `POST /api/runs/[runId]/approval`. It sends only the existing exact request fields, strictly validates bounded JSON responses and preserves the server-issued serialized typed-data string byte-for-byte. The approval POST response is parsed but never treated as authority; one independent durable GET is required and mutations are never retried automatically.
 
 **DECISION** — New V2 run snapshots persist bounded public proof sufficient to reconstruct signature recovery. V1 remains backward-decodable. Capabilities, challenge tokens and server secrets are not persisted, and the proof/signature is omitted from ordinary API projections.
 

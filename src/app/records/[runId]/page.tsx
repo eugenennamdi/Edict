@@ -1,7 +1,7 @@
 import RunPlanningWorkspace from "@/components/run-planning-workspace";
 import { publicRunIdSchema } from "@/shared/run";
 
-export default async function RunPage({
+export default async function RecordPage({
   params,
 }: {
   readonly params: Promise<{ readonly runId: string }>;

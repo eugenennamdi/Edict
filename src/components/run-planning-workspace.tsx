@@ -47,7 +47,7 @@ export default function RunPlanningWorkspace({
   const [workspace] = useState(() => createPlanningWorkspace(
     setState,
     undefined,
-    { onCreated: (createdRunId) => router.replace(`/runs/${createdRunId}`) },
+    { onCreated: (createdRunId) => router.replace(`/records/${createdRunId}`) },
   ));
   const [draft, setDraft] = useState(emptyDraft);
   const [touched, setTouched] = useState<ReadonlySet<FieldName>>(new Set());

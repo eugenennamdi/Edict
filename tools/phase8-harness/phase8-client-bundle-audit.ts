@@ -26,7 +26,7 @@ const EXPECTED_API_ROUTES = Object.freeze([
 const EXPECTED_APP_PATHS = Object.freeze([
   "/_not-found/page",
   "/page",
-  "/runs/[runId]/page",
+  "/records/[runId]/page",
   ...EXPECTED_API_ROUTES.map((route) => `${route}/route`),
 ] as const);
 

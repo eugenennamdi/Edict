@@ -292,7 +292,7 @@ describe("run planning workspace", () => {
 
   it("renders safe valid and malformed durable route shells without server-side effects", async () => {
     const fetch = vi.fn(() => { throw new Error("Unexpected network"); }); vi.stubGlobal("fetch", fetch);
-    const { default: RunPage } = await import("../app/runs/[runId]/page");
+    const { default: RunPage } = await import("../app/records/[runId]/page");
     const recovering = renderToStaticMarkup(await RunPage({ params: Promise.resolve({ runId: id }) }));
     const invalid = renderToStaticMarkup(await RunPage({ params: Promise.resolve({ runId: "not-a-run" }) }));
     expect(recovering).toContain("Recovering run record.");
@@ -303,11 +303,13 @@ describe("run planning workspace", () => {
   });
 
   it("keeps UI source limited to the three permitted routes without execution or storage imports", () => {
-    const paths = ["src/app/page.tsx", "src/app/runs/[runId]/page.tsx", "src/components/run-planning.ts", "src/components/run-planning-workspace.tsx"];
+    const paths = ["src/app/page.tsx", "src/app/records/[runId]/page.tsx", "src/components/run-planning.ts", "src/components/run-planning-workspace.tsx"];
     const source = paths.map((path) => readFileSync(path, "utf8")).join("\n");
     expect(source).not.toMatch(/approval-challenges|\/approval|\/prepare|\/broadcast|\/confirm|\/poll|eth_requestAccounts|eth_signTypedData|eth_sendTransaction|localStorage|sessionStorage|document\.cookie/);
     expect(source).not.toMatch(/from ["'].*(?:server|client\/wallet|hashing)[/"']|buildExecutionPlan|crypto\.subtle|BRICKKEN_API_KEY|DATABASE_URL/);
     expect(source.match(/\/api\/runs/g)).toHaveLength(3);
+    expect(source).toContain("router.replace(`/records/${createdRunId}`)");
+    expect(source).not.toContain("router.replace(`/runs/");
     expect(source).toContain("}/cancel`");
   });
 });

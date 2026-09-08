@@ -1,13 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { createApprovalRpcMaterial, EDICT_APPROVAL_DOMAIN } from "@/shared/wallet";
-import type { AuthorizedRunProjection } from "@/shared/wallet";
-import { approveRunFromUserAction, type ApprovalGateway } from "./approval";
+import type { PublicRunProjection } from "@/shared/run";
+import {
+  ApprovalGatewayError,
+  approveRunFromUserAction,
+  type ApprovalGateway,
+} from "./approval";
 import { SelectedWalletSession } from "./session";
 
 const SIGNER = "0xb91155113039693456491ac398614bc81fef5ea7";
 const NOW = 1_788_516_000n;
-const run: AuthorizedRunProjection = Object.freeze({
+const run: PublicRunProjection = {
   id: "11111111-1111-4111-8111-111111111111",
+  schemaVersion: "2.0",
   manifestHash: "sha256:7db75c525a9757f6297bd2289c17fa36bb017d8a7ccce5f221eadae638c54baf",
   planHash: "sha256:09a1af3868ffc532f845c88f324fc4ce404f85ad2a37641e1777a3ccc79013c7",
   environment: "sandbox",
@@ -15,9 +20,18 @@ const run: AuthorizedRunProjection = Object.freeze({
   requiredSigner: { role: "tokenizer" as const, walletAddress: SIGNER },
   phase: "PLAN",
   status: "AWAITING_APPROVAL",
+  terminalOutcome: null,
   approved: false,
+  operations: [
+    { id: "operation-1", kind: "TOKENIZE", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
+    { id: "operation-2", kind: "WHITELIST", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
+    { id: "operation-3", kind: "MINT", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
+  ],
+  receiptEligible: false,
+  createdAt: "2026-09-04T12:00:00.000Z",
+  updatedAt: "2026-09-04T12:00:01.000Z",
   revision: 1,
-});
+};
 
 function challenge() {
   const material = createApprovalRpcMaterial({
@@ -57,7 +71,14 @@ function setup() {
     return null;
   });
   const wallet = new SelectedWalletSession("wallet-1", "EIP6963", { request });
-  const approved = { ...run, approved: true, phase: "TOKENIZATION", status: "PREPARING", revision: 2 };
+  const approved: PublicRunProjection = {
+    ...run,
+    approved: true,
+    phase: "TOKENIZATION",
+    status: "PREPARING",
+    updatedAt: "2026-09-04T12:00:02.000Z",
+    revision: 2,
+  };
   const gateway: ApprovalGateway = {
     readRun: vi.fn().mockResolvedValueOnce(run).mockResolvedValueOnce(approved),
     issueChallenge: vi.fn(async () => challenge()),
@@ -87,7 +108,7 @@ describe("browser EIP-712 approval", () => {
       challengeToken: "opaque.challenge.token",
       signature,
     });
-    expect(result.approved).toBe(true);
+    expect(result).toMatchObject({ outcome: "APPROVAL_RECORDED", run: { approved: true, revision: 2 } });
   });
 
   it("rejects changed structured data before signing", async () => {
@@ -154,5 +175,184 @@ describe("browser EIP-712 approval", () => {
     })).rejects.toMatchObject({ code: "APPROVAL_CHALLENGE_MALFORMED" });
     expect(reads).toBe(0);
     expect(request.mock.calls.some(([value]) => value.method === "eth_signTypedData_v4")).toBe(false);
+  });
+
+  it("does not treat a signature or successful approval response as durable approval", async () => {
+    const { wallet, gateway } = setup();
+    vi.mocked(gateway.readRun).mockReset().mockResolvedValueOnce(run).mockResolvedValueOnce(run);
+    const result = await approveRunFromUserAction({
+      runId: run.id,
+      expectedRevision: 1,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    });
+    expect(result).toEqual({
+      outcome: "APPROVAL_NOT_RECORDED",
+      run,
+      reason: "REFUSED_OR_UNRECORDED",
+    });
+    expect(gateway.submitApproval).toHaveBeenCalledTimes(1);
+    expect(gateway.readRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("reconciles one lost submission response from durable approved state without retrying", async () => {
+    const { wallet, gateway } = setup();
+    vi.mocked(gateway.submitApproval).mockRejectedValueOnce(new ApprovalGatewayError("TRANSPORT_FAILURE"));
+    const result = await approveRunFromUserAction({
+      runId: run.id,
+      expectedRevision: 1,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    });
+    expect(result).toMatchObject({ outcome: "APPROVAL_RECORDED", run: { revision: 2 } });
+    expect(gateway.submitApproval).toHaveBeenCalledTimes(1);
+    expect(gateway.issueChallenge).toHaveBeenCalledTimes(1);
+    expect(gateway.readRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("publishes durable unapproved state after a lost response and never retries", async () => {
+    const { wallet, gateway } = setup();
+    vi.mocked(gateway.submitApproval).mockRejectedValueOnce(new ApprovalGatewayError("TRANSPORT_FAILURE"));
+    vi.mocked(gateway.readRun).mockReset().mockResolvedValueOnce(run).mockResolvedValueOnce(run);
+    const result = await approveRunFromUserAction({
+      runId: run.id,
+      expectedRevision: 1,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    });
+    expect(result).toMatchObject({ outcome: "APPROVAL_NOT_RECORDED", reason: "REFUSED_OR_UNRECORDED" });
+    expect(gateway.submitApproval).toHaveBeenCalledTimes(1);
+    expect(gateway.readRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns approval unconfirmed when the single reconciliation read fails", async () => {
+    const { wallet, gateway } = setup();
+    vi.mocked(gateway.submitApproval).mockRejectedValueOnce(new ApprovalGatewayError("TRANSPORT_FAILURE"));
+    vi.mocked(gateway.readRun)
+      .mockReset()
+      .mockResolvedValueOnce(run)
+      .mockRejectedValueOnce(new ApprovalGatewayError("SERVICE_UNAVAILABLE"));
+    const result = await approveRunFromUserAction({
+      runId: run.id,
+      expectedRevision: 1,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    });
+    expect(result).toEqual({ outcome: "APPROVAL_UNCONFIRMED", reason: "SERVICE_UNAVAILABLE" });
+    expect(gateway.readRun).toHaveBeenCalledTimes(2);
+    expect(gateway.submitApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not trust a successful approval POST when the final durable GET fails", async () => {
+    const { wallet, gateway } = setup();
+    vi.mocked(gateway.readRun)
+      .mockReset()
+      .mockResolvedValueOnce(run)
+      .mockRejectedValueOnce(new ApprovalGatewayError("TRANSPORT_FAILURE"));
+    const result = await approveRunFromUserAction({
+      runId: run.id,
+      expectedRevision: 1,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    });
+    expect(result).toEqual({ outcome: "APPROVAL_UNCONFIRMED", reason: "TRANSPORT_FAILURE" });
+    expect(gateway.submitApproval).toHaveBeenCalledTimes(1);
+    expect(gateway.readRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops on a stale preflight read without challenge, signature, mutation, or reread", async () => {
+    const { request, wallet, gateway } = setup();
+    const stale = { ...run, revision: 2 } as PublicRunProjection;
+    vi.mocked(gateway.readRun).mockReset().mockResolvedValue(stale);
+    const result = await approveRunFromUserAction({
+      runId: run.id,
+      expectedRevision: 1,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    });
+    expect(result).toMatchObject({ outcome: "APPROVAL_NOT_RECORDED", reason: "STALE_OR_CHANGED" });
+    expect(gateway.readRun).toHaveBeenCalledTimes(1);
+    expect(gateway.issueChallenge).not.toHaveBeenCalled();
+    expect(gateway.submitApproval).not.toHaveBeenCalled();
+    expect(request.mock.calls.some(([value]) => value.method === "eth_signTypedData_v4")).toBe(false);
+  });
+
+  it("reconciles a stale challenge response with one GET and no signature or mutation", async () => {
+    const { request, wallet, gateway } = setup();
+    vi.mocked(gateway.issueChallenge).mockRejectedValueOnce(new ApprovalGatewayError("STALE_OR_STATE_CONFLICT"));
+    vi.mocked(gateway.readRun).mockReset().mockResolvedValueOnce(run).mockResolvedValueOnce({ ...run, revision: 2 });
+    const result = await approveRunFromUserAction({
+      runId: run.id,
+      expectedRevision: 1,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    });
+    expect(result).toMatchObject({ outcome: "APPROVAL_NOT_RECORDED", reason: "STALE_OR_CHANGED" });
+    expect(gateway.readRun).toHaveBeenCalledTimes(2);
+    expect(gateway.issueChallenge).toHaveBeenCalledTimes(1);
+    expect(gateway.submitApproval).not.toHaveBeenCalled();
+    expect(request.mock.calls.some(([value]) => value.method === "eth_signTypedData_v4")).toBe(false);
+  });
+
+  it("does not repeat an approval mutation after a stale revision response", async () => {
+    const { wallet, gateway } = setup();
+    vi.mocked(gateway.submitApproval).mockRejectedValueOnce(new ApprovalGatewayError("STALE_OR_STATE_CONFLICT"));
+    vi.mocked(gateway.readRun).mockReset().mockResolvedValueOnce(run).mockResolvedValueOnce({ ...run, revision: 2 });
+    const result = await approveRunFromUserAction({
+      runId: run.id,
+      expectedRevision: 1,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    });
+    expect(result).toMatchObject({ outcome: "APPROVAL_NOT_RECORDED", reason: "STALE_OR_CHANGED" });
+    expect(gateway.submitApproval).toHaveBeenCalledTimes(1);
+    expect(gateway.issueChallenge).toHaveBeenCalledTimes(1);
+    expect(gateway.readRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the reconciliation GET to distinguish refusal from unavailable access", async () => {
+    const { wallet, gateway } = setup();
+    vi.mocked(gateway.submitApproval).mockRejectedValueOnce(new ApprovalGatewayError("ACCESS_UNAVAILABLE"));
+    vi.mocked(gateway.readRun)
+      .mockReset()
+      .mockResolvedValueOnce(run)
+      .mockRejectedValueOnce(new ApprovalGatewayError("ACCESS_UNAVAILABLE"));
+    const result = await approveRunFromUserAction({
+      runId: run.id,
+      expectedRevision: 1,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    });
+    expect(result).toEqual({ outcome: "ACCESS_UNAVAILABLE" });
+    expect(gateway.submitApproval).toHaveBeenCalledTimes(1);
+    expect(gateway.readRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not establish approval from an unexpected durable approved revision or state", async () => {
+    const { wallet, gateway } = setup();
+    vi.mocked(gateway.readRun).mockReset().mockResolvedValueOnce(run).mockResolvedValueOnce({
+      ...run,
+      approved: true,
+      phase: "TOKENIZATION",
+      status: "PREPARING",
+      revision: 3,
+    });
+    const result = await approveRunFromUserAction({
+      runId: run.id,
+      expectedRevision: 1,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    });
+    expect(result).toEqual({ outcome: "APPROVAL_UNCONFIRMED", reason: "UNSAFE_DURABLE_STATE" });
   });
 });
