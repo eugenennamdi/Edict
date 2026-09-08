@@ -148,7 +148,7 @@ export function createPlanningWorkspace(publish: (state: WorkspaceState) => void
           update({ error: validation.errors.map((issue) => issue.message).filter((message, index, all) => all.indexOf(message) === index).join(" "), issues: validation.errors, errorCode: "BAD_REQUEST" });
           return;
         }
-        update({ view: readProjection(await request(transport, "/api/runs", body)), notice: "Run created. Review the normalized mandate and plan." });
+        update({ view: readProjection(await request(transport, "/api/runs", body)), notice: null });
       } else if (previous) {
         if (action === "refresh") {
           update({ view: readProjection(await request(transport, runPath(previous)), previous), notice: "Run refreshed from the server." });

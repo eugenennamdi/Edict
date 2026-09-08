@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
+import "./tokens.css";
 import "./globals.css";
+import "./workspace.css";
 
 export const metadata: Metadata = {
   title: "Edict — Tokenization, as code",

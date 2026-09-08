@@ -200,7 +200,7 @@ describe("run planning workspace", () => {
     const { default: Workspace } = await import("./run-planning-workspace");
     const html = renderToStaticMarkup(createElement(Workspace));
     expect(fetch).not.toHaveBeenCalled();
-    expect(html).toContain("Execution is not enabled.");
+    expect(html).toContain("Tokenization Planning Workspace");
     expect(html).toContain("Create execution plan");
     for (const [name] of form()) expect(html).toContain(`for="${name}"`);
     expect(html.match(/<input /g)).toHaveLength(9);
