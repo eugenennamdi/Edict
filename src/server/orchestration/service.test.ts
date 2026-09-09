@@ -137,6 +137,24 @@ describe("durable execution orchestration", () => {
     expect(brickken.prepares()).toBe(1);
   });
 
+  it("records a definite preparation entitlement refusal as terminal", async () => {
+    const brickken = adapter({
+      ok: false,
+      error: new BrickkenAdapterError("ENTITLEMENT_REJECTED", "sanitized"),
+    });
+    const setup = await approvedSetup(enabledGate, brickken);
+
+    await expect(
+      setup.orchestrator.prepareOperation(setup.run.id, setup.run.revision, "TOKENIZE"),
+    ).rejects.toMatchObject({ code: "BRICKKEN_OPERATION_FAILED" });
+
+    const durable = await setup.repository.getById(setup.run.id);
+    expect(durable.status).toBe("FAILED");
+    expect(durable.terminalOutcome).toBe("FAILED");
+    expect(durable.operations[0].stage).toBe("PREPARE_UNKNOWN");
+    expect(brickken.prepares()).toBe(1);
+  });
+
   it("refuses a stale revision before calling the injected adapter", async () => {
     const setup = await approvedSetup(enabledGate);
     await expect(setup.orchestrator.prepareOperation(setup.run.id, setup.run.revision - 1, "TOKENIZE")).rejects.toMatchObject({ code: "REPOSITORY_REVISION_CONFLICT" });

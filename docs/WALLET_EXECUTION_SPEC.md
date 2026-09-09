@@ -135,4 +135,6 @@ Before any wallet or Brickken execution path is enabled, a human-authorized sand
 5. standalone whitelist followed by `needWhitelist: false` mint behaves as assumed; and
 6. post-write Brickken reads support the required requested-versus-observed verification.
 
-No authenticated write, wallet signature, wallet broadcast, Brickken reconciliation, or finality test has occurred yet.
+**CONTROLLED OBSERVATION — 2026-09-09** — One diagnostic TOKENIZE preparation reached Brickken with the intended `client-broadcast` request but received a definite HTTP 400 JSON license/subscription/entitlement refusal and no transaction. It therefore proves request transport, not prepared-output or wallet compatibility. The run remains blocked, and no wallet provider was invoked.
+
+The controlled preparation-only diagnostics did not produce a prepared transaction. No wallet signature, wallet broadcast, Brickken reconciliation, or finality test has occurred.

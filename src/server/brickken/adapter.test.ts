@@ -22,6 +22,17 @@ const TOKENIZER = "0x1111111111111111111111111111111111111111";
 const INVESTOR = "0x2222222222222222222222222222222222222222";
 const TEST_KEY = "test-key";
 
+// Sanitized structural fixture from the 2026-09-09 controlled Phase 10C response.
+// Only the observed top-level envelope and semantic category are retained;
+// nested values and exact upstream prose were deliberately normalized.
+const sanitizedLiveLicenseEntitlement400 = {
+  errors: {
+    messages: ["Sanitized license or entitlement rejection"],
+    status: 400,
+    name: "Bad Request",
+  },
+} as const;
+
 const evidence: ConfirmedWhitelistEvidence = {
   runId: "run-1",
   whitelistTxId: "0xwl",
@@ -237,6 +248,48 @@ describe("Brickken server adapter", () => {
     const symbol = await symbolAdapter.getTokenInfo({ tokenSymbol: "NOPE" });
     expect(symbol.ok).toBe(false);
     if (!symbol.ok) expect(symbol.error.code).toBe("ENTITLEMENT_REJECTED");
+  });
+
+  it("classifies the sanitized live HTTP 400 license envelope as a definite entitlement refusal", async () => {
+    const adapter = createBrickkenServerAdapter({
+      fetch: async () => jsonResponse(sanitizedLiveLicenseEntitlement400, 400),
+    });
+    installKey();
+
+    const result = await adapter.prepareTokenization({
+      signerAddress: TOKENIZER,
+      tokenizerEmail: "tokenizer@example.com",
+      name: "Example Token",
+      tokenSymbol: "EXMPL",
+      supplyCap: "1000",
+      documentationUrl: "https://example.com/token-docs",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("ENTITLEMENT_REJECTED");
+      expect(result.error.message).not.toContain("Sanitized license");
+      expect(JSON.stringify(result.error)).not.toContain(TEST_KEY);
+    }
+  });
+
+  it("classifies other SDK HTTP 400 API errors as definite invalid requests", async () => {
+    const adapter = createBrickkenServerAdapter({
+      fetch: async () => jsonResponse({ errors: { messages: ["A rejected request"] } }, 400),
+    });
+    installKey();
+
+    const result = await adapter.prepareTokenization({
+      signerAddress: TOKENIZER,
+      tokenizerEmail: "tokenizer@example.com",
+      name: "Example Token",
+      tokenSymbol: "EXMPL",
+      supplyCap: "1000",
+      documentationUrl: "https://example.com/token-docs",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INVALID_REQUEST");
   });
 
   it("refuses upstream values containing the API key instead of returning them", async () => {

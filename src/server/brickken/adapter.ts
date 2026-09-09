@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  ApiError,
   AuthError,
   Brickken,
   CreditsExhaustedError,
@@ -62,6 +63,12 @@ function mapCaughtError(error: unknown, secret?: string): BrickkenAdapterError {
     return safeErrorMessage("ENTITLEMENT_REJECTED", secret);
   }
   if (error instanceof ValidationError) return safeErrorMessage("INVALID_REQUEST", secret);
+  if (error instanceof ApiError && error.status === 400) {
+    if (/licen[cs]e|subscription|entitlement/i.test(error.message)) {
+      return safeErrorMessage("ENTITLEMENT_REJECTED", secret);
+    }
+    return safeErrorMessage("INVALID_REQUEST", secret);
+  }
   return safeErrorMessage("INVALID_EXTERNAL_RESPONSE", secret);
 }
 

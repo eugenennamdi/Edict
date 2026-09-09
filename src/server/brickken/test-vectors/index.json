@@ -274,7 +274,7 @@
     },
     {
       "id": "live-prepare-or-send-bodies",
-      "reason": "This phase made no authenticated or write requests."
+      "reason": "No complete live successful prepare or send body has been retained. The Phase 10C regression fixture in adapter.test.ts contains only a normalized, sanitized HTTP 400 error envelope."
     }
   ]
 }

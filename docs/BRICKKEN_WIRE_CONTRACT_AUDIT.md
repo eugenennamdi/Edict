@@ -420,6 +420,8 @@ Documented messages include `tokenAmount is required`, `investorEmail cannot be 
 
 Exact JSON envelopes for those strings are **UNKNOWN** except the send `error: { code, message, details }` example and the Phase 0 `{ errors: { messages, status, name } }` 401.
 
+**CONTROLLED OBSERVATION — 2026-09-09** — One authorized `newTokenization` preparation-only request received HTTP 400 `application/json`, 101 bytes. Its sanitized shape was a top-level `errors` object with license/subscription/entitlement semantics and no `txId` or `transactions`. Exact nested values and prose were intentionally not retained. The pinned SDK represented this unrecognized 400 as `ApiError`; Edict now maps only SDK HTTP 400 `ApiError` responses to definite `INVALID_REQUEST`, specializing license/subscription/entitlement semantics to `ENTITLEMENT_REJECTED`. This changes refusal classification only and does not relax any prepared-transaction schema; every other unrecognized status remains fail-closed and ambiguous.
+
 ### 8.3 Wallet / RPC / send
 
 | Signal | Class | Source |

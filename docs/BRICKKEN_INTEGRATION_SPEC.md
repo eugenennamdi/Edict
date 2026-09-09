@@ -80,9 +80,9 @@ The sanitized adapter projection was:
 
 **HISTORICAL OBSERVATION — 2026-09-04** — A credential-bearing adapter request reached the sandbox and recorded the sanitized projection `Sepolia ETH` and `sepolia.etherscan.io`. This correction task did not repeat the request; current behavior remains unverified. The projection does not prove the raw response had no additional properties, nor that the credential was required, accepted as authority or independently authenticated. It does not change the earlier anonymous `401` observation or prove that the endpoint is public. A changed or additional current response must fail closed pending review.
 
-**OPEN QUESTION** — Current authentication semantics, credential necessity, signer approval, licensing, credits, prepare eligibility, wallet compatibility and write capability all remain unverified.
+**CONTROLLED OBSERVATION — 2026-09-09** — Two separately approved `newTokenization` preparation-only checks reached `POST https://api.sandbox.brickken.com/prepare-transactions`; neither was retried. The diagnostic request used `application/json`, `execute:false` in the SDK, and body keys `chainId`, `executionMode`, `method`, `name`, `signerAddress`, `supplyCap`, `tokenSymbol`, `tokenType`, `tokenizerEmail`, and `url`. The second response was HTTP 400 `application/json`, 101 bytes, with a top-level `errors` object, license/subscription/entitlement semantics, and no `txId` or `transactions`. Raw headers, values, credentials, emails, signatures, capabilities, and response prose were not retained. This is a sanitized authenticated observation, not proof of the successful prepare contract.
 
-**DECISION** — The check performed no prepare, sign, send, tokenize, whitelist, mint, or broadcast operation. It did not validate signer approval, tokenizer licensing, credits, prepared write responses, wallet compatibility, transaction finality, or any write behavior. No authenticated write has occurred.
+**DECISION** — The checks performed no signing, wallet prompt, send, broadcast, confirmation, poll, whitelist, mint, or blockchain operation. Both durable runs remain `PREPARE_UNKNOWN/RECONCILIATION_REQUIRED`; neither may be prepared again. Signer approval, an active tokenizer license, sufficient credits, successful prepared output, wallet compatibility, finality, and write completion remain unverified.
 
 ## Transaction lifecycle
 
@@ -90,7 +90,7 @@ The sanitized adapter projection was:
 
 **VERIFIED** — The API exposes three execution modes. For `client-broadcast`, the user signs and broadcasts, then the client confirms exactly one `{ txId, txHash }` pair to Brickken; this mode works for Dapp methods. Resubmitting the same pair is idempotent. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send)
 
-**DECISION** — Edict intends to use `client-broadcast` for all three on-chain operations. Phase 10 makes only explicit TOKENIZE preparation/review available behind a separate deny-by-default server gate; production wallet semantic authorization remains deny-all. A preparation request is a semantic Brickken write effect even though it uses `execute:false`, so mount/recovery never invokes it and ambiguous results are never retried automatically. No authenticated write, browser broadcast or live RPC comparison has occurred.
+**DECISION** — Edict intends to use `client-broadcast` for all three on-chain operations. Phase 10 makes only explicit TOKENIZE preparation/review available behind a separate deny-by-default server gate; production wallet semantic authorization remains deny-all. A preparation request is a semantic Brickken write effect even though it uses `execute:false`, so mount/recovery never invokes it and ambiguous results are never retried automatically. The controlled authenticated preparation checks above were refused or unconfirmed; no browser broadcast or live RPC comparison occurred.
 
 **VERIFIED** — A prepared response contains `transactions` (unsigned transaction objects), `txId` (Brickken's internal prepared-batch identifier, not a blockchain hash), and optional `info`. [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create)
 
@@ -239,7 +239,7 @@ The sanitized adapter projection was:
 - **OPEN QUESTION** — Confirm live `userToWhitelist[].whitelistStatus` JSON type if anything other than boolean is still accepted.
 - **OPEN QUESTION** — Confirm standalone whitelist followed by mint with `needWhitelist: false` returns a single transaction and mints.
 - **OPEN QUESTION** — Confirm the selected browser wallet can broadcast a payload normalised per official browser-wallet guidance, and that Brickken reconciles the resulting hash for a `client-broadcast` prepare.
-- **OPEN QUESTION** — Confirm `newTokenization.url` behaviour when omitted, and the exact active-license failure shape.
+- **OPEN QUESTION** — Confirm `newTokenization.url` behaviour when omitted, plus the exact nested active-license error fields and prose; Phase 10C retained only the safe top-level envelope and semantic category.
 - **OPEN QUESTION** — Confirm whether the accepted `tokenSymbol` lower bound is two or three characters on live sandbox. Current docs say 2–5; Edict V1 still sends 3–5.
 - **OPEN QUESTION** — Confirm prepared transaction expiry, finality expectations, per-tier quotas, and whether `newTokenization`/`whitelist` prepare consumes a credit before send.
 - **OPEN QUESTION** — Confirm whether API-key Dapp transaction-status polling always requires the key, including after client broadcast. Edict will send the key regardless.
