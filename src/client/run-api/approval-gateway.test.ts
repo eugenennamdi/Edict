@@ -27,6 +27,7 @@ async function planningRecord(): Promise<PublicPlanningRecord> {
       status: "AWAITING_APPROVAL",
       terminalOutcome: null,
       approved: false,
+      execution: null,
       operations: [
         { id: "operation-1", kind: "TOKENIZE", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
         { id: "operation-2", kind: "WHITELIST", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
@@ -119,6 +120,12 @@ describe("production approval HTTP gateway", () => {
       approved: true,
       phase: "TOKENIZATION",
       status: "PREPARING",
+      execution: {
+        projectionVersion: "1.0",
+        nextOperation: { id: "operation-1", kind: "TOKENIZE", sequence: 1, name: "Create tokenization" },
+        preparationStatus: "READY_FOR_PREPARATION",
+        transactionReview: null,
+      },
       revision: 2,
     } as PublicRunProjection;
     const transport: ApprovalHttpTransport = vi.fn(async () => Response.json({ ok: true, run: approved }));

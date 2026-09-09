@@ -114,6 +114,16 @@ checked-in prepare example
 
 **DECISION** — TOKENIZE is the only Phase 9 operation. Whitelist and mint remain outside this phase. No live Brickken response was obtained, and no provider, wallet, RPC, Neon or blockchain operation occurred. Any later account-backed evidence requires separate authorization and handling by the authorized Brickken account holder or administrator. Phase 8 and provider-session/ambiguity rules remain unchanged. Phase 9 is closed after offline verification; do not reopen without a product scope change or concrete in-scope defect, and do not begin Phase 10 as part of this work.
 
+## Phase 10 prepared transaction review boundary
+
+**DECISION** — Phase 10 activates only explicit server preparation of the exact next TOKENIZE operation. The browser submits only the displayed expected revision to `POST /api/runs/[runId]/prepare`; it cannot select WHITELIST/MINT or supply transaction fields. The server rederives the manifest/plan and operation from durable approved state, preserves the existing single-winner CAS and double-gate sequence, and returns a review only after the exact prepared transaction is durable.
+
+**DECISION** — `PreparedTransactionReviewV1` is a non-authorizing review envelope. Its canonical SHA-256 fingerprint binds the run ID and revision, approval revision, hashes, operation, signer, sandbox/Sepolia constraints, Brickken `newTokenization`/`client-broadcast` identity, prepared transaction ID and exact normalized wallet request. The response is strict and bounded; no mutable upstream object, raw response, capability, proof, credential or secret is exposed. Destination, value, fees and exact calldata are displayed, but calldata semantics remain `OPAQUE_SERVER_PREPARED` because production semantic authorization is still deny-all.
+
+**DECISION** — Preparation and wallet authorization remain separate. Preparing ends at durable `TOKENIZE/PREPARED` and `TOKENIZATION/AWAITING_WALLET`; it does not call `recordWalletPrompt`, create a prompt-bound WalletIntent, inspect a provider, sign, or invoke `eth_sendTransaction`. The existing `WalletIntentV1` remains the sole future wallet-action identity and must be freshly rederived against the later prompt revision and semantic policy. No prompt or send control is composed in the product.
+
+**DECISION** — Preparation is single-attempt. Concurrent requests are resolved by repository CAS. A lost browser response causes one read-only durable GET, never another POST. `PREPARE_INTENT` and `PREPARE_UNKNOWN/RECONCILIATION_REQUIRED` disable repeat preparation; refresh/direct recovery only displays the persisted state. No transaction hash or later execution evidence exists at this boundary.
+
 ## Evidence still required
 
 Before any wallet or Brickken execution path is enabled, a human-authorized sandbox test must establish all of the following without exposing credentials:

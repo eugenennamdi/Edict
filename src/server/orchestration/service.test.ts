@@ -7,8 +7,9 @@ import { createApprovalProofFixture } from "../execution/test-fixtures";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
 import { ExecutionRunService } from "../execution/run-service";
 import type { Clock, IdGenerator } from "../execution/infrastructure";
+import type { ExecutionRunRepository } from "../execution/repository";
 import { ExecutionOrchestrator } from "./service";
-import { BrickkenWritesDisabledError, disabledBrickkenWriteGate, type BrickkenWriteGate } from "./write-gate";
+import { BrickkenWritesDisabledError, createPreparationOnlyBrickkenWriteGate, disabledBrickkenWriteGate, type BrickkenWriteGate } from "./write-gate";
 
 const prepared: PreparedOperation = {
   txId: "brickken-tx-1",
@@ -107,6 +108,25 @@ describe("durable execution orchestration", () => {
     expect(durable.operations[0].unsignedTransaction).toEqual(prepared.transaction.rawUnsigned);
   });
 
+  it("derives TOKENIZE server-side for the public preparation boundary", async () => {
+    const setup = await approvedSetup(enabledGate);
+    const result = await setup.orchestrator.prepareNextOperation(setup.run.id, setup.run.revision);
+    expect(result.revision).toBe(setup.run.revision + 2);
+    expect(result.operations[0]).toMatchObject({ kind: "TOKENIZE", stage: "PREPARED" });
+    expect(result.operations[1].stage).toBe("NOT_STARTED");
+    expect(setup.brickken.prepares()).toBe(1);
+  });
+
+  it("allows one server-derived preparation winner across concurrent requests", async () => {
+    const setup = await approvedSetup(enabledGate);
+    const results = await Promise.allSettled([
+      setup.orchestrator.prepareNextOperation(setup.run.id, setup.run.revision),
+      setup.orchestrator.prepareNextOperation(setup.run.id, setup.run.revision),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(setup.brickken.prepares()).toBe(1);
+  });
+
   it("marks an indeterminate prepare response for reconciliation", async () => {
     const brickken = adapter({ ok: false, error: new BrickkenAdapterError("INVALID_EXTERNAL_RESPONSE", "sanitized") });
     const setup = await approvedSetup(enabledGate, brickken);
@@ -121,6 +141,31 @@ describe("durable execution orchestration", () => {
     const setup = await approvedSetup(enabledGate);
     await expect(setup.orchestrator.prepareOperation(setup.run.id, setup.run.revision - 1, "TOKENIZE")).rejects.toMatchObject({ code: "REPOSITORY_REVISION_CONFLICT" });
     expect(setup.brickken.prepares()).toBe(0);
+  });
+
+  it("fails a manifest/hash mismatch before any intent or adapter call", async () => {
+    const setup = await approvedSetup(enabledGate);
+    const mismatched = { ...setup.run, manifestHash: `sha256:${"0".repeat(64)}` };
+    const repository: ExecutionRunRepository = {
+      create: async () => { throw new Error("unused"); },
+      getById: async () => mismatched,
+      update: async () => { throw new Error("must not mutate"); },
+    };
+    const orchestrator = new ExecutionOrchestrator({
+      repository,
+      runs: setup.runs,
+      brickken: setup.brickken.value,
+      writeGate: enabledGate,
+    });
+    await expect(orchestrator.prepareNextOperation(setup.run.id, setup.run.revision))
+      .rejects.toMatchObject({ code: "EXECUTION_INVARIANT_FAILED" });
+    expect(setup.brickken.prepares()).toBe(0);
+  });
+
+  it("the production preparation gate can never authorize confirmation", () => {
+    const gate = createPreparationOnlyBrickkenWriteGate(true);
+    expect(() => gate.assertEnabled("PREPARE")).not.toThrow();
+    expect(() => gate.assertEnabled("CONFIRM_BROADCAST")).toThrow(BrickkenWritesDisabledError);
   });
 
   it("confirms only the identical durable pair and leaves pending poll-only", async () => {

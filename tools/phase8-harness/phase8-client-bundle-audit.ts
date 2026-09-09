@@ -21,6 +21,7 @@ const EXPECTED_API_ROUTES = Object.freeze([
   "/api/runs/[runId]/approval",
   "/api/runs/[runId]/approval-challenges",
   "/api/runs/[runId]/cancel",
+  "/api/runs/[runId]/prepare",
 ] as const);
 
 const EXPECTED_APP_PATHS = Object.freeze([
@@ -48,6 +49,7 @@ const PROHIBITED_PUBLIC_TOKENS = Object.freeze([
   "DATABASE_URL",
   "EDICT_SEPOLIA_RPC_URL",
   "EDICT_RUN_SECURITY_SECRET",
+  "EDICT_TRANSACTION_PREPARATION_ENABLED",
   "EDICT_PHASE8_MODE",
   "EDICT_PHASE8_HOST",
   "EDICT_PHASE8_PORT",

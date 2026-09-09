@@ -24,6 +24,7 @@ const run: PublicRunProjection = Object.freeze<PublicRunProjection>({
   status: "AWAITING_APPROVAL",
   terminalOutcome: null,
   approved: false,
+  execution: null,
   operations: [
     { id: "operation-1", kind: "TOKENIZE", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
     { id: "operation-2", kind: "WHITELIST", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
@@ -41,6 +42,12 @@ const approved: PublicRunProjection = Object.freeze({
   approved: true,
   phase: "TOKENIZATION",
   status: "PREPARING",
+  execution: Object.freeze({
+    projectionVersion: "1.0",
+    nextOperation: Object.freeze({ id: "operation-1", kind: "TOKENIZE", sequence: 1, name: "Create tokenization" }),
+    preparationStatus: "READY_FOR_PREPARATION",
+    transactionReview: null,
+  }),
   updatedAt: "2026-09-08T12:00:01.000Z",
   revision: 2,
 });

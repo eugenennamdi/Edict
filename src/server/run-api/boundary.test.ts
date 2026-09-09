@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 describe("public run API boundary", () => {
   const root = path.resolve(__dirname, "../../..");
 
-  it("exposes exactly the five approved route modules", () => {
+  it("exposes exactly the six approved route modules", () => {
     const api = path.join(root, "src/app/api");
     const routes: string[] = [];
     const walk = (directory: string) => {
@@ -20,14 +20,16 @@ describe("public run API boundary", () => {
       "runs/[runId]/approval-challenges/route.ts",
       "runs/[runId]/approval/route.ts",
       "runs/[runId]/cancel/route.ts",
+      "runs/[runId]/prepare/route.ts",
       "runs/[runId]/route.ts",
       "runs/route.ts",
     ]);
   });
 
-  it("contains no public prepare, broadcast, confirmation, polling, or verification route", () => {
+  it("exposes preparation only and no prompt, broadcast, confirmation, polling, or verification route", () => {
     const routeTree = fs.readdirSync(path.join(root, "src/app/api/runs"), { recursive: true }).join("\n");
-    expect(routeTree).not.toMatch(/prepare|broadcast|confirm|poll|verify|mint|whitelist|tokenize/i);
+    expect(routeTree.match(/prepare/gi)).toHaveLength(2);
+    expect(routeTree).not.toMatch(/prompt|broadcast|confirm|poll|verify|mint|whitelist|tokenize/i);
   });
 
   it("keeps core and client modules free of server persistence and run API imports", () => {

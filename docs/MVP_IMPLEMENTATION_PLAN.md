@@ -93,3 +93,11 @@
 **DECISION —** Phase 9D composes the existing discovery and selected-session primitives into a revision-bound approval-readiness controller and minimum authority section on the canonical `/records/[runId]` product route. Passive EIP-6963 discovery is mount-safe; provider/legacy selection, account access, Sepolia switching and reinspection are explicit. Exact required-signer-plus-Sepolia readiness stops at **Ready to approve**. Challenge issuance, typed-data signing, the dormant approval gateway/coordinator, approval submission/persistence and all execution remain uncomposed pending separate Phase E authorization.
 
 **DECISION —** Phase 9E composes exactly one explicit approval action through the existing approval coordinator and production gateway. A same-authority durable preflight precedes one fresh challenge; exact server-issued EIP-712 material is signed only after readiness reinspection; proof submission is single-attempt; and only an exact durable approved `N+1` reread updates the planning record. Uncertainty exposes read-only status refresh and blocks another signature. The checkpoint stops at **Approval recorded** with execution unavailable.
+
+## Phase 10 execution activation — preparation/review milestone
+
+**DECISION —** The first Phase 10 milestone activates only the existing separable preparation boundary. From an approved `TOKENIZATION/PREPARING` run, the server identifies TOKENIZE, persists `PREPARE_INTENT`, makes one gated server-only Brickken prepare request, strictly validates it, and persists `PREPARED` at `N+2`. The browser cannot choose the operation or transaction fields.
+
+**DECISION —** `/records/[runId]` displays the server-derived next operation and, after an explicit preparation action, a strict immutable prepared-transaction review with a canonical fingerprint. Mount, direct recovery and refresh remain read-only. Lost or ambiguous results are reconciled with at most one GET and never cause an automatic prepare retry.
+
+**DECISION —** Stop at prepared review. The review is not `WalletIntentV1` authority and no wallet prompt, provider action, signature, `eth_sendTransaction`, hash persistence, confirmation, polling, RPC comparison, read-back, phase advancement or receipt is composed. Production semantic authorization remains deny-all. No live Brickken write or wallet transaction was performed.

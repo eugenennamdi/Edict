@@ -354,7 +354,7 @@ export function ApprovalReadinessSection({
           <Badge variant="success" className="w-fit text-[10px] uppercase">Approval recorded</Badge>
           <CardTitle className="text-xl font-bold tracking-tight">Plan approval recorded</CardTitle>
           <CardDescription className="text-xs">
-            Durable server state confirms this plan approval. Execution is not enabled in this phase.
+            Durable server state confirms this plan approval. Wallet confirmation and transaction submission remain unavailable.
           </CardDescription>
         </CardHeader>
         <CardContent><AuthorityFacts view={view} /></CardContent>

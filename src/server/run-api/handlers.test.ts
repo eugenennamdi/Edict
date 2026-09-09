@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { createValidRawManifest } from "@/core/test-fixtures";
+import { createValidRawManifest, TOKENIZER_ADDRESS } from "@/core/test-fixtures";
+import type { BrickkenServerAdapter, PreparedOperation } from "../brickken/types";
+import { BrickkenAdapterError } from "../brickken/errors";
 import { ExecutionRunService } from "../execution/run-service";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
 import { createApprovalProofFixture } from "../execution/test-fixtures";
@@ -7,8 +9,10 @@ import type { Clock, IdGenerator } from "../execution/infrastructure";
 import { DomainSeparatedTokenMac, type NonceSource, type TokenClock } from "../security/tokens";
 import { RunAccessService, RUN_ACCESS_COOKIE } from "../security/run-access";
 import { WalletApprovalService } from "../security/wallet-approval";
+import { ExecutionOrchestrator } from "../orchestration/service";
+import { createPreparationOnlyBrickkenWriteGate } from "../orchestration/write-gate";
 import type { RunApiRuntime } from "./runtime";
-import { createRunHandler, getRunHandler, approvalChallengeHandler, approveRunHandler, cancelRunHandler } from "./handlers";
+import { createRunHandler, getRunHandler, approvalChallengeHandler, approveRunHandler, cancelRunHandler, prepareNextOperationHandler } from "./handlers";
 
 const config = { enabled: true, trustedOrigin: "https://edict.example" } as const;
 
@@ -139,7 +143,18 @@ describe("run API HTTP boundaries", () => {
     const preparing = await api.runs.beginPrepare(approved.id, approved.revision, "TOKENIZE");
     await api.runs.recordPrepared(preparing.id, preparing.revision, "TOKENIZE", {
       txId: "prepared-id",
-      unsignedTransaction: { data: "INTERNAL_UNSIGNED_SENTINEL" },
+      unsignedTransaction: {
+        from: initial.requiredSigner.walletAddress,
+        to: "0x3333333333333333333333333333333333333333",
+        data: "0x1234",
+        value: "0x0",
+        nonce: "0x1",
+        chainId: "0xaa36a7",
+        type: "0x2",
+        gasLimit: "0x5208",
+        maxFeePerGas: "0x10",
+        maxPriorityFeePerGas: "0x1",
+      },
     });
 
     const fetched = await getRunHandler(new Request(`https://edict.example/api/runs/${initial.id}`, { headers: { cookie } }), initial.id, { config, runtime: () => api });
@@ -148,7 +163,13 @@ describe("run API HTTP boundaries", () => {
     const body = JSON.parse(text);
     expect(body.run.approved).toBe(true);
     expect(body.run.operations[0].preparedTxId).toBe("prepared-id");
-    expect(text).not.toContain("INTERNAL_UNSIGNED_SENTINEL");
+    expect(body.run.execution.preparationStatus).toBe("PREPARED_FOR_REVIEW");
+    expect(body.run.execution.transactionReview).toMatchObject({
+      preparedTransactionId: "prepared-id",
+      walletConfirmation: "NOT_REQUESTED",
+      calldataSemantics: "OPAQUE_SERVER_PREPARED",
+      walletRequest: { data: "0x1234", to: "0x3333333333333333333333333333333333333333" },
+    });
     expect(text).not.toContain("unsignedTransaction");
     expect(text).not.toContain("publicSignature");
     expect(text).not.toContain("challengeNonce");
@@ -226,7 +247,7 @@ describe("browser run reads", () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
-  it.each([createRunHandler, approvalChallengeHandler, approveRunHandler, cancelRunHandler])("retains exact origin validation for mutation handler %s", async (handler) => {
+  it.each([createRunHandler, approvalChallengeHandler, approveRunHandler, cancelRunHandler, prepareNextOperationHandler])("retains exact origin validation for mutation handler %s", async (handler) => {
     let constructed = 0;
     const options = { config, runtime: () => { constructed++; throw new Error("Unexpected runtime"); } };
     for (const origin of [null, "https://other.example", "null", `${config.trustedOrigin}/`]) {
@@ -237,5 +258,148 @@ describe("browser run reads", () => {
       expect(response.status).toBe(403);
     }
     expect(constructed).toBe(0);
+  });
+});
+
+const preparedOperation: PreparedOperation = {
+  txId: "prepared-1",
+  executionMode: "client-broadcast",
+  transaction: {
+    from: TOKENIZER_ADDRESS,
+    to: "0x3333333333333333333333333333333333333333",
+    data: "0x1234",
+    value: "0x0",
+    nonce: "0x1",
+    chainId: "0xaa36a7",
+    type: "0x2",
+    gasLimit: "0x5208",
+    maxFeePerGas: "0x10",
+    maxPriorityFeePerGas: "0x1",
+    gasPrice: null,
+    normalizedChainId: "11155111",
+    rawUnsigned: {
+      from: TOKENIZER_ADDRESS,
+      to: "0x3333333333333333333333333333333333333333",
+      data: "0x1234",
+      value: "0x0",
+      nonce: "0x1",
+      chainId: "0xaa36a7",
+      type: "0x2",
+      gasLimit: "0x5208",
+      maxFeePerGas: "0x10",
+      maxPriorityFeePerGas: "0x1",
+    },
+  },
+};
+
+function preparingAdapter(result: Awaited<ReturnType<BrickkenServerAdapter["prepareTokenization"]>> = { ok: true, value: preparedOperation }) {
+  const prepareTokenization = vi.fn(async () => result);
+  const unused = async () => { throw new Error("unused"); };
+  return {
+    prepareTokenization,
+    value: {
+      prepareTokenization,
+      prepareWhitelist: unused,
+      prepareMint: unused,
+      confirmBroadcast: unused,
+      getTransactionStatus: unused,
+      getTokenInfo: unused,
+      getTokenizerInfo: unused,
+      getWhitelistStatus: unused,
+      getBalanceAndWhitelist: unused,
+      getNetworkInfo: unused,
+    } as unknown as BrickkenServerAdapter,
+  };
+}
+
+describe("explicit next-operation preparation API", () => {
+  async function setup(input: { enabled?: boolean; adapter?: ReturnType<typeof preparingAdapter> } = {}) {
+    const repository = new InMemoryExecutionRunRepository();
+    const api = createRuntime(undefined, repository);
+    const createdResponse = await createRunHandler(request(`${config.trustedOrigin}/api/runs`, { manifest: createValidRawManifest() }), { config, runtime: () => api });
+    const cookie = createdResponse.headers.get("set-cookie")!.split(";")[0]!;
+    const created = await api.runs.getRun("11111111-1111-4111-8111-111111111111");
+    const approved = await api.runs.approvePlan(created.id, created.revision, {
+      planHash: created.planHash,
+      approvedByWallet: created.requiredSigner.walletAddress,
+      proof: createApprovalProofFixture(created, "2026-09-04T12:00:00.000Z"),
+    });
+    const brickken = input.adapter ?? preparingAdapter();
+    const runtime: RunApiRuntime = {
+      ...api,
+      execution: new ExecutionOrchestrator({
+        repository,
+        runs: api.runs,
+        brickken: brickken.value,
+        writeGate: createPreparationOnlyBrickkenWriteGate(input.enabled ?? true),
+      }),
+    };
+    const options = { config, runtime: () => runtime };
+    const prepare = (body: unknown, suppliedCookie = cookie) => prepareNextOperationHandler(
+      request(`${config.trustedOrigin}/api/runs/${approved.id}/prepare`, body, { cookie: suppliedCookie }),
+      approved.id,
+      options,
+    );
+    return { repository, approved, brickken, prepare };
+  }
+
+  it("accepts only expectedRevision, advances exactly two revisions, and returns an immutable review without prompting", async () => {
+    const value = await setup();
+    const response = await value.prepare({ expectedRevision: value.approved.revision });
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    const body = JSON.parse(text);
+    expect(body.run.revision).toBe(value.approved.revision + 2);
+    expect(body.run.execution).toMatchObject({
+      preparationStatus: "PREPARED_FOR_REVIEW",
+      transactionReview: {
+        walletConfirmation: "NOT_REQUESTED",
+        calldataSemantics: "OPAQUE_SERVER_PREPARED",
+        walletRequest: { from: TOKENIZER_ADDRESS, to: "0x3333333333333333333333333333333333333333", data: "0x1234" },
+      },
+    });
+    expect(body.run.operations[0].stage).toBe("PREPARED");
+    expect(text).not.toMatch(/unsignedTransaction|rawUnsigned|publicSignature|challengeNonce|events|observations/);
+    expect(value.brickken.prepareTokenization).toHaveBeenCalledOnce();
+  });
+
+  it("authorizes before body parsing and does not let the browser choose an operation", async () => {
+    const value = await setup();
+    expect((await value.prepare({ expectedRevision: value.approved.revision }, "")).status).toBe(403);
+    expect((await value.prepare({ expectedRevision: value.approved.revision, operation: "MINT" })).status).toBe(400);
+    expect(value.brickken.prepareTokenization).not.toHaveBeenCalled();
+  });
+
+  it("allows one CAS winner and one Brickken call for concurrent submissions", async () => {
+    const value = await setup();
+    const responses = await Promise.all([
+      value.prepare({ expectedRevision: value.approved.revision }),
+      value.prepare({ expectedRevision: value.approved.revision }),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    expect(value.brickken.prepareTokenization).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed before mutation when preparation is disabled", async () => {
+    const value = await setup({ enabled: false });
+    const before = await value.repository.getById(value.approved.id);
+    const response = await value.prepare({ expectedRevision: value.approved.revision });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ ok: false, error: { code: "PREPARATION_DISABLED" } });
+    expect(await value.repository.getById(value.approved.id)).toEqual(before);
+    expect(value.brickken.prepareTokenization).not.toHaveBeenCalled();
+  });
+
+  it("turns an ambiguous adapter result into durable reconciliation without leaking upstream detail", async () => {
+    const sensitive = "credential-shaped upstream detail";
+    const adapter = preparingAdapter({ ok: false, error: new BrickkenAdapterError("INVALID_EXTERNAL_RESPONSE", sensitive) });
+    const value = await setup({ adapter });
+    const response = await value.prepare({ expectedRevision: value.approved.revision });
+    expect(response.status).toBe(503);
+    expect(JSON.stringify(await response.json())).not.toContain(sensitive);
+    const durable = await value.repository.getById(value.approved.id);
+    expect(durable).toMatchObject({ status: "RECONCILIATION_REQUIRED" });
+    expect(durable.operations[0].stage).toBe("PREPARE_UNKNOWN");
+    expect(adapter.prepareTokenization).toHaveBeenCalledOnce();
   });
 });

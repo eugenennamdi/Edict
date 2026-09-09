@@ -26,6 +26,7 @@ async function view(): Promise<PlanningView> {
       status: "AWAITING_APPROVAL",
       terminalOutcome: null,
       approved: false,
+      execution: null,
       operations: [
         { id: "operation-1", kind: "TOKENIZE", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
         { id: "operation-2", kind: "WHITELIST", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
@@ -70,12 +71,18 @@ describe("approval readiness UI", () => {
         approved: true,
         phase: "TOKENIZATION",
         status: "PREPARING",
+        execution: {
+          projectionVersion: "1.0",
+          nextOperation: { id: "operation-1", kind: "TOKENIZE", sequence: 1, name: "Create tokenization" },
+          preparationStatus: "READY_FOR_PREPARATION",
+          transactionReview: null,
+        },
         revision: 2,
       },
     };
     const html = renderToStaticMarkup(createElement(ApprovalReadinessSection, { view: approved }));
     expect(html).toContain("Plan approval recorded");
-    expect(html).toContain("Execution is not enabled in this phase");
+    expect(html).toContain("Wallet confirmation and transaction submission remain unavailable");
     expect(html).not.toContain("Select wallet");
     expect(html).not.toContain("Allow account access");
     expect(html).not.toContain("Check wallet again");

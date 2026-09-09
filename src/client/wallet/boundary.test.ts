@@ -30,7 +30,7 @@ describe("wallet trust-boundary invariants", () => {
     }
   });
 
-  it("keeps the callable route inventory at the five approved non-execution routes", () => {
+  it("keeps the callable route inventory at the six approved preparation-only routes", () => {
     const routes = filesBelow(join(root, "src/app/api"))
       .filter((path) => path.endsWith("route.ts"))
       .map((path) => relative(join(root, "src/app"), path))
@@ -39,6 +39,7 @@ describe("wallet trust-boundary invariants", () => {
       "api/runs/[runId]/approval-challenges/route.ts",
       "api/runs/[runId]/approval/route.ts",
       "api/runs/[runId]/cancel/route.ts",
+      "api/runs/[runId]/prepare/route.ts",
       "api/runs/[runId]/route.ts",
       "api/runs/route.ts",
     ]);
@@ -59,6 +60,17 @@ describe("wallet trust-boundary invariants", () => {
     const gateway = source("src/client/run-api/approval-gateway.ts");
     expect(gateway).not.toMatch(/wallet\/(?:discovery|session|execution)|eth_signTypedData_v4|eth_sendTransaction|window\.|document\.|Storage/u);
     expect(gateway).not.toMatch(/capability|cookie|challenge.*(?:mac|purpose)|console\./iu);
+  });
+
+  it("keeps the preparation review UI outside every wallet and broadcast boundary", () => {
+    const review = [
+      source("src/components/execution-review-section.tsx"),
+      source("src/components/run-planning.ts"),
+    ].join("\n");
+    expect(review).not.toMatch(/client\/wallet\/execution|eth_sendTransaction|eth_sign|requestExplicit|window\.ethereum|localStorage|sessionStorage|document\.cookie/u);
+    expect(review).not.toMatch(/BRICKKEN_API_KEY|DATABASE_URL|EDICT_RUN_SECURITY_SECRET|console\./u);
+    expect(review.match(/\/prepare`/gu)).toHaveLength(1);
+    expect(review).not.toMatch(/\/broadcast|\/confirm|\/poll|\/read-back|\/receipt/u);
   });
 
   it("keeps Phase E signing inside the approved coordinator and excludes execution, persistence, and secrets", () => {

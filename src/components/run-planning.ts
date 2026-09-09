@@ -32,6 +32,8 @@ const messages = {
   NOT_FOUND: "This run is unavailable.",
   REVISION_CONFLICT: "The run changed. Refresh it before taking another action.",
   STATE_CONFLICT: "The run no longer allows this action. Refresh its current state.",
+  PREPARATION_DISABLED: "Transaction preparation is not enabled in this environment.",
+  PREPARATION_UNCONFIRMED: "Transaction preparation could not be confirmed. Refresh the record before taking another action.",
   SERVICE_UNAVAILABLE: "Edict is temporarily unavailable. Your displayed run has not been updated.",
   INVALID_RESPONSE: "Edict could not read the response. No result has been confirmed.",
   NETWORK_ERROR: "Edict could not confirm the request. Check your connection. If a run is displayed, refresh it before trying again.",
@@ -128,6 +130,41 @@ export function readProjection(
 }
 
 type Transport = (path: string, options: RequestInit) => Promise<Response>;
+const MAX_PUBLIC_RESPONSE_BYTES = 768 * 1024;
+
+async function readBoundedResponseJson(response: Response): Promise<unknown> {
+  const declared = response.headers.get("content-length");
+  if (
+    declared !== null &&
+    (!/^\d+$/.test(declared) || Number(declared) > MAX_PUBLIC_RESPONSE_BYTES)
+  ) throw new Error("INVALID_RESPONSE");
+  if (response.body === null) throw new Error("INVALID_RESPONSE");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      length += result.value.byteLength;
+      if (length > MAX_PUBLIC_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new Error("INVALID_RESPONSE");
+      }
+      chunks.push(result.value);
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 async function request(transport: Transport, path: string, body?: unknown): Promise<unknown> {
   let response: Response;
   try {
@@ -140,11 +177,12 @@ async function request(transport: Transport, path: string, body?: unknown): Prom
   let json: unknown;
   try {
     if (response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json") throw new Error();
-    json = await response.json();
+    json = await readBoundedResponseJson(response);
   } catch { throw new PlanningError("INVALID_RESPONSE"); }
   if (!response.ok) {
     const parsed = z.object({ ok: z.literal(false), error: z.object({ code: z.enum([
       "API_DISABLED", "BAD_REQUEST", "FORBIDDEN", "NOT_FOUND", "REVISION_CONFLICT", "STATE_CONFLICT", "SERVICE_UNAVAILABLE",
+      "PREPARATION_DISABLED", "PREPARATION_UNCONFIRMED",
     ]) }) }).safeParse(json);
     const issues = issuesSchema.safeParse((json as { error?: { issues?: unknown } })?.error?.issues);
     throw new PlanningError(parsed.success ? parsed.data.error.code : "INVALID_RESPONSE",
@@ -155,15 +193,16 @@ async function request(transport: Transport, path: string, body?: unknown): Prom
 
 export type WorkspaceState = {
   view: PlanningView | null;
-  pending: "create" | "recover" | "refresh" | "cancel" | null;
+  pending: "create" | "recover" | "refresh" | "cancel" | "prepare" | null;
   error: string | null;
   notice: string | null;
   unavailable: boolean;
   issues: readonly PlanningIssue[];
   errorCode: ErrorCode | null;
   retrievedAt: string | null;
+  preparationUnconfirmed: boolean;
 };
-export const initialWorkspace: WorkspaceState = { view: null, pending: null, error: null, notice: null, unavailable: false, issues: [], errorCode: null, retrievedAt: null };
+export const initialWorkspace: WorkspaceState = { view: null, pending: null, error: null, notice: null, unavailable: false, issues: [], errorCode: null, retrievedAt: null, preparationUnconfirmed: false };
 
 // One active run and one in-flight action; the synchronous guard also catches clicks before React renders.
 export function createPlanningWorkspace(
@@ -176,9 +215,15 @@ export function createPlanningWorkspace(
   let activeRecoveryId: string | null = null;
   const update = (patch: Partial<WorkspaceState>) => { state = { ...state, ...patch }; publish(state); };
   const runPath = (view: PlanningView) => `/api/runs/${view.run.id}`;
+  const canPrepare = (view: PlanningView) =>
+    !state.preparationUnconfirmed &&
+    view.run.approved &&
+    view.run.terminalOutcome === null &&
+    view.run.execution?.preparationStatus === "READY_FOR_PREPARATION";
   async function act(action: NonNullable<WorkspaceState["pending"]>, form?: Pick<FormData, "get">) {
     if (state.pending || state.unavailable || (action === "create" ? state.view !== null : state.view === null)) return;
     if (action === "cancel" && !state.view?.run.canCancel) return;
+    if (action === "prepare" && (!state.view || !canPrepare(state.view))) return;
     update({ pending: action, error: null, notice: null, issues: [], errorCode: null });
     const previous = state.view;
     try {
@@ -194,7 +239,51 @@ export function createPlanningWorkspace(
         try { options.onCreated?.(view.run.id); } catch { /* A confirmed run remains valid if client navigation fails. */ }
       } else if (previous) {
         if (action === "refresh") {
-          update({ view: readProjection(await request(transport, runPath(previous)), previous), notice: "Run refreshed from the server." });
+          update({ view: readProjection(await request(transport, runPath(previous)), previous), notice: "Run refreshed from the server.", preparationUnconfirmed: false });
+        } else if (action === "prepare") {
+          try {
+            const body = await request(transport, `${runPath(previous)}/prepare`, {
+              expectedRevision: previous.run.revision,
+            });
+            const prepared = mergeDurableRun(previous, parsePublicRunMutationResponse(body));
+            if (
+              prepared.run.revision !== previous.run.revision + 2 ||
+              prepared.run.execution?.preparationStatus !== "PREPARED_FOR_REVIEW" ||
+              prepared.run.execution.transactionReview === null
+            ) throw new PlanningError("INVALID_RESPONSE");
+            update({
+              view: prepared,
+              notice: "Transaction prepared for review. Wallet confirmation has not been requested.",
+              preparationUnconfirmed: false,
+            });
+          } catch (error) {
+            const owned = error instanceof PlanningError ? error : new PlanningError("INVALID_RESPONSE");
+            if (owned.code === "PREPARATION_DISABLED") throw owned;
+            try {
+              const durable = readProjection(
+                await request(transport, runPath(previous)),
+                previous,
+              );
+              const recoveredPrepared =
+                durable.run.execution?.preparationStatus === "PREPARED_FOR_REVIEW";
+              update({
+                view: durable,
+                notice: recoveredPrepared
+                  ? "Transaction preparation was recovered from the durable record. Wallet confirmation has not been requested."
+                  : "The durable preparation state is now shown. Review it before taking another action.",
+                error: recoveredPrepared ? null : messages.PREPARATION_UNCONFIRMED,
+                errorCode: recoveredPrepared ? null : "PREPARATION_UNCONFIRMED",
+                preparationUnconfirmed: !recoveredPrepared,
+              });
+            } catch {
+              update({
+                error: messages.PREPARATION_UNCONFIRMED,
+                errorCode: "PREPARATION_UNCONFIRMED",
+                notice: null,
+                preparationUnconfirmed: true,
+              });
+            }
+          }
         } else {
           try {
             const body = await request(transport, `${runPath(previous)}/cancel`, { expectedRevision: previous.run.revision });
@@ -216,14 +305,14 @@ export function createPlanningWorkspace(
     if (!publicRunIdSchema.safeParse(runId).success) {
       recoveryGeneration += 1;
       activeRecoveryId = null;
-      update({ view: null, pending: null, error: messages.INVALID_ROUTE, errorCode: "INVALID_ROUTE", notice: null, issues: [], unavailable: false, retrievedAt: null });
+      update({ view: null, pending: null, error: messages.INVALID_ROUTE, errorCode: "INVALID_ROUTE", notice: null, issues: [], unavailable: false, retrievedAt: null, preparationUnconfirmed: false });
       return;
     }
     if (state.pending !== null && !(state.pending === "recover" && activeRecoveryId !== runId)) return;
     if (state.pending === "recover" && activeRecoveryId === runId) return;
     const generation = ++recoveryGeneration;
     activeRecoveryId = runId;
-    update({ view: null, pending: "recover", error: null, errorCode: null, notice: null, issues: [], unavailable: false, retrievedAt: null });
+      update({ view: null, pending: "recover", error: null, errorCode: null, notice: null, issues: [], unavailable: false, retrievedAt: null, preparationUnconfirmed: false });
     try {
       const view = readProjection(
         await request(transport, `/api/runs/${runId}`),
@@ -232,7 +321,7 @@ export function createPlanningWorkspace(
         runId,
       );
       if (generation !== recoveryGeneration) return;
-      update({ view, retrievedAt: new Date().toISOString() });
+      update({ view, retrievedAt: new Date().toISOString(), preparationUnconfirmed: false });
     } catch (error) {
       if (generation !== recoveryGeneration) return;
       const owned = error instanceof PlanningError ? error : new PlanningError("INVALID_RESPONSE");
@@ -252,11 +341,12 @@ export function createPlanningWorkspace(
       update({
         view,
         notice: view.run.approved
-          ? "Plan approval recorded. Execution is not enabled in this phase."
+          ? "Plan approval recorded. Transaction preparation is available only when the durable run marks TOKENIZE ready."
           : "The run changed. Review its durable state before taking another action.",
         error: null,
         errorCode: null,
         retrievedAt: new Date().toISOString(),
+        preparationUnconfirmed: false,
       });
       return true;
     } catch {
@@ -274,6 +364,7 @@ export function createPlanningWorkspace(
     recover,
     refresh: () => act("refresh"),
     cancel: () => act("cancel"),
+    prepareNextOperation: () => act("prepare"),
     acceptDurableRun,
   };
 }

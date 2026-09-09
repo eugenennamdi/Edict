@@ -14,6 +14,7 @@ export interface ServerEnv {
   readonly EDICT_RUN_SECURITY_SECRET?: string;
   readonly EDICT_RUN_API_ENABLED?: string;
   readonly EDICT_TRUSTED_ORIGIN?: string;
+  readonly EDICT_TRANSACTION_PREPARATION_ENABLED?: string;
 }
 
 export function getServerEnv(): ServerEnv {
@@ -34,5 +35,7 @@ export function getServerEnv(): ServerEnv {
     EDICT_RUN_SECURITY_SECRET: process.env.EDICT_RUN_SECURITY_SECRET || undefined,
     EDICT_RUN_API_ENABLED: process.env.EDICT_RUN_API_ENABLED || undefined,
     EDICT_TRUSTED_ORIGIN: process.env.EDICT_TRUSTED_ORIGIN || undefined,
+    EDICT_TRANSACTION_PREPARATION_ENABLED:
+      process.env.EDICT_TRANSACTION_PREPARATION_ENABLED || undefined,
   };
 }

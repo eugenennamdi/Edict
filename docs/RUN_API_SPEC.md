@@ -2,21 +2,32 @@
 
 ## Status and public surface
 
-**DECISION** — Phase 6 is complete. Its only callable routes are:
+**DECISION** — Phase 10 execution activation adds one narrowly scoped route. The current callable routes are:
 
 - `POST /api/runs`
 - `GET /api/runs/[runId]`
 - `POST /api/runs/[runId]/approval-challenges`
 - `POST /api/runs/[runId]/approval`
 - `POST /api/runs/[runId]/cancel`
+- `POST /api/runs/[runId]/prepare`
 
-**DECISION** — Prepare, wallet prompt/result, confirmation, polling, read-back and final-verification methods exist only on the injected internal orchestration boundary. They are deliberately not public routes in Phase 6.
+**DECISION** — `POST /api/runs/[runId]/prepare` is the only public execution-effect route. It exists because preparation is a durable mutation plus one server-only Brickken sandbox request and therefore cannot be exposed through GET or folded into approval/cancellation without mixing authorities. Its strict body is exactly `{ "expectedRevision": positiveInteger }`; the browser cannot supply an operation, method, signer, chain, hashes, transaction fields, or Brickken payload. Exact trusted-origin and run-capability checks precede body parsing and repository lookup.
+
+**DECISION** — The server re-reads the durable run and permits only an approved, nonterminal `TOKENIZATION/PREPARING` run whose first operation is `TOKENIZE/NOT_STARTED`. One `BEGIN_PREPARE` CAS winner advances revision `N→N+1`, the write gate is checked again, one `newTokenization` prepare-only request is made with `execute:false` and `client-broadcast`, and a valid result is persisted by a second CAS at `N+2`. A stale or concurrent request is `409 REVISION_CONFLICT`; an ineligible state is `409 STATE_CONFLICT`; disabled preparation is `404 PREPARATION_DISABLED`; an indeterminate or malformed preparation is `503 PREPARATION_UNCONFIRMED` and leaves durable reconciliation state. Raw upstream errors are never returned.
+
+**DECISION** — The public `execution` projection is strict and server-derived. It reports the exact next TOKENIZE operation and one of `READY_FOR_PREPARATION`, `PREPARATION_PENDING`, `PREPARED_FOR_REVIEW`, or `PREPARATION_UNCONFIRMED`. Only a durably prepared operation includes `PreparedTransactionReviewV1`, binding run/revision, manifest and plan hashes, approval revision, operation, signer, sandbox/Sepolia, Brickken action/mode, prepared ID, normalized exact wallet request, chain precondition, and a canonical SHA-256 fingerprint. It omits the persisted raw unsigned object, raw Brickken response, proof/events/observations, credentials and capabilities.
+
+**DECISION** — GET remains read-only. Page mount, refresh, direct `/records/[runId]` recovery, and a second authorized tab only reconstruct the durable projection and never prepare automatically. After a lost POST response, the browser performs at most one GET; it never retries preparation. A stranded `PREPARE_INTENT` or `PREPARE_UNKNOWN` state blocks another prepare pending operator reconciliation.
+
+**DECISION** — This route stops before the separate durable wallet-prompt transition. There is no public prompt, wallet-result, broadcast, confirmation, polling, read-back or receipt route, and the production wallet semantic policy remains deny-all.
+
+**HISTORICAL DECISION** — In Phase 6, prepare, wallet prompt/result, confirmation, polling, read-back and final-verification methods existed only on the injected internal orchestration boundary. Phase 10 exposes preparation only; every later method remains internal and uncomposed.
 
 **DECISION** — Phase 7 did not expand this surface. Phase 9C supplies the existing browser coordinator with a dormant production same-origin gateway for GET, approval challenge and approval submission; it adds no route or UI composition. Brickken writes and transaction semantic authorization remain disabled. See [`WALLET_EXECUTION_SPEC.md`](WALLET_EXECUTION_SPEC.md).
 
-**DECISION** — Phase 8 also leaves this surface unchanged at exactly five routes. `ExecutionRunV3` evidence is persisted only through internal validated transitions; the existing run projection omits raw unsigned transactions and detailed evidence. The compatibility harness lives under `tools/phase8-harness/`, is excluded from the production build, and is not a Next.js route. Production semantic authorization and Brickken writes remain disabled.
+**HISTORICAL DECISION** — Phase 8 left this surface unchanged at exactly five routes. `ExecutionRunV3` evidence is persisted only through internal validated transitions; the existing run projection omitted raw unsigned transactions and detailed evidence. The compatibility harness lives under `tools/phase8-harness/`, is excluded from the production build, and is not a Next.js route. At that checkpoint, production semantic authorization and Brickken writes remained disabled.
 
-**DECISION** — The durable recovery checkpoint leaves the API surface at exactly five routes and adds the user page `/records/[runId]`. `POST /api/runs` and authorized `GET /api/runs/[runId]` now return the same independently complete strict planning record: the allowlisted public run projection, server-normalized manifest and complete server-derived seven-operation plan. A run ID remains only a locator; the selected HttpOnly run capability remains the authority.
+**HISTORICAL DECISION** — The durable recovery checkpoint left the API surface at exactly five routes and added the user page `/records/[runId]`. `POST /api/runs` and authorized `GET /api/runs/[runId]` return the same independently complete strict planning record: the allowlisted public run projection, server-normalized manifest and complete server-derived seven-operation plan. A run ID remains only a locator; the selected HttpOnly run capability remains the authority.
 
 ## Deployment and request gates
 
@@ -52,8 +63,8 @@
 
 ## Durable orchestration
 
-**DECISION** — Every mutation supplies an expected revision and commits through repository compare-and-swap. Prepare and confirmation check the write gate before any mutation, validate revision/approval/order, persist intent, check the gate immediately before the injected adapter, and call it at most once. Production composition for the callable Phase 6 routes constructs no write-capable Brickken adapter.
+**DECISION** — Every mutation supplies an expected revision and commits through repository compare-and-swap. Prepare and confirmation check the write gate before any mutation, validate revision/approval/order, persist intent, check the gate immediately before the injected adapter, and call it at most once. Current production composition constructs the server-only adapter only after the general API deployment gate passes; the independent preparation gate permits only `PREPARE`, while confirmation remains refused.
 
 **DECISION** — One prepare-intent CAS wins. A stranded intent is not retried automatically. A prepared response is returned only after its complete unsigned transaction is durable. Indeterminate prepare/broadcast outcomes require manual reconciliation. Once a transaction hash exists, no replacement prepare, wallet prompt or broadcast is permitted. Confirmation retries use only the persisted `{txId, txHash}` pair; pending operations are poll-only.
 
-**OPEN QUESTION** — No authenticated Brickken write has occurred. Signer approval, tokenizer licensing, credits, prepared write payloads, wallet compatibility, finality and write behavior remain unverified. The write gate must remain disabled until the corresponding human-authorized validation is complete.
+**OPEN QUESTION** — No authenticated Brickken write has occurred. Signer approval, tokenizer licensing, credits, live prepared write payloads, wallet compatibility, finality and write behavior remain unverified. Preparation must remain operator-disabled until separately authorized; all post-preparation actions remain structurally unavailable.

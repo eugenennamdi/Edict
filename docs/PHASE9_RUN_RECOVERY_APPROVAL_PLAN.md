@@ -1,5 +1,7 @@
 # Durable run recovery and approval activation plan
 
+> Historical scope note: Phase 9 correctly ended with five API routes and no execution. Phase 10 subsequently adds only `POST /api/runs/[runId]/prepare`; the canonical product route remains `/records/[runId]`. All Phase 9 route-count statements below describe that earlier approved checkpoint.
+
 **Status: architecture approved with amendments. Public recovery, `/records/[runId]` durable routing, Phase C approval transport/uncertainty semantics, Phase D provider readiness, and Phase E explicit approval signing plus durable recording are implemented. The product stops at Approval recorded; transaction execution remains unauthorized.**
 
 Repository assessment: 2026-09-08 at commit `95ac92d` on branch `feat/run-recovery-approval`. The working tree was clean before this document was created. This plan is based on the committed code and documentation; it does not authorize application code, dependency, migration, live-wallet, Brickken, RPC, or transaction-execution changes.

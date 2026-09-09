@@ -14,6 +14,7 @@ import { ExecutionRunService } from "../execution/run-service";
 import { persistedConfirmationPair } from "../execution/transitions";
 import type { ExecutionRun, OperationKind } from "../execution/types";
 import { OrchestrationError } from "./errors";
+import { nextPreparationOperation } from "./preparation-review";
 import type { BrickkenWriteGate } from "./write-gate";
 
 export interface ExecutionOrchestratorDependencies {
@@ -111,6 +112,17 @@ export class ExecutionOrchestrator {
 
   constructor(deps: ExecutionOrchestratorDependencies) {
     this.#deps = deps;
+  }
+
+  async prepareNextOperation(
+    runId: string,
+    expectedRevision: number,
+  ): Promise<ExecutionRun> {
+    this.#deps.writeGate.assertEnabled("PREPARE");
+    const current = await this.#deps.repository.getById(runId);
+    assertRevision(current, expectedRevision);
+    const operation = nextPreparationOperation(current);
+    return this.prepareOperation(runId, expectedRevision, operation.kind);
   }
 
   async prepareOperation(

@@ -32,6 +32,12 @@
 
 **DECISION** — Phase 9C adds a client-only, same-origin approval HTTP gateway behind the existing coordinator interface. It performs bounded strict parsing and no retries. Only an independent durable GET proving the same authority tuple at the exact post-approval revision and `TOKENIZATION/PREPARING` state can establish recorded approval. Submission uncertainty permits at most one read-only reconciliation GET; it cannot trigger another challenge, signature or approval mutation. The gateway remains uncomposed from React and provider discovery.
 
+**DECISION — Phase 10 preparation/review boundary:** The canonical `/records/[runId]` page may explicitly invoke `POST /api/runs/[runId]/prepare` only when the server projection identifies TOKENIZE as ready. Preparation is not read-only: it performs the existing two-CAS `PREPARE_INTENT → PREPARED` sequence around one server-only Brickken `newTokenization` preparation request. The production gate is independently opt-in through server-only `EDICT_TRANSACTION_PREPARATION_ENABLED=1` and authorizes `PREPARE` only; it always refuses `CONFIRM_BROADCAST`.
+
+**DECISION** — The returned `PreparedTransactionReviewV1` is an immutable, strict display contract over the exact persisted transaction. Its fingerprint binds the run, current revision, approval revision, manifest/plan hashes, TOKENIZE operation, signer, sandbox/Sepolia, Brickken action and normalized wallet request. Calldata is deliberately labeled opaque because no production destination/selector allowlist has been authorized. This review fingerprint does not compete with or authorize `WalletIntentV1`: the latter remains rederived only after a future separate durable wallet-prompt revision.
+
+**DECISION** — Phase 10 stops at `TOKENIZATION/AWAITING_WALLET` with `TOKENIZE/PREPARED` and `walletConfirmation: NOT_REQUESTED`. No route or UI can record the prompt, import the wallet execution coordinator, call `eth_sendTransaction`, persist a blockchain hash, confirm, poll, reconcile broadcast, read back, advance to whitelist, or issue a receipt. Mount/recovery/refresh are GET-only and never initiate preparation.
+
 
 **VERIFIED** — On 2026-09-04, the Neon migration completed without error and the explicitly opted-in live database test passed create, read, atomic compare-and-swap update, stale-revision refusal, and cleanup of its uniquely created run. Durable persistence is verified. The test made no Brickken request or blockchain operation and emitted no credential.
 
@@ -56,7 +62,7 @@ Browser UI
   └─ run status / verification / receipt viewer
           │ public run commands and txHash only
           ▼
-Next.js route handlers (same origin; Phase 8 still exposes create/read/approve/cancel only)
+Next.js route handlers (same origin; current surface adds preparation only)
   ├─ domain: validate, canonicalize, plan, hashes
   ├─ orchestrator: internal-only effect methods + approval/CAS/write gates
   ├─ brickken.server: Edict-owned server adapter wrapping pinned SDK + Zod wire validation

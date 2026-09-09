@@ -7,6 +7,7 @@ export {
   cancelRunHandler,
   createRunHandler,
   getRunHandler,
+  prepareNextOperationHandler,
   type RunApiHandlerOptions,
 } from "./handlers";
 export { createRunApiRuntime, type RunApiRuntime } from "./runtime";

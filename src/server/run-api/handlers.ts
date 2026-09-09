@@ -6,12 +6,15 @@ import { z } from "zod";
 import {
   ExecutionError,
   RepositoryRevisionConflictError,
-  type ExecutionRun,
 } from "../execution";
+import {
+  BrickkenWritesDisabledError,
+  OrchestrationError,
+} from "../orchestration";
 import { SecurityTokenError } from "../security";
 import { runAccessCookieOptions, serializeRunAccessCookie } from "../security/run-access";
 import { readRunApiDeploymentConfig, type RunApiDeploymentConfig } from "./config";
-import { projectPublicPlanningRecord } from "./projection";
+import { projectPublicPlanningRecord, projectPublicRun } from "./projection";
 import { createRunApiRuntime, type RunApiRuntime } from "./runtime";
 
 const revisionSchema = z.number().int().positive();
@@ -36,6 +39,8 @@ type ErrorCode =
   | "NOT_FOUND"
   | "REVISION_CONFLICT"
   | "STATE_CONFLICT"
+  | "PREPARATION_DISABLED"
+  | "PREPARATION_UNCONFIRMED"
   | "SERVICE_UNAVAILABLE";
 
 function response(status: number, body: unknown, extraHeaders?: HeadersInit): Response {
@@ -123,38 +128,14 @@ async function readJson(request: Request, maximumBytes: number): Promise<unknown
   }
 }
 
-function projectRun(run: ExecutionRun) {
-  return {
-    id: run.id,
-    schemaVersion: run.schemaVersion,
-    manifestHash: run.manifestHash,
-    planHash: run.planHash,
-    environment: run.environment,
-    chainId: run.chainId,
-    requiredSigner: run.requiredSigner,
-    phase: run.phase,
-    status: run.status,
-    terminalOutcome: run.terminalOutcome,
-    approved: run.approval !== null,
-    operations: run.operations.map((operation) => ({
-      id: operation.id,
-      kind: operation.kind,
-      stage: operation.stage,
-      preparedTxId: operation.preparedTxId,
-      blockchainTxHash: operation.blockchainTxHash,
-      brickkenStatus: operation.brickkenStatus,
-      timeout: operation.timeout,
-    })),
-    receiptEligible: run.receiptEligible,
-    createdAt: run.createdAt,
-    updatedAt: run.updatedAt,
-    revision: run.revision,
-  };
-}
-
 function mapError(error: unknown): Response {
   if (error instanceof SecurityTokenError) return failure(403, "FORBIDDEN");
+  if (error instanceof BrickkenWritesDisabledError) return failure(404, "PREPARATION_DISABLED");
   if (error instanceof RepositoryRevisionConflictError) return failure(409, "REVISION_CONFLICT");
+  if (error instanceof OrchestrationError) {
+    if (error.code === "EXECUTION_INVARIANT_FAILED") return failure(409, "STATE_CONFLICT");
+    return failure(503, "PREPARATION_UNCONFIRMED");
+  }
   if (error instanceof ExecutionError) {
     if (error.code === "REPOSITORY_NOT_FOUND") return failure(404, "NOT_FOUND");
     if (error.code === "ILLEGAL_STATE_TRANSITION" || error.code === "INVALID_APPROVAL") {
@@ -235,7 +216,7 @@ export async function approveRunHandler(request: Request, runId: string, options
       approvedByWallet: proof.recoveredSigner,
       proof,
     });
-    return response(200, { ok: true, run: projectRun(approved) });
+    return response(200, { ok: true, run: await projectPublicRun(approved) });
   } catch (error) {
     return mapError(error);
   }
@@ -249,7 +230,31 @@ export async function cancelRunHandler(request: Request, runId: string, options?
     await authorize(request, runId, api, runAccessCookieOptions(guard.trustedOrigin, options?.nodeEnv).name);
     const body = revisionBodySchema.parse(await readJson(request, 1024));
     const cancelled = await api.runs.cancelRun(runId, body.expectedRevision);
-    return response(200, { ok: true, run: projectRun(cancelled) });
+    return response(200, { ok: true, run: await projectPublicRun(cancelled) });
+  } catch (error) {
+    return mapError(error);
+  }
+}
+
+export async function prepareNextOperationHandler(
+  request: Request,
+  runId: string,
+  options?: RunApiHandlerOptions,
+): Promise<Response> {
+  const guard = guardedConfig(request, options);
+  if (guard instanceof Response) return guard;
+  try {
+    const api = runtime(options);
+    await authorize(
+      request,
+      runId,
+      api,
+      runAccessCookieOptions(guard.trustedOrigin, options?.nodeEnv).name,
+    );
+    const body = revisionBodySchema.parse(await readJson(request, 1024));
+    if (!api.execution) throw new BrickkenWritesDisabledError();
+    const prepared = await api.execution.prepareNextOperation(runId, body.expectedRevision);
+    return response(200, { ok: true, run: await projectPublicRun(prepared) });
   } catch (error) {
     return mapError(error);
   }

@@ -22,6 +22,7 @@ const run: PublicRunProjection = {
   status: "AWAITING_APPROVAL",
   terminalOutcome: null,
   approved: false,
+  execution: null,
   operations: [
     { id: "operation-1", kind: "TOKENIZE", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
     { id: "operation-2", kind: "WHITELIST", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },

@@ -6,6 +6,7 @@ import { validateAssetManifestV1 } from "@/core/manifest";
 import { buildExecutionPlanV1 } from "@/core/execution-plan";
 import { createValidRawManifest, GOLDEN_MANIFEST_HASH, GOLDEN_PLAN_HASH } from "@/core/test-fixtures";
 import type { PublicRunProjection } from "@/shared/run";
+import { createPreparedTransactionReviewV1 } from "@/shared/wallet";
 import { creationRequest, createPlanningWorkspace, initialWorkspace, mergeDurableRun, readProjection, type WorkspaceState } from "./run-planning";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }) }));
@@ -30,8 +31,65 @@ async function projection() {
     id, schemaVersion: "2.0", manifestHash: plan.manifestHash, planHash: plan.planHash,
     environment: plan.environment, chainId: plan.chainId, requiredSigner: plan.requiredSigner,
     phase: "PLAN", status: "AWAITING_APPROVAL", terminalOutcome: null, approved: false,
+    execution: null,
     operations: ["TOKENIZE", "WHITELIST", "MINT"].map((kind) => ({ id: kind, kind, stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false })),
     receiptEligible: false, createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z", revision: 1,
+  } };
+}
+
+async function approvedProjection() {
+  const body = await projection();
+  return {
+    ...body,
+    run: {
+      ...body.run,
+      approved: true as const,
+      phase: "TOKENIZATION" as const,
+      status: "PREPARING" as const,
+      execution: {
+        projectionVersion: "1.0" as const,
+        nextOperation: { id: "TOKENIZE", kind: "TOKENIZE" as const, sequence: 1 as const, name: "Create tokenization" as const },
+        preparationStatus: "READY_FOR_PREPARATION" as const,
+        transactionReview: null,
+      },
+      revision: 2,
+    },
+  };
+}
+
+async function preparedProjection() {
+  const body = await approvedProjection();
+  const walletRequest = {
+    from: body.run.requiredSigner.walletAddress,
+    to: "0x3333333333333333333333333333333333333333",
+    data: "0x1234",
+    value: "0x0",
+    gas: "0x5208",
+    nonce: "0x1",
+    type: "0x2" as const,
+    maxFeePerGas: "0x10",
+    maxPriorityFeePerGas: "0x1",
+  };
+  const review = await createPreparedTransactionReviewV1({
+    reviewVersion: "1.0", runId: id, runRevision: 4,
+    manifestHash: body.run.manifestHash as `sha256:${string}`,
+    planHash: body.run.planHash as `sha256:${string}`,
+    approvalRevision: 1, environment: "sandbox", chainId: "11155111",
+    operation: { id: "TOKENIZE", kind: "TOKENIZE", sequence: 1 },
+    requiredSigner: body.run.requiredSigner.walletAddress,
+    brickken: { method: "newTokenization", executionMode: "client-broadcast" },
+    preparedTransactionId: "prepared-1", walletRequestVersion: "1.0", walletRequest,
+    chainRequirement: { mode: "PROVIDER_PRECONDITION", decimalChainId: "11155111", rpcChainId: "0xaa36a7" },
+    calldataSemantics: "OPAQUE_SERVER_PREPARED", walletConfirmation: "NOT_REQUESTED",
+  });
+  return { ...body, run: {
+    ...body.run,
+    status: "AWAITING_WALLET" as const,
+    execution: { ...body.run.execution, preparationStatus: "PREPARED_FOR_REVIEW" as const, transactionReview: review },
+    operations: body.run.operations.map((operation, index) => index === 0
+      ? { ...operation, stage: "PREPARED" as const, preparedTxId: "prepared-1" }
+      : operation) as typeof body.run.operations,
+    revision: 4,
   } };
 }
 function harness(
@@ -75,6 +133,12 @@ describe("run planning workspace", () => {
       approved: true,
       phase: "TOKENIZATION",
       status: "PREPARING",
+      execution: {
+        projectionVersion: "1.0",
+        nextOperation: { id: "TOKENIZE", kind: "TOKENIZE", sequence: 1, name: "Create tokenization" },
+        preparationStatus: "READY_FOR_PREPARATION",
+        transactionReview: null,
+      },
       revision: 2,
     } as PublicRunProjection;
     expect(mergeDurableRun(previous, approved).run).toMatchObject({ approved: true, revision: 2 });
@@ -88,7 +152,7 @@ describe("run planning workspace", () => {
     await h.workspace.create(form());
     expect(h.workspace.acceptDurableRun(approved)).toBe(true);
     expect(h.state().view?.run).toMatchObject({ approved: true, revision: 2 });
-    expect(h.state().notice).toContain("Execution is not enabled");
+    expect(h.state().notice).toContain("durable run marks TOKENIZE ready");
     expect(h.transport).toHaveBeenCalledTimes(1);
   });
 
@@ -112,6 +176,61 @@ describe("run planning workspace", () => {
     expect(h.state().pending).toBeNull();
     await h.workspace.create(form());
     expect(h.transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("prepares only from an explicit action, posts only the expected revision, and suppresses double clicks", async () => {
+    const approved = await approvedProjection();
+    const prepared = await preparedProjection();
+    let resolve!: (response: Response) => void;
+    const h = harness();
+    h.transport.mockResolvedValueOnce(Response.json(approved));
+    await h.workspace.recover(id);
+    expect(h.transport).toHaveBeenCalledTimes(1);
+    h.transport.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    const pending = h.workspace.prepareNextOperation();
+    await h.workspace.prepareNextOperation();
+    expect(h.transport).toHaveBeenCalledTimes(2);
+    expect(h.transport.mock.calls[1]?.[0]).toBe(`/api/runs/${id}/prepare`);
+    expect(JSON.parse(h.transport.mock.calls[1]?.[1].body as string)).toEqual({ expectedRevision: 2 });
+    resolve(Response.json({ ok: true, run: prepared.run }));
+    await pending;
+    expect(h.state().view?.run.revision).toBe(4);
+    expect(h.state().view?.run.execution?.preparationStatus).toBe("PREPARED_FOR_REVIEW");
+    expect(h.state().notice).toContain("Wallet confirmation has not been requested");
+  });
+
+  it("reconciles a lost preparation response with one GET and never retries the POST", async () => {
+    const approved = await approvedProjection();
+    const prepared = await preparedProjection();
+    const h = harness();
+    h.transport
+      .mockResolvedValueOnce(Response.json(approved))
+      .mockRejectedValueOnce(new Error("lost response"))
+      .mockResolvedValueOnce(Response.json(prepared));
+    await h.workspace.recover(id);
+    await h.workspace.prepareNextOperation();
+    expect(h.transport.mock.calls.map(([path]) => path)).toEqual([
+      `/api/runs/${id}`,
+      `/api/runs/${id}/prepare`,
+      `/api/runs/${id}`,
+    ]);
+    expect(h.state().view?.run.execution?.preparationStatus).toBe("PREPARED_FOR_REVIEW");
+    expect(h.state().notice).toContain("recovered from the durable record");
+  });
+
+  it("locks repeat preparation after an unconfirmed response and failed reconciliation", async () => {
+    const approved = await approvedProjection();
+    const h = harness();
+    h.transport
+      .mockResolvedValueOnce(Response.json(approved))
+      .mockRejectedValueOnce(new Error("lost response"))
+      .mockRejectedValueOnce(new Error("lost read"));
+    await h.workspace.recover(id);
+    await h.workspace.prepareNextOperation();
+    expect(h.state().preparationUnconfirmed).toBe(true);
+    expect(h.state().errorCode).toBe("PREPARATION_UNCONFIRMED");
+    await h.workspace.prepareNextOperation();
+    expect(h.transport).toHaveBeenCalledTimes(3);
   });
 
   it("navigates to the canonical route only after a strictly confirmed create", async () => {
@@ -328,14 +447,15 @@ describe("run planning workspace", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("keeps planning transport limited to create, recover, and cancel without approval or execution calls", () => {
+  it("keeps planning transport limited to the approved run routes without wallet execution calls", () => {
     const paths = ["src/app/page.tsx", "src/app/records/[runId]/page.tsx", "src/components/run-planning.ts", "src/components/run-planning-workspace.tsx"];
     const source = paths.map((path) => readFileSync(path, "utf8")).join("\n");
-    expect(source).not.toMatch(/approval-challenges|\/api\/runs\/[^\s"'`]*\/approval|\/prepare|\/broadcast|\/confirm|\/poll|eth_requestAccounts|eth_signTypedData|eth_sendTransaction|localStorage|sessionStorage|document\.cookie/);
+    expect(source).not.toMatch(/approval-challenges|\/api\/runs\/[^\s"'`]*\/approval|\/broadcast|\/confirm|\/poll|eth_requestAccounts|eth_signTypedData|eth_sendTransaction|localStorage|sessionStorage|document\.cookie/);
     expect(source).not.toMatch(/from ["'].*(?:server|client\/wallet|hashing)[/"']|buildExecutionPlan|crypto\.subtle|BRICKKEN_API_KEY|DATABASE_URL/);
     expect(source.match(/\/api\/runs/g)).toHaveLength(3);
     expect(source).toContain("router.replace(`/records/${createdRunId}`)");
     expect(source).not.toContain("router.replace(`/runs/");
     expect(source).toContain("}/cancel`");
+    expect(source).toContain("}/prepare`");
   });
 });
