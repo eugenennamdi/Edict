@@ -55,6 +55,30 @@ function planningRun(run: PublicRunProjection): PlanningView["run"] {
   });
 }
 
+export function mergeDurableRun(
+  previous: PlanningView,
+  candidate: PublicRunProjection,
+): PlanningView {
+  try {
+    const run = planningRun(parsePublicRunMutationResponse({ ok: true, run: candidate }));
+    if (
+      run.id !== previous.run.id ||
+      run.revision < previous.run.revision ||
+      run.manifestHash !== previous.run.manifestHash ||
+      run.planHash !== previous.run.planHash ||
+      run.environment !== previous.run.environment ||
+      run.chainId !== previous.run.chainId ||
+      run.requiredSigner.role !== previous.run.requiredSigner.role ||
+      run.requiredSigner.walletAddress !== previous.run.requiredSigner.walletAddress ||
+      previous.plan.manifestHash !== run.manifestHash ||
+      previous.plan.planHash !== run.planHash
+    ) throw new Error("INVALID_RESPONSE");
+    return Object.freeze({ run, manifest: previous.manifest, plan: previous.plan });
+  } catch {
+    throw new PlanningError("INVALID_RESPONSE");
+  }
+}
+
 // Accept only the strict public DTO. Browser parsing validates transport shape;
 // the server remains authoritative for manifest normalization, plan derivation, and hashes.
 export function readProjection(
@@ -221,10 +245,35 @@ export function createPlanningWorkspace(
     }
   }
 
+  function acceptDurableRun(run: PublicRunProjection): boolean {
+    if (!state.view) return false;
+    try {
+      const view = mergeDurableRun(state.view, run);
+      update({
+        view,
+        notice: view.run.approved
+          ? "Plan approval recorded. Execution is not enabled in this phase."
+          : "The run changed. Review its durable state before taking another action.",
+        error: null,
+        errorCode: null,
+        retrievedAt: new Date().toISOString(),
+      });
+      return true;
+    } catch {
+      update({
+        error: messages.INVALID_RESPONSE,
+        errorCode: "INVALID_RESPONSE",
+        notice: null,
+      });
+      return false;
+    }
+  }
+
   return {
     create: (form: Pick<FormData, "get">) => act("create", form),
     recover,
     refresh: () => act("refresh"),
     cancel: () => act("cancel"),
+    acceptDurableRun,
   };
 }

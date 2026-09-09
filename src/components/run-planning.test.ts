@@ -5,7 +5,8 @@ import { createElement } from "react";
 import { validateAssetManifestV1 } from "@/core/manifest";
 import { buildExecutionPlanV1 } from "@/core/execution-plan";
 import { createValidRawManifest, GOLDEN_MANIFEST_HASH, GOLDEN_PLAN_HASH } from "@/core/test-fixtures";
-import { creationRequest, createPlanningWorkspace, initialWorkspace, readProjection, type WorkspaceState } from "./run-planning";
+import type { PublicRunProjection } from "@/shared/run";
+import { creationRequest, createPlanningWorkspace, initialWorkspace, mergeDurableRun, readProjection, type WorkspaceState } from "./run-planning";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }) }));
 
@@ -64,6 +65,31 @@ describe("run planning workspace", () => {
     expect(() => readProjection({ ...body, capability: "INTERNAL_SENTINEL" })).toThrow();
     expect(() => readProjection({ ...body, run: { ...body.run, events: [] } })).toThrow();
     expect(() => readProjection({ ...body, plan: { ...body.plan, internal: true } })).toThrow();
+  });
+
+  it("accepts only a monotonic same-authority durable approval result into the planning view", async () => {
+    const body = await projection();
+    const previous = readProjection(body);
+    const approved = {
+      ...body.run,
+      approved: true,
+      phase: "TOKENIZATION",
+      status: "PREPARING",
+      revision: 2,
+    } as PublicRunProjection;
+    expect(mergeDurableRun(previous, approved).run).toMatchObject({ approved: true, revision: 2 });
+    expect(() => mergeDurableRun(previous, {
+      ...approved,
+      planHash: `sha256:${"0".repeat(64)}`,
+    })).toThrow();
+
+    const h = harness();
+    h.transport.mockResolvedValueOnce(Response.json(body, { status: 201 }));
+    await h.workspace.create(form());
+    expect(h.workspace.acceptDurableRun(approved)).toBe(true);
+    expect(h.state().view?.run).toMatchObject({ approved: true, revision: 2 });
+    expect(h.state().notice).toContain("Execution is not enabled");
+    expect(h.transport).toHaveBeenCalledTimes(1);
   });
 
   it("suppresses duplicate create submissions and sends only a same-origin JSON request", async () => {

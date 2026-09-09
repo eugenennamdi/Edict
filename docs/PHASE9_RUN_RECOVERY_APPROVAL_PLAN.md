@@ -1,6 +1,6 @@
 # Durable run recovery and approval activation plan
 
-**Status: architecture approved with amendments. Public recovery, `/records/[runId]` durable routing, the dormant Phase C approval HTTP gateway/uncertainty semantics, and the Phase D provider/readiness controller and UI are implemented. Approval signing, challenge/submission UI composition, approval persistence from the UI, and execution remain unauthorized.**
+**Status: architecture approved with amendments. Public recovery, `/records/[runId]` durable routing, Phase C approval transport/uncertainty semantics, Phase D provider readiness, and Phase E explicit approval signing plus durable recording are implemented. The product stops at Approval recorded; transaction execution remains unauthorized.**
 
 Repository assessment: 2026-09-08 at commit `95ac92d` on branch `feat/run-recovery-approval`. The working tree was clean before this document was created. This plan is based on the committed code and documentation; it does not authorize application code, dependency, migration, live-wallet, Brickken, RPC, or transaction-execution changes.
 
@@ -576,13 +576,15 @@ Compose passive discovery, explicit selection, account access, signer matching, 
 
 Acceptance: no implicit selection/account/switch/sign; collision/provider events clear readiness; required signer works at any account index; approved planning UI remains visually intact.
 
-**IMPLEMENTED —** `src/components/approval/approval-controller.ts` owns discovery/session lifecycle, synchronous single-flight guards, stale-settlement suppression, collision handling, target invalidation, and sanitized readiness state. `src/components/approval/approval-section.tsx` renders the minimum authority surface in the existing planning workspace. It can establish only the exact recorded signer plus Ethereum Sepolia and then displays **Ready to approve**; it exposes no approval action and imports neither the dormant `ApprovalGateway` nor the approval/execution coordinators.
+**IMPLEMENTED —** `src/components/approval/approval-controller.ts` owns discovery/session lifecycle, synchronous single-flight guards, stale-settlement suppression, collision handling, target invalidation, and sanitized readiness state. `src/components/approval/approval-section.tsx` renders the minimum authority surface in the existing planning workspace. Phase D established only the exact recorded signer plus Ethereum Sepolia and stopped at **Ready to approve**; Phase E extends this same controller through the approved approval-only coordinator while keeping execution uncomposed.
 
 ### E. Approval coordinator composition
 
 Wire the explicit Approve action to the existing coordinator/gateway, serialize attempts, feed the final durable projection into the planning view, and render recorded/unconfirmed/stale states. Do not compose `execution.ts`.
 
 Acceptance: one explicit signature prompt, exact EIP-712 material, one proof submission, final durable GET, revision N+1, and a hard stop at Approval recorded.
+
+**IMPLEMENTED —** Only the enabled **Approve this plan** action enters `WalletApprovalCoordinator` behavior through the production `ApprovalGateway`. The coordinator first rereads and compares the displayed authority snapshot, requests and strictly validates one fresh challenge, reinspects readiness, invokes exact server-issued `eth_signTypedData_v4`, submits only revision/token/signature, and classifies one durable reread. Uncertain state locks signing and exposes only read-only approval-status refresh. The planning view accepts only a strict monotonic same-authority durable projection.
 
 ### F. Adversarial tests and full verification
 
@@ -640,7 +642,7 @@ Manual browser checks use only controlled local/synthetic API responses or an ex
 
 After this phase Edict may recover an authorized durable planning record and record an exact EIP-712 plan approval. It must stop at **Approval recorded**.
 
-**CURRENT PHASE D STOP —** The implemented product currently stops one checkpoint earlier at **Ready to approve**. No UI path issues a challenge, requests `eth_signTypedData_v4`, submits approval proof, or persists approval. Phase E requires separate authorization.
+**CURRENT PHASE E STOP —** The implemented product now stops at **Approval recorded**. Signing can begin only from the explicit approval action after current readiness, and durable success requires the exact approved revision `N+1` post-state. No UI path prepares or sends a transaction, invokes Brickken/RPC execution, reconciles a transaction, performs read-back verification, or issues a receipt.
 
 The following remain unimplemented and inactive:
 

@@ -61,13 +61,18 @@ describe("wallet trust-boundary invariants", () => {
     expect(gateway).not.toMatch(/capability|cookie|challenge.*(?:mac|purpose)|console\./iu);
   });
 
-  it("keeps Phase D approval readiness free of signing, approval HTTP, execution, persistence, and secret capabilities", () => {
+  it("keeps Phase E signing inside the approved coordinator and excludes execution, persistence, and secrets", () => {
     const readinessSource = [
       "src/components/approval/approval-controller.ts",
       "src/components/approval/approval-section.tsx",
     ].map(source).join("\n");
-    expect(readinessSource).not.toMatch(/requestExplicit|eth_sign|eth_sendTransaction|approval-challenges|submitApproval|ApprovalGateway|client\/wallet\/execution/u);
-    expect(readinessSource).not.toMatch(/Brickken|RPC|localStorage|sessionStorage|document\.cookie|BRICKKEN_API_KEY|DATABASE_URL|console\.|\.focus\(/u);
+    const approvalUi = source("src/components/approval/approval-section.tsx");
+    const approvalBoundary = source("src/client/wallet/approval.ts");
+    expect(approvalUi).not.toMatch(/requestExplicit|eth_sign|submitApproval|approval-challenges/u);
+    expect(readinessSource).not.toMatch(/eth_sendTransaction|personal_sign|client\/wallet\/execution/u);
+    expect(readinessSource).not.toMatch(/Brickken|RPC|localStorage|sessionStorage|document\.cookie|BRICKKEN_API_KEY|DATABASE_URL|console\./u);
+    expect(approvalBoundary.match(/"eth_signTypedData_v4"/gu)).toHaveLength(1);
+    expect(approvalBoundary).not.toMatch(/personal_sign|eth_sign"|eth_sendTransaction/u);
   });
 
   it("marks invocation immediately before the direct provider call with no await boundary", () => {

@@ -8,6 +8,8 @@
 
 **DECISION** — The Phase 9D product checkpoint composes only provider discovery and wallet readiness into the recorded-plan UI. Mount starts passive EIP-6963 discovery; provider and legacy selection, account access, Sepolia switching, and reinspection are explicit actions. Readiness requires the exact durable-run tokenizer signer at any authorized account index and chain `11155111` (`0xaa36a7`). Provider events, mutation, collision, run/revision change, and disposal invalidate the local session. The product stops at **Ready to approve**: the approval gateway and coordinator remain dormant, and no challenge, signature, proof submission, persistence mutation, transaction, Brickken call, or RPC execution is reachable from this UI.
 
+**DECISION** — Phase 9E activates that previously dormant approval path through one explicit **Approve this plan** action. The approval authority snapshot now binds the displayed run, revision, manifest hash, plan hash, environment, chain, and exact signer to the coordinator's preflight and final durable classification. Rapid clicks are synchronously serialized. A signature or approval POST never establishes success; only the exact same-authority `approved=true`, revision `N+1`, `TOKENIZATION/PREPARING`, nonterminal durable GET does. Submission uncertainty locks further signing until one explicit read-only status refresh. The UI stops at **Approval recorded** and composes no transaction-execution module or external write path.
+
 **DECISION** — Production execution remains disabled. The production semantic policy is deny-all, Brickken writes remain gated off, and the callable route inventory remains exactly:
 
 - `POST /api/runs`

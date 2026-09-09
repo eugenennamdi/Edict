@@ -66,63 +66,101 @@ export type ApprovalAttemptResult =
       reason: "SERVICE_UNAVAILABLE" | "MALFORMED_RESPONSE" | "TRANSPORT_FAILURE" | "UNSAFE_DURABLE_STATE";
     }>;
 
+export type ApprovalAuthority = Readonly<Pick<
+  PublicRunProjection,
+  "id" | "revision" | "manifestHash" | "planHash" | "environment" | "chainId" | "requiredSigner"
+>>;
+
+export interface ApprovalWalletSession {
+  readonly generation: number;
+  inspect(requiredSigner: string): Promise<Awaited<ReturnType<SelectedWalletSession["inspect"]>>>;
+  assertGeneration(expected: number): void;
+  requestExplicit(
+    method: "eth_signTypedData_v4",
+    params: readonly unknown[],
+  ): Promise<unknown>;
+}
+
 const SIGNATURE = /^0x(?:[0-9a-fA-F]{128}|[0-9a-fA-F]{130})$/;
 
-export async function approveRunFromUserAction(input: {
-  readonly runId: string;
-  readonly expectedRevision: number;
-  readonly wallet: SelectedWalletSession;
-  readonly gateway: ApprovalGateway;
-  readonly nowEpochSeconds: () => bigint;
-}): Promise<ApprovalAttemptResult> {
-  const run = await input.gateway.readRun(input.runId);
-  const sameAuthority = (candidate: PublicRunProjection) =>
-    candidate.id === run.id &&
-    candidate.manifestHash === run.manifestHash &&
-    candidate.planHash === run.planHash &&
-    candidate.environment === run.environment &&
-    candidate.chainId === run.chainId &&
-    candidate.requiredSigner.walletAddress === run.requiredSigner.walletAddress;
-  const recorded = (candidate: PublicRunProjection) =>
-    sameAuthority(candidate) &&
+function sameAuthority(candidate: PublicRunProjection, authority: ApprovalAuthority): boolean {
+  return candidate.id === authority.id &&
+    candidate.manifestHash === authority.manifestHash &&
+    candidate.planHash === authority.planHash &&
+    candidate.environment === authority.environment &&
+    candidate.chainId === authority.chainId &&
+    candidate.requiredSigner.role === authority.requiredSigner.role &&
+    candidate.requiredSigner.walletAddress === authority.requiredSigner.walletAddress;
+}
+
+function recordedApproval(candidate: PublicRunProjection, authority: ApprovalAuthority): boolean {
+  return sameAuthority(candidate, authority) &&
     candidate.approved &&
-    candidate.revision === input.expectedRevision + 1 &&
+    candidate.revision === authority.revision + 1 &&
     candidate.phase === "TOKENIZATION" &&
     candidate.status === "PREPARING" &&
     candidate.terminalOutcome === null;
-  const unconfirmedReason = (error: unknown): Extract<ApprovalAttemptResult, { outcome: "APPROVAL_UNCONFIRMED" }>["reason"] => {
-    if (!(error instanceof ApprovalGatewayError)) return "TRANSPORT_FAILURE";
-    if (error.code === "MALFORMED_REQUEST" || error.code === "MALFORMED_RESPONSE") return "MALFORMED_RESPONSE";
-    if (error.code === "TRANSPORT_FAILURE") return "TRANSPORT_FAILURE";
-    return "SERVICE_UNAVAILABLE";
-  };
+}
+
+function unconfirmedReason(
+  error: unknown,
+): Extract<ApprovalAttemptResult, { outcome: "APPROVAL_UNCONFIRMED" }>["reason"] {
+  if (!(error instanceof ApprovalGatewayError)) return "TRANSPORT_FAILURE";
+  if (error.code === "MALFORMED_REQUEST" || error.code === "MALFORMED_RESPONSE") return "MALFORMED_RESPONSE";
+  if (error.code === "TRANSPORT_FAILURE") return "TRANSPORT_FAILURE";
+  return "SERVICE_UNAVAILABLE";
+}
+
+export async function readApprovalStatusFromUserAction(input: {
+  readonly authority: ApprovalAuthority;
+  readonly gateway: ApprovalGateway;
+  readonly unrecordedReason: "STALE_OR_CHANGED" | "REFUSED_OR_UNRECORDED";
+}): Promise<ApprovalAttemptResult> {
+  let durable: PublicRunProjection;
+  try {
+    durable = await input.gateway.readRun(input.authority.id);
+  } catch (error) {
+    if (error instanceof ApprovalGatewayError && error.code === "ACCESS_UNAVAILABLE") {
+      return Object.freeze({ outcome: "ACCESS_UNAVAILABLE" });
+    }
+    return Object.freeze({ outcome: "APPROVAL_UNCONFIRMED", reason: unconfirmedReason(error) });
+  }
+  if (recordedApproval(durable, input.authority)) {
+    return Object.freeze({ outcome: "APPROVAL_RECORDED", run: durable });
+  }
+  if (!sameAuthority(durable, input.authority) || durable.approved) {
+    return Object.freeze({ outcome: "APPROVAL_UNCONFIRMED", reason: "UNSAFE_DURABLE_STATE" });
+  }
+  return Object.freeze({
+    outcome: "APPROVAL_NOT_RECORDED",
+    run: durable,
+    reason: input.unrecordedReason,
+  });
+}
+
+export async function approveRunFromUserAction(input: {
+  readonly authority: ApprovalAuthority;
+  readonly wallet: ApprovalWalletSession;
+  readonly gateway: ApprovalGateway;
+  readonly nowEpochSeconds: () => bigint;
+}): Promise<ApprovalAttemptResult> {
+  const run = await input.gateway.readRun(input.authority.id);
   const reconcile = async (
     reason: "STALE_OR_CHANGED" | "REFUSED_OR_UNRECORDED",
-  ): Promise<ApprovalAttemptResult> => {
-    let durable: PublicRunProjection;
-    try {
-      durable = await input.gateway.readRun(input.runId);
-    } catch (error) {
-      if (error instanceof ApprovalGatewayError && error.code === "ACCESS_UNAVAILABLE") {
-        return Object.freeze({ outcome: "ACCESS_UNAVAILABLE" });
-      }
-      return Object.freeze({ outcome: "APPROVAL_UNCONFIRMED", reason: unconfirmedReason(error) });
-    }
-    if (recorded(durable)) return Object.freeze({ outcome: "APPROVAL_RECORDED", run: durable });
-    if (durable.approved) {
-      return Object.freeze({ outcome: "APPROVAL_UNCONFIRMED", reason: "UNSAFE_DURABLE_STATE" });
-    }
-    return Object.freeze({ outcome: "APPROVAL_NOT_RECORDED", run: durable, reason });
-  };
+  ): Promise<ApprovalAttemptResult> => readApprovalStatusFromUserAction({
+    authority: input.authority,
+    gateway: input.gateway,
+    unrecordedReason: reason,
+  });
 
   if (run.approved) {
-    return recorded(run)
+    return recordedApproval(run, input.authority)
       ? Object.freeze({ outcome: "APPROVAL_RECORDED", run })
       : Object.freeze({ outcome: "APPROVAL_UNCONFIRMED", reason: "UNSAFE_DURABLE_STATE" });
   }
   if (
-    run.id !== input.runId ||
-    run.revision !== input.expectedRevision ||
+    !sameAuthority(run, input.authority) ||
+    run.revision !== input.authority.revision ||
     run.phase !== "PLAN" ||
     run.status !== "AWAITING_APPROVAL" ||
     run.terminalOutcome !== null
@@ -132,8 +170,8 @@ export async function approveRunFromUserAction(input: {
   let challenge: ApprovalChallengeEnvelopeV1;
   try {
     challenge = await input.gateway.issueChallenge({
-      runId: input.runId,
-      expectedRevision: input.expectedRevision,
+      runId: input.authority.id,
+      expectedRevision: input.authority.revision,
     });
   } catch (error) {
     if (
@@ -163,6 +201,7 @@ export async function approveRunFromUserAction(input: {
       validated.value.signingRequest.params,
     );
   } catch (error) {
+    if (error instanceof WalletBoundaryError) throw error;
     const code = providerErrorCode(error);
     if (code === 4001) throw new WalletBoundaryError("SIGNATURE_REJECTED");
     if (code === 4200) throw new WalletBoundaryError("TYPED_DATA_SIGNING_UNSUPPORTED");
@@ -175,8 +214,8 @@ export async function approveRunFromUserAction(input: {
   }
   try {
     await input.gateway.submitApproval({
-      runId: input.runId,
-      expectedRevision: input.expectedRevision,
+      runId: input.authority.id,
+      expectedRevision: input.authority.revision,
       challengeToken: validated.value.challengeToken,
       signature,
     });

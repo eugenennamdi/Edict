@@ -455,7 +455,10 @@ export default function RunPlanningWorkspace({
               ) : (
                 <div className="space-y-6">
                   <PlanDocument view={view} />
-                  <ApprovalReadinessSection view={view} />
+                  <ApprovalReadinessSection
+                    view={view}
+                    acceptDurableRun={workspace.acceptDurableRun}
+                  />
                 </div>
               )
             ) : durableRoute ? (
