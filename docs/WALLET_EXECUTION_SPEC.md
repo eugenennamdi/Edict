@@ -6,6 +6,8 @@
 
 **DECISION** — The Phase 9C transport checkpoint adds a dormant production same-origin `ApprovalGateway` for the existing three approval reads/writes. It uses the existing strict public run DTO, validates complete challenge and approval envelopes, bounds response bodies, sends same-origin credentials, refuses redirects and caching, and adds no route or wallet/provider/UI activation.
 
+**DECISION** — The Phase 9D product checkpoint composes only provider discovery and wallet readiness into the recorded-plan UI. Mount starts passive EIP-6963 discovery; provider and legacy selection, account access, Sepolia switching, and reinspection are explicit actions. Readiness requires the exact durable-run tokenizer signer at any authorized account index and chain `11155111` (`0xaa36a7`). Provider events, mutation, collision, run/revision change, and disposal invalidate the local session. The product stops at **Ready to approve**: the approval gateway and coordinator remain dormant, and no challenge, signature, proof submission, persistence mutation, transaction, Brickken call, or RPC execution is reachable from this UI.
+
 **DECISION** — Production execution remains disabled. The production semantic policy is deny-all, Brickken writes remain gated off, and the callable route inventory remains exactly:
 
 - `POST /api/runs`

@@ -61,6 +61,15 @@ describe("wallet trust-boundary invariants", () => {
     expect(gateway).not.toMatch(/capability|cookie|challenge.*(?:mac|purpose)|console\./iu);
   });
 
+  it("keeps Phase D approval readiness free of signing, approval HTTP, execution, persistence, and secret capabilities", () => {
+    const readinessSource = [
+      "src/components/approval/approval-controller.ts",
+      "src/components/approval/approval-section.tsx",
+    ].map(source).join("\n");
+    expect(readinessSource).not.toMatch(/requestExplicit|eth_sign|eth_sendTransaction|approval-challenges|submitApproval|ApprovalGateway|client\/wallet\/execution/u);
+    expect(readinessSource).not.toMatch(/Brickken|RPC|localStorage|sessionStorage|document\.cookie|BRICKKEN_API_KEY|DATABASE_URL|console\.|\.focus\(/u);
+  });
+
   it("marks invocation immediately before the direct provider call with no await boundary", () => {
     expect(source("src/client/wallet/execution.ts")).toMatch(
       /providerInvoked = true;\n\s+const pendingResult = input\.wallet\.requestExplicit\("eth_sendTransaction"/u,

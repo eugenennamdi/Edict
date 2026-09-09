@@ -132,6 +132,8 @@ Brickken sandbox API ──► Ethereum Sepolia
 
 ## Wallet signing and broadcast flow
 
+**DECISION — Current Phase 9D composition:** The recorded-plan surface at `/records/[runId]` now owns a client-only readiness controller over the existing EIP-6963 discovery and selected-session primitives. Provider selection, legacy fallback, account authorization, Sepolia switching, and reinspection remain explicit. Exact signer-plus-chain readiness is local and revision-bound; provider/session events, collisions, mutation, target change, and unmount invalidate or dispose it. The UI stops at **Ready to approve** and does not compose the approval gateway/coordinator, typed-data signing, approval persistence, transaction execution, Brickken, or RPC paths.
+
 1. **DECISION** — Server checks the run version, phase, approval record, expected signer, selected Sepolia chain, and absence of an existing `preparedTxId` before prepare.
 2. **DECISION** — Server calls the SDK with `executionMode: "client-broadcast"`, `execute: false`, and the approved `signerAddress`, validates the response, persists `txId` and the exact unsigned transaction, then returns a sanitized transaction view.
 3. **DECISION** — Server projects the persisted transaction through the strict Edict-owned DTO and canonical wallet intent. Browser recomputes its integrity, verifies operation identity, signer, chain and prompt revision, and applies the injected semantic policy; production policy remains deny-all.

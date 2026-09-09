@@ -302,10 +302,10 @@ describe("run planning workspace", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("keeps UI source limited to the three permitted routes without execution or storage imports", () => {
+  it("keeps planning transport limited to create, recover, and cancel without approval or execution calls", () => {
     const paths = ["src/app/page.tsx", "src/app/records/[runId]/page.tsx", "src/components/run-planning.ts", "src/components/run-planning-workspace.tsx"];
     const source = paths.map((path) => readFileSync(path, "utf8")).join("\n");
-    expect(source).not.toMatch(/approval-challenges|\/approval|\/prepare|\/broadcast|\/confirm|\/poll|eth_requestAccounts|eth_signTypedData|eth_sendTransaction|localStorage|sessionStorage|document\.cookie/);
+    expect(source).not.toMatch(/approval-challenges|\/api\/runs\/[^\s"'`]*\/approval|\/prepare|\/broadcast|\/confirm|\/poll|eth_requestAccounts|eth_signTypedData|eth_sendTransaction|localStorage|sessionStorage|document\.cookie/);
     expect(source).not.toMatch(/from ["'].*(?:server|client\/wallet|hashing)[/"']|buildExecutionPlan|crypto\.subtle|BRICKKEN_API_KEY|DATABASE_URL/);
     expect(source.match(/\/api\/runs/g)).toHaveLength(3);
     expect(source).toContain("router.replace(`/records/${createdRunId}`)");

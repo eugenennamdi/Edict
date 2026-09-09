@@ -12,6 +12,7 @@ import {
   type FieldName,
 } from "./planning-presentation";
 import { MandateForm } from "./planning-form";
+import { ApprovalReadinessSection } from "./approval/approval-section";
 import {
   DraftSummary,
   PlanDocument,
@@ -452,7 +453,10 @@ export default function RunPlanningWorkspace({
               mode === "details" ? (
                 <RecordDetails view={view} retrievedAt={state.retrievedAt} />
               ) : (
-                <PlanDocument view={view} />
+                <div className="space-y-6">
+                  <PlanDocument view={view} />
+                  <ApprovalReadinessSection view={view} />
+                </div>
               )
             ) : durableRoute ? (
               <Card className="shadow-xs border-border/80" aria-busy={state.pending === "recover"}>

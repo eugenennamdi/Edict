@@ -1,6 +1,6 @@
 # Durable run recovery and approval activation plan
 
-**Status: architecture approved with amendments. Public recovery, `/records/[runId]` durable routing, and Phase C approval HTTP gateway/uncertainty semantics are implemented. Provider, signing, approval UI and execution checkpoints remain unauthorized.**
+**Status: architecture approved with amendments. Public recovery, `/records/[runId]` durable routing, the dormant Phase C approval HTTP gateway/uncertainty semantics, and the Phase D provider/readiness controller and UI are implemented. Approval signing, challenge/submission UI composition, approval persistence from the UI, and execution remain unauthorized.**
 
 Repository assessment: 2026-09-08 at commit `95ac92d` on branch `feat/run-recovery-approval`. The working tree was clean before this document was created. This plan is based on the committed code and documentation; it does not authorize application code, dependency, migration, live-wallet, Brickken, RPC, or transaction-execution changes.
 
@@ -576,6 +576,8 @@ Compose passive discovery, explicit selection, account access, signer matching, 
 
 Acceptance: no implicit selection/account/switch/sign; collision/provider events clear readiness; required signer works at any account index; approved planning UI remains visually intact.
 
+**IMPLEMENTED —** `src/components/approval/approval-controller.ts` owns discovery/session lifecycle, synchronous single-flight guards, stale-settlement suppression, collision handling, target invalidation, and sanitized readiness state. `src/components/approval/approval-section.tsx` renders the minimum authority surface in the existing planning workspace. It can establish only the exact recorded signer plus Ethereum Sepolia and then displays **Ready to approve**; it exposes no approval action and imports neither the dormant `ApprovalGateway` nor the approval/execution coordinators.
+
 ### E. Approval coordinator composition
 
 Wire the explicit Approve action to the existing coordinator/gateway, serialize attempts, feed the final durable projection into the planning view, and render recorded/unconfirmed/stale states. Do not compose `execution.ts`.
@@ -637,6 +639,8 @@ Manual browser checks use only controlled local/synthetic API responses or an ex
 ## 14. Explicit stop boundary
 
 After this phase Edict may recover an authorized durable planning record and record an exact EIP-712 plan approval. It must stop at **Approval recorded**.
+
+**CURRENT PHASE D STOP —** The implemented product currently stops one checkpoint earlier at **Ready to approve**. No UI path issues a challenge, requests `eth_signTypedData_v4`, submits approval proof, or persists approval. Phase E requires separate authorization.
 
 The following remain unimplemented and inactive:
 
