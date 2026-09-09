@@ -6,7 +6,9 @@ export {
 export {
   buildExecutionPlanV1,
   ExecutionPlanBuildError,
+  validateExecutionPlanV1,
   type ExecutionPlanV1,
+  type ExecutionPlanValidationResult,
 } from "./execution-plan";
 export {
   CoreHashError,

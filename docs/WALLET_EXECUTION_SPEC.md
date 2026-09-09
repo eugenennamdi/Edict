@@ -4,6 +4,10 @@
 
 **DECISION** — Phase 7 is complete as an offline, vendor-neutral browser boundary. It adds EIP-6963 discovery, explicit provider selection, EIP-1193 approval signing, strict prepared-transaction projection, canonical wallet-intent integrity, and durable prompt/send/hash-handoff coordination. It adds no UI and no callable route.
 
+**DECISION** — The Phase 9C transport checkpoint adds a dormant production same-origin `ApprovalGateway` for the existing three approval reads/writes. It uses the existing strict public run DTO, validates complete challenge and approval envelopes, bounds response bodies, sends same-origin credentials, refuses redirects and caching, and adds no route or wallet/provider/UI activation.
+
+**DECISION** — The Phase 9D product checkpoint composes only provider discovery and wallet readiness into the recorded-plan UI. Mount starts passive EIP-6963 discovery; provider and legacy selection, account access, Sepolia switching, and reinspection are explicit actions. Readiness requires the exact durable-run tokenizer signer at any authorized account index and chain `11155111` (`0xaa36a7`). Provider events, mutation, collision, run/revision change, and disposal invalidate the local session. The product stops at **Ready to approve**: the approval gateway and coordinator remain dormant, and no challenge, signature, proof submission, persistence mutation, transaction, Brickken call, or RPC execution is reachable from this UI.
+
 **DECISION** — Production execution remains disabled. The production semantic policy is deny-all, Brickken writes remain gated off, and the callable route inventory remains exactly:
 
 - `POST /api/runs`
@@ -29,6 +33,10 @@ No public prepare, wallet-prompt, wallet-result, confirmation, polling, read-bac
 **DECISION** — The server remains authoritative for EIP-712 approval material. It supplies the structured typed data, its digest, an exact RPC-ready serialized string, the required signer parameter, and an opaque challenge token. One shared constant defines the five-minute challenge lifetime.
 
 **DECISION** — The browser validates the strict challenge shape and checks structured-versus-serialized typed data, digest, run and plan identities, signer, Sepolia chain, approval revision, nonce, issue time, expiry, and lifetime. It passes the exact server-issued string to `eth_signTypedData_v4`; it does not reconstruct the request. It submits only expected revision, challenge token, and public signature, then rereads durable approval state.
+
+**DECISION** — Gateway failures use only application-owned classes: access unavailable, run unavailable, stale/state conflict, request refused, service unavailable, malformed request/response, or transport failure. Raw response, transport, security, challenge-MAC and provider diagnostics never cross the boundary. The gateway performs no automatic retry.
+
+**DECISION** — A signature and a successful approval POST are both non-authoritative. After one approval POST attempt, the coordinator performs exactly one read-only durable GET. Only the same run, manifest hash, plan hash, signer, environment and chain at revision `N+1` with `approved=true`, `TOKENIZATION/PREPARING` and no terminal outcome establishes `APPROVAL_RECORDED`. A valid unapproved reread yields `APPROVAL_NOT_RECORDED`; an inaccessible reread yields `ACCESS_UNAVAILABLE`; and a failed or semantically unsafe reread yields `APPROVAL_UNCONFIRMED`. No challenge, signature or approval POST is automatically repeated.
 
 **DECISION** — There is no `personal_sign` or EIP-1271 fallback. Edict never requests, receives, stores, logs, or fabricates private keys or seed phrases.
 

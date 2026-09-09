@@ -31,7 +31,7 @@ describe("public run API boundary", () => {
   });
 
   it("keeps core and client modules free of server persistence and run API imports", () => {
-    for (const relative of ["src/core", "src/components", "src/app/page.tsx"]) {
+    for (const relative of ["src/core", "src/components", "src/app/page.tsx", "src/app/records/[runId]/page.tsx"]) {
       const target = path.join(root, relative);
       const files = fs.statSync(target).isDirectory()
         ? fs.readdirSync(target).filter((name) => /\.(?:ts|tsx)$/.test(name)).map((name) => path.join(target, name))

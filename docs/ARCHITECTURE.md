@@ -28,6 +28,10 @@
 
 **DECISION** — Phase 8 preflight derives fixed public output from the same response, header and evidence builders used by the runtime. A final guard checks every application-controlled HTTP body and normalized header before emission, including HTML and server errors. Dynamic collisions terminate the runtime without an error fallback. Its offline artifact audit uses exclusive capture paths and fails on filesystem inspection errors other than missing optional roots; the operator playbook defines the remaining platform and build-environment limits.
 
+**DECISION** — Durable planning recovery uses `/records/[runId]` as the canonical recorded-run page while `/` remains the new-mandate page. The URL contains only the public run locator. The existing selected HttpOnly capability authorizes an independently complete `GET /api/runs/[runId]` response containing a strict public run projection, server-normalized manifest and server-rederived seven-operation plan. Reload is read-only, preserves revision, and performs no wallet, Brickken, RPC or execution action. Creating a later run continues to replace browser access to the earlier run.
+
+**DECISION** — Phase 9C adds a client-only, same-origin approval HTTP gateway behind the existing coordinator interface. It performs bounded strict parsing and no retries. Only an independent durable GET proving the same authority tuple at the exact post-approval revision and `TOKENIZATION/PREPARING` state can establish recorded approval. Submission uncertainty permits at most one read-only reconciliation GET; it cannot trigger another challenge, signature or approval mutation. The gateway remains uncomposed from React and provider discovery.
+
 
 **VERIFIED** — On 2026-09-04, the Neon migration completed without error and the explicitly opted-in live database test passed create, read, atomic compare-and-swap update, stale-revision refusal, and cleanup of its uniquely created run. Durable persistence is verified. The test made no Brickken request or blockchain operation and emitted no credential.
 
@@ -47,7 +51,7 @@
 
 ```text
 Browser UI
-  ├─ manifest/form + plan viewer
+  ├─ `/` manifest/form and `/records/[runId]` durable plan viewer
   ├─ wallet connector and client-broadcast adapter
   └─ run status / verification / receipt viewer
           │ public run commands and txHash only
@@ -127,6 +131,8 @@ Brickken sandbox API ──► Ethereum Sepolia
 - **DECISION** — `COMPLETE`, `CANCELLED`, `FAILED`, and `VERIFICATION_FAILED` are terminal. On-chain success cannot be rolled back by editing local status.
 
 ## Wallet signing and broadcast flow
+
+**DECISION — Current Phase 9D composition:** The recorded-plan surface at `/records/[runId]` now owns a client-only readiness controller over the existing EIP-6963 discovery and selected-session primitives. Provider selection, legacy fallback, account authorization, Sepolia switching, and reinspection remain explicit. Exact signer-plus-chain readiness is local and revision-bound; provider/session events, collisions, mutation, target change, and unmount invalidate or dispose it. The UI stops at **Ready to approve** and does not compose the approval gateway/coordinator, typed-data signing, approval persistence, transaction execution, Brickken, or RPC paths.
 
 1. **DECISION** — Server checks the run version, phase, approval record, expected signer, selected Sepolia chain, and absence of an existing `preparedTxId` before prepare.
 2. **DECISION** — Server calls the SDK with `executionMode: "client-broadcast"`, `execute: false`, and the approved `signerAddress`, validates the response, persists `txId` and the exact unsigned transaction, then returns a sanitized transaction view.

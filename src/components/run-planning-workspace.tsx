@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createPlanningWorkspace, initialWorkspace } from "./run-planning";
 import {
   draftForm,
@@ -11,6 +12,7 @@ import {
   type FieldName,
 } from "./planning-presentation";
 import { MandateForm } from "./planning-form";
+import { ApprovalReadinessSection } from "./approval/approval-section";
 import {
   DraftSummary,
   PlanDocument,
@@ -34,9 +36,20 @@ import {
   ArrowLeft,
 } from "lucide-react";
 
-export default function RunPlanningWorkspace() {
+export default function RunPlanningWorkspace({
+  initialRunId,
+  invalidRunRoute = false,
+}: {
+  readonly initialRunId?: string;
+  readonly invalidRunRoute?: boolean;
+}) {
+  const router = useRouter();
   const [state, setState] = useState(initialWorkspace);
-  const [workspace] = useState(() => createPlanningWorkspace(setState));
+  const [workspace] = useState(() => createPlanningWorkspace(
+    setState,
+    undefined,
+    { onCreated: (createdRunId) => router.replace(`/records/${createdRunId}`) },
+  ));
   const [draft, setDraft] = useState(emptyDraft);
   const [touched, setTouched] = useState<ReadonlySet<FieldName>>(new Set());
   const [submitted, setSubmitted] = useState(false);
@@ -51,6 +64,11 @@ export default function RunPlanningWorkspace() {
   const view = state.view;
   const runId = view?.run.id;
   const canceled = view?.run.terminalOutcome === "CANCELLED";
+  const durableRoute = initialRunId !== undefined || invalidRunRoute;
+
+  useEffect(() => {
+    if (initialRunId !== undefined) void workspace.recover(initialRunId);
+  }, [initialRunId, workspace]);
 
   useEffect(() => {
     if (runId) heading.current?.focus();
@@ -71,7 +89,7 @@ export default function RunPlanningWorkspace() {
   const validationErrors = !view && submitted && visibleIssues.length > 0;
   const requestError =
     state.error && (state.errorCode !== "BAD_REQUEST" || submittedDraft === draft);
-  const showError = validationErrors || requestError;
+  const showError = validationErrors || requestError || invalidRunRoute;
   const filled = fields.filter((field) => draft[field.name].trim().length > 0).length;
   const cancelOpen = view?.run.canCancel && cancelRevision === view.run.revision;
 
@@ -152,7 +170,7 @@ export default function RunPlanningWorkspace() {
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-medium">
           <span>Workspace</span>
           <ChevronRight className="h-3 w-3 text-muted-foreground/60" />
-          <span className="text-foreground">{view ? "Run record" : "New mandate"}</span>
+          <span className="text-foreground">{view || durableRoute ? "Run record" : "New mandate"}</span>
         </div>
 
         {/* Page Heading & State Hero */}
@@ -166,6 +184,10 @@ export default function RunPlanningWorkspace() {
               ? "Run canceled."
               : view
               ? view.manifest.asset.name
+              : durableRoute
+              ? invalidRunRoute
+                ? "Run unavailable."
+                : "Recovering run record."
               : "Define your mandate."}
           </h1>
           <p className="text-sm text-muted-foreground leading-relaxed max-w-2xl">
@@ -173,6 +195,8 @@ export default function RunPlanningWorkspace() {
               ? "The run is closed. Its mandate and plan remain available for audit and review."
               : view
               ? "A recorded mandate. A deterministic plan. Ready for your review."
+              : durableRoute
+              ? "Edict is checking this browser's authority before reconstructing the durable record."
               : "Set the intent. Inspect the structure. Make it an immutable record."}
           </p>
         </div>
@@ -249,6 +273,10 @@ export default function RunPlanningWorkspace() {
               <strong className="font-semibold block text-destructive">
                 {validationErrors
                   ? "Review the highlighted fields."
+                  : invalidRunRoute
+                  ? "This run link is invalid or unavailable."
+                  : durableRoute && state.errorCode === "FORBIDDEN"
+                  ? "This browser cannot access this run. Access may have expired or been replaced."
                   : state.errorCode === "FORBIDDEN" && !view
                   ? "This request is not authorized in this environment."
                   : state.error}
@@ -416,7 +444,8 @@ export default function RunPlanningWorkspace() {
           <div
             id="primary-panel"
             className={cn(
-              "lg:col-span-7 xl:col-span-8 space-y-6",
+              durableRoute && !view ? "lg:col-span-12" : "lg:col-span-7 xl:col-span-8",
+              "space-y-6",
               mode === "artifact" && "hidden lg:block"
             )}
           >
@@ -424,8 +453,36 @@ export default function RunPlanningWorkspace() {
               mode === "details" ? (
                 <RecordDetails view={view} retrievedAt={state.retrievedAt} />
               ) : (
-                <PlanDocument view={view} />
+                <div className="space-y-6">
+                  <PlanDocument view={view} />
+                  <ApprovalReadinessSection view={view} />
+                </div>
               )
+            ) : durableRoute ? (
+              <Card className="shadow-xs border-border/80" aria-busy={state.pending === "recover"}>
+                <CardContent className="p-6 text-sm text-muted-foreground space-y-2">
+                  <strong className="text-foreground font-semibold block">
+                    {invalidRunRoute
+                      ? "The run record cannot be opened."
+                      : state.pending === "recover"
+                      ? "Recovering the server record…"
+                      : state.error
+                      ? "The run record was not reconstructed."
+                      : "Preparing recovery…"}
+                  </strong>
+                  <p className="text-xs leading-relaxed max-w-2xl">
+                    {invalidRunRoute
+                      ? "Check the run URL. A run identifier is only a locator and does not grant access."
+                      : state.errorCode === "FORBIDDEN"
+                      ? "Only the browser holding the valid run capability can open this record."
+                      : state.errorCode === "NOT_FOUND"
+                      ? "No authorized durable record is available at this URL."
+                      : state.error
+                      ? "No partial manifest or plan has been displayed."
+                      : "This read does not create, approve, cancel, or execute the run."}
+                  </p>
+                </CardContent>
+              </Card>
             ) : (
               <MandateForm
                 draft={draft}
@@ -447,6 +504,7 @@ export default function RunPlanningWorkspace() {
             aria-label={view ? "Recorded manifest" : "Provisional draft summary"}
             className={cn(
               "lg:col-span-5 xl:col-span-4 lg:sticky lg:top-20 space-y-4",
+              durableRoute && !view && "hidden",
               mode === "primary" && "hidden lg:block",
               mode === "details" && "hidden lg:block"
             )}
@@ -491,7 +549,9 @@ export default function RunPlanningWorkspace() {
           </div>
           <div className="font-mono text-[11px]">
             {view
-              ? "Immutable record · Retained in page session"
+              ? "Durable record · Authorized browser access"
+              : durableRoute
+              ? "Run locator · Capability required"
               : "Intent first. Authority follows."}
           </div>
         </div>

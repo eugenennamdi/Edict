@@ -7,6 +7,8 @@ import { buildExecutionPlanV1 } from "@/core/execution-plan";
 import { createValidRawManifest, GOLDEN_MANIFEST_HASH, GOLDEN_PLAN_HASH } from "@/core/test-fixtures";
 import { creationRequest, createPlanningWorkspace, initialWorkspace, readProjection, type WorkspaceState } from "./run-planning";
 
+vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }) }));
+
 const id = "11111111-1111-4111-8111-111111111111";
 function form() {
   const raw = createValidRawManifest();
@@ -31,9 +33,12 @@ async function projection() {
     receiptEligible: false, createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z", revision: 1,
   } };
 }
-function harness(transport = vi.fn<(path: string, options: RequestInit) => Promise<Response>>()) {
+function harness(
+  transport = vi.fn<(path: string, options: RequestInit) => Promise<Response>>(),
+  onCreated?: (runId: string) => void,
+) {
   let state: WorkspaceState = initialWorkspace;
-  const workspace = createPlanningWorkspace((next) => { state = next; }, transport);
+  const workspace = createPlanningWorkspace((next) => { state = next; }, transport, { onCreated });
   return { workspace, transport, state: () => state };
 }
 const failure = (code: string, status = 400) => Response.json({ ok: false, error: { code, message: "INTERNAL_SENTINEL" } }, { status });
@@ -47,18 +52,18 @@ describe("run planning workspace", () => {
     expect(validateAssetManifestV1(creationRequest(input).manifest).ok).toBe(true);
   });
 
-  it("uses only the server public projection and unchanged golden hashes", async () => {
+  it("uses the strict server public projection and unchanged golden hashes", async () => {
     const body = await projection();
-    const view = readProjection({ ...body, capability: "INTERNAL_SENTINEL", challengeToken: "INTERNAL_SENTINEL",
-      run: { ...body.run, events: ["INTERNAL_SENTINEL"], approval: { publicSignature: "INTERNAL_SENTINEL" }, snapshot: "INTERNAL_SENTINEL" },
-      plan: { ...body.plan, internal: "INTERNAL_SENTINEL" } });
+    const view = readProjection(body);
     expect(view.manifest.asset.name).toBe("Café Receivables");
     expect(view.plan.operations.map((op) => op.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(view.run.manifestHash).toBe(GOLDEN_MANIFEST_HASH);
     expect(view.run.planHash).toBe(GOLDEN_PLAN_HASH);
     expect(view.run.canCancel).toBe(true);
-    expect(JSON.stringify(view)).not.toContain("INTERNAL_SENTINEL");
-    expect(view.run).not.toHaveProperty("operations");
+    expect(view.run.operations.map((operation) => operation.kind)).toEqual(["TOKENIZE", "WHITELIST", "MINT"]);
+    expect(() => readProjection({ ...body, capability: "INTERNAL_SENTINEL" })).toThrow();
+    expect(() => readProjection({ ...body, run: { ...body.run, events: [] } })).toThrow();
+    expect(() => readProjection({ ...body, plan: { ...body.plan, internal: true } })).toThrow();
   });
 
   it("suppresses duplicate create submissions and sends only a same-origin JSON request", async () => {
@@ -81,6 +86,74 @@ describe("run planning workspace", () => {
     expect(h.state().pending).toBeNull();
     await h.workspace.create(form());
     expect(h.transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("navigates to the canonical route only after a strictly confirmed create", async () => {
+    const body = await projection();
+    const navigate = vi.fn();
+    const h = harness(undefined, navigate);
+    h.transport.mockResolvedValueOnce(Response.json(body, { status: 201 }));
+    await h.workspace.create(form());
+    expect(navigate).toHaveBeenCalledWith(id);
+
+    const rejected = harness(undefined, navigate);
+    rejected.transport.mockResolvedValueOnce(Response.json({ ...body, unknown: true }, { status: 201 }));
+    await rejected.workspace.create(form());
+    expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers a fresh direct route from one complete read without mutation", async () => {
+    const body = await projection();
+    const h = harness();
+    h.transport.mockResolvedValueOnce(Response.json(body));
+    await h.workspace.recover(id);
+    expect(h.transport).toHaveBeenCalledWith(`/api/runs/${id}`, {
+      method: "GET", credentials: "same-origin", cache: "no-store", redirect: "error",
+      headers: { "content-type": "application/json" },
+    });
+    expect(h.transport).toHaveBeenCalledTimes(1);
+    expect(h.state().view?.manifest).toEqual(body.manifest);
+    expect(h.state().view?.plan.operations).toHaveLength(7);
+    expect(h.state().view?.run.revision).toBe(1);
+  });
+
+  it("fails direct recovery safely for invalid routes and unavailable capability", async () => {
+    const h = harness();
+    await h.workspace.recover("not-a-run");
+    expect(h.transport).not.toHaveBeenCalled();
+    expect(h.state().errorCode).toBe("INVALID_ROUTE");
+    h.transport.mockResolvedValueOnce(failure("FORBIDDEN", 403));
+    await h.workspace.recover(id);
+    expect(h.state().view).toBeNull();
+    expect(h.state().errorCode).toBe("FORBIDDEN");
+  });
+
+  it("allows independent same-browser-tab-equivalent recovery reads", async () => {
+    const body = await projection();
+    const transport = vi.fn(async () => Response.json(body));
+    const first = harness(transport);
+    const second = harness(transport);
+    await Promise.all([first.workspace.recover(id), second.workspace.recover(id)]);
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(first.state().view).toEqual(second.state().view);
+  });
+
+  it("ignores a stale recovery settlement after the route changes", async () => {
+    const body = await projection();
+    const secondId = "22222222-2222-4222-8222-222222222222";
+    let resolveFirst!: (response: Response) => void;
+    let resolveSecond!: (response: Response) => void;
+    const h = harness();
+    h.transport
+      .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveSecond = resolve; }));
+    const first = h.workspace.recover(id);
+    const second = h.workspace.recover(secondId);
+    resolveSecond(Response.json({ ...body, run: { ...body.run, id: secondId } }));
+    await second;
+    resolveFirst(Response.json(body));
+    await first;
+    expect(h.state().view?.run.id).toBe(secondId);
   });
 
   it("keeps input intact on validation errors and makes no request for invalid input", async () => {
@@ -123,7 +196,7 @@ describe("run planning workspace", () => {
 
   it("refreshes the authorized run with normal browser cookie handling and no Origin override", async () => {
     const body = await projection(); const h = harness();
-    h.transport.mockResolvedValueOnce(Response.json(body)).mockResolvedValueOnce(Response.json({ ok: true, run: { ...body.run, revision: 2 }, plan: body.plan }));
+    h.transport.mockResolvedValueOnce(Response.json(body)).mockResolvedValueOnce(Response.json({ ...body, run: { ...body.run, revision: 2 } }));
     await h.workspace.create(form()); await h.workspace.refresh();
     expect(h.transport.mock.calls[1]).toEqual([`/api/runs/${id}`, {
       method: "GET", credentials: "same-origin", cache: "no-store", redirect: "error", headers: { "content-type": "application/json" },
@@ -176,10 +249,21 @@ describe("run planning workspace", () => {
     { terminalOutcome: "FAILED" },
     { terminalOutcome: "VERIFICATION_FAILED" },
     { status: "RECONCILIATION_REQUIRED" },
-    { operations: [{ blockchainTxHash: "0x123" }, { blockchainTxHash: null }, { blockchainTxHash: null }] },
   ])("omits cancellation for a public state that forbids it %j", async (patch) => {
     const body = await projection(); const h = harness();
     h.transport.mockResolvedValueOnce(Response.json({ ...body, run: { ...body.run, ...patch } }));
+    await h.workspace.create(form()); await h.workspace.cancel();
+    expect(h.state().view?.run.canCancel).toBe(false);
+    expect(h.transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits cancellation after any public broadcast hash", async () => {
+    const body = await projection(); const h = harness();
+    const operations = body.run.operations.map((operation, index) => ({
+      ...operation,
+      blockchainTxHash: index === 0 ? `0x${"1".repeat(64)}` : null,
+    }));
+    h.transport.mockResolvedValueOnce(Response.json({ ...body, run: { ...body.run, operations } }));
     await h.workspace.create(form()); await h.workspace.cancel();
     expect(h.state().view?.run.canCancel).toBe(false);
     expect(h.transport).toHaveBeenCalledTimes(1);
@@ -206,12 +290,26 @@ describe("run planning workspace", () => {
     expect(html.match(/<input /g)).toHaveLength(9);
   });
 
-  it("keeps UI source limited to the three permitted routes without execution or storage imports", () => {
-    const paths = ["src/app/page.tsx", "src/components/run-planning.ts", "src/components/run-planning-workspace.tsx"];
+  it("renders safe valid and malformed durable route shells without server-side effects", async () => {
+    const fetch = vi.fn(() => { throw new Error("Unexpected network"); }); vi.stubGlobal("fetch", fetch);
+    const { default: RunPage } = await import("../app/records/[runId]/page");
+    const recovering = renderToStaticMarkup(await RunPage({ params: Promise.resolve({ runId: id }) }));
+    const invalid = renderToStaticMarkup(await RunPage({ params: Promise.resolve({ runId: "not-a-run" }) }));
+    expect(recovering).toContain("Recovering run record.");
+    expect(recovering).toContain("This read does not create, approve, cancel, or execute the run.");
+    expect(invalid).toContain("Run unavailable.");
+    expect(invalid).toContain("A run identifier is only a locator and does not grant access.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps planning transport limited to create, recover, and cancel without approval or execution calls", () => {
+    const paths = ["src/app/page.tsx", "src/app/records/[runId]/page.tsx", "src/components/run-planning.ts", "src/components/run-planning-workspace.tsx"];
     const source = paths.map((path) => readFileSync(path, "utf8")).join("\n");
-    expect(source).not.toMatch(/approval-challenges|\/approval|\/prepare|\/broadcast|\/confirm|\/poll|eth_requestAccounts|eth_signTypedData|eth_sendTransaction|localStorage|sessionStorage|document\.cookie/);
+    expect(source).not.toMatch(/approval-challenges|\/api\/runs\/[^\s"'`]*\/approval|\/prepare|\/broadcast|\/confirm|\/poll|eth_requestAccounts|eth_signTypedData|eth_sendTransaction|localStorage|sessionStorage|document\.cookie/);
     expect(source).not.toMatch(/from ["'].*(?:server|client\/wallet|hashing)[/"']|buildExecutionPlan|crypto\.subtle|BRICKKEN_API_KEY|DATABASE_URL/);
-    expect(source.match(/\/api\/runs/g)).toHaveLength(2);
+    expect(source.match(/\/api\/runs/g)).toHaveLength(3);
+    expect(source).toContain("router.replace(`/records/${createdRunId}`)");
+    expect(source).not.toContain("router.replace(`/runs/");
     expect(source).toContain("}/cancel`");
   });
 });
