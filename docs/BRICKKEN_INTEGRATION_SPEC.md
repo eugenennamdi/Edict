@@ -86,7 +86,7 @@ The sanitized adapter projection was:
 
 ## Transaction lifecycle
 
-**VERIFIED** — Dapp writes follow `prepare → sign → send → poll`: prepare with `POST /prepare-transactions`, sign every returned transaction with the wallet matching `signerAddress`, send, then poll `GET /get-transaction-status`. [Dapp API](https://docs.brickken.com/api-reference/introduction)
+**SUPPORT-CONFIRMED — 2026-09-11** — Dapp writes in `client-broadcast` follow `POST /prepare-transactions` → wallet `eth_sendTransaction` → durable `txHash` → `POST /send-transactions {txId,txHash}` correlation → `GET /transaction-status` → trusted-RPC finality → read-back. Brickken does not rebroadcast during `/send-transactions`.
 
 **VERIFIED** — The API exposes three execution modes. For `client-broadcast`, the user signs and broadcasts, then the client confirms exactly one `{ txId, txHash }` pair to Brickken; this mode works for Dapp methods. Resubmitting the same pair is idempotent. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send)
 
@@ -100,13 +100,15 @@ The sanitized adapter projection was:
 
 **VERIFIED** — Prepared transactions are ethers-style unsigned transactions, not EIP-1193 payloads. Official browser-wallet guidance converts numeric fields to hex, renames `gasLimit` to `gas`, and omits `nonce`, `chainId`, `type`, and fee fields before `eth_sendTransaction`. [Browser wallets](https://docs.brickken.com/api-reference/guides/browser-wallets)
 
-**VERIFIED** — `POST /send-transactions` in `client-broadcast` mode accepts exactly one string `txId` and one string `txHash`; arrays are rejected. A successful submission returns a transaction hash and status, commonly `pending`. The pinned SDK also refuses a multi-transaction `client-broadcast` locally. `mintToken` can return two transactions when a recipient still needs whitelisting; those must be signed and broadcast in order, which this mode cannot confirm one hash at a time. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send) [mintToken](https://docs.brickken.com/api-reference/endpoint/prepare-mintToken)
+**SUPPORT-CONFIRMED — 2026-09-11** — `POST /send-transactions` in `client-broadcast` is correlation only. It accepts exactly one persisted `txId` and its already-broadcast `txHash`, consumes credit on the first valid correlation, and is idempotent only for that identical pair. HTTP 202 returns `results[0].result.transactionHash`, `status: "pending"`, and `executionMode: "client-broadcast"`. A temporarily unseen mempool transaction permits bounded same-pair correlation retry, never another wallet send. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send)
 
-**VERIFIED** — `GET /get-transaction-status` requires at least one of `txId` or `hash`, accepts no request body, and returns `status` as `pending`, `success`, or `rejected`; `transactionHash` appears when known and `error` appears on failure. [Get Transaction Status](https://docs.brickken.com/api-reference/endpoint/get-transaction-status)
+**SUPPORT-CONFIRMED — 2026-09-11** — `GET /transaction-status` accepts `txId` or `hash` and is the recovery/tracking endpoint. The pinned `brickken-sdk@0.2.1` still targets the obsolete `/get-transaction-status`; production integration must use the confirmed route through a strict server-only adapter until an updated SDK is independently verified.
 
 **VERIFIED** — A `pending` status means broadcast but not yet confirmed and must be polled rather than resubmitted. [Get Transaction Status](https://docs.brickken.com/api-reference/endpoint/get-transaction-status)
 
 **DECISION** — Persist the prepare response before exposing the wallet action; persist `txHash` immediately after the wallet returns it and before calling `/send-transactions`; persist every poll result.
+
+**SUPPORT-CONFIRMED — 2026-09-11** — Brickken requires exact equality for `chainId`, `from`, `to`, `data`, `value`, and `nonce`. The prepared nonce must be explicitly supplied to `eth_sendTransaction`. Brickken does not compare `gasLimit`, `maxFeePerGas`, or `maxPriorityFeePerGas`; Edict nevertheless accepts changes only inside a separately user-authorized bounded fee envelope. A consumed prepared nonce requires a new explicit `/prepare-transactions` call for the same operation, never local nonce mutation.
 
 **DECISION** — A local polling timeout changes the operation to `TIMED_OUT`, not failed. Resume polling the same `txId`/`txHash` after refresh or operator action; never create a replacement automatically.
 

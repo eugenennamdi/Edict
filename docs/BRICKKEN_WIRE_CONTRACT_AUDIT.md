@@ -10,7 +10,7 @@ It does not change the Phase 2 deterministic core. It does not implement the Bri
 
 ## 1. Executive conclusion
 
-The documented Dapp write path is `POST /prepare-transactions` → local sign/broadcast → `POST /send-transactions` → `GET /get-transaction-status` → token-scoped reads. Edict's locked mode is `client-broadcast`: the server prepares with `x-api-key`; the browser wallet broadcasts; the server confirms exactly one `{ txId, txHash }` pair; the server polls.
+The support-confirmed Dapp write path is `POST /prepare-transactions` → wallet `eth_sendTransaction` → durable hash → `POST /send-transactions` correlation → `GET /transaction-status` → trusted-RPC finality → token-scoped reads. Edict's locked mode is `client-broadcast`: the server prepares with `x-api-key`; the browser wallet alone broadcasts; the server correlates exactly one `{ txId, txHash }` pair; the server polls.
 
 That path is documented well enough to implement a **prepare-only, fail-closed adapter**, provided Phase 4 treats several official conflicts as runtime variants rather than resolved facts:
 
@@ -99,7 +99,7 @@ Source-level SDK audit remains unavailable.
 
 ### 2.5 Unauthenticated live checks this phase
 
-**VERIFIED** — `GET https://api.sandbox.brickken.com/openapi.json` with `Accept: application/json`, no `x-api-key`, 2026-09-03 `19:30:20 GMT`, HTTP 200. Body title `Brickken x402 Agentic API` version `1.0.0`, 25 paths, all `/x402/*`, `/rams` omitted from this snapshot, `/faucet/bkn` present. **No Dapp `/prepare-transactions`, `/send-transactions`, `/get-transaction-status`, or token reads.** This public document is not the Dapp wire spec.
+**VERIFIED** — `GET https://api.sandbox.brickken.com/openapi.json` with `Accept: application/json`, no `x-api-key`, 2026-09-03 `19:30:20 GMT`, HTTP 200. Body title `Brickken x402 Agentic API` version `1.0.0`, 25 paths, all `/x402/*`, `/rams` omitted from this snapshot, `/faucet/bkn` present. **No Dapp prepare, correlation, status, or token-read routes were present.** This public document is not the Dapp wire spec.
 
 **VERIFIED** — `GET https://docs.brickken.com/api-reference/openapi.json`, 2026-09-03 `19:30:24 GMT`, HTTP 200. Title `Brickken API V2` version `2.0.0`, 56 paths including every scoped Dapp operation.
 
@@ -185,19 +185,21 @@ Standalone whitelist then `needWhitelist: false` is the documented single-tx sha
 | Mode binding | Send shape must match prepare `executionMode`. Mismatch: `Prepared transaction was not created for … execution`. | VERIFIED | Send “three execution modes” |
 | Request | `{ txId: string, txHash: string }`. Exactly one each. Arrays rejected. | VERIFIED | Send parameters + OpenAPI oneOf client-broadcast |
 | Mutually exclusive | Send exactly one of `signedTransactions`, `txHash`, `transactions` | VERIFIED | Send IMPORTANT note |
-| Idempotency | Resubmitting the same pair is idempotent | VERIFIED | Send client-broadcast paragraph |
-| Documented 200 body | `{ txHash, status }` with example `status: "pending"` | VERIFIED | Send success example and OpenAPI 200 |
-| HTTP 202 | Documented for **relayed** send when broadcast but unconfirmed. Not documented for `client-broadcast`. OpenAPI lists 200, 400, 402 only. | CONFLICT | Send workflow vs OpenAPI responses |
+| Idempotency | Resubmitting the identical `txId + txHash` pair is idempotent; changing either identifier is not an authorized retry | SUPPORT-CONFIRMED 2026-09-11 | Brickken Technical Support |
+| Client-broadcast success | HTTP 202; `results[0].result` contains matching `transactionHash`, `status: "pending"`, `executionMode: "client-broadcast"` | SUPPORT-CONFIRMED 2026-09-11 | Brickken Technical Support |
+| Published schema conflict | The older public example/OpenAPI describes a flat HTTP 200 body; it must not drive the client-broadcast production parser | CONFLICT | Send workflow vs support-confirmed behavior |
+| Blockchain effect | Correlation only; Brickken verifies the existing blockchain transaction and does not rebroadcast it | SUPPORT-CONFIRMED 2026-09-11 | Brickken Technical Support |
+| Compared fields | Exact `chainId`, `from`, `to`, `data`, `value`, `nonce`; gas fields may vary | SUPPORT-CONFIRMED 2026-09-11 | Brickken Technical Support |
 | 400 example | `{ error: { code, message, details } }` e.g. `INVALID_SIGNATURE` | VERIFIED | Send 400 schema |
 | SDK send auth descriptor | SDK posts send with `auth: "api-key-or-x402"` | VERIFIED | `dist/index.js` `sendTransactions` |
 
 Postman Send example is **client-signed** (`signedTransactions` + `txId: "tx_abc123def456"`), not `client-broadcast`. **VERIFIED** gap.
 
-### 3.5 `GET /get-transaction-status`
+### 3.5 `GET /transaction-status`
 
 | Topic | Contract | Class | Source |
 | --- | --- | --- | --- |
-| Path | `GET /get-transaction-status` | VERIFIED | [status](https://docs.brickken.com/api-reference/endpoint/get-transaction-status) |
+| Path | `GET /transaction-status` | SUPPORT-CONFIRMED 2026-09-11; pinned SDK path is obsolete | [status](https://docs.brickken.com/api-reference/endpoint/get-transaction-status) |
 | Query | At least one of `hash` or `txId`. No body. | VERIFIED | status page |
 | `hash` | On-chain hash, `0x` prefix | VERIFIED | status page |
 | `txId` | Internal prepare id | VERIFIED | status page |
@@ -354,9 +356,9 @@ REST docs recommend hex `aa36a7` without `0x` and also show decimal `"11155111"`
 prepare (API key)
   → persist txId + exact unsigned transactions
   → wallet eth_sendTransaction (normalised)
-  → persist txHash before Brickken send
-  → POST /send-transactions { txId, txHash }   // idempotent same pair
-  → GET /get-transaction-status?txId=… and/or hash=…
+  → persist txHash before Brickken correlation
+  → POST /send-transactions { txId, txHash }   // correlation; idempotent same pair
+  → GET /transaction-status?txId=… and/or hash=…
        pending  → keep polling, never resubmit
        success  → read-back
        rejected → terminal for that tx
@@ -365,8 +367,9 @@ prepare (API key)
 | State | Meaning | Next |
 | --- | --- | --- |
 | Prepared, not broadcast | Unsigned txs + `txId` exist | Wallet prompt. Do not prepare again automatically. |
-| Broadcast, Brickken not confirmed | Local `txHash` exists | Confirm identical `{txId,txHash}`. SDK retries confirmation on `400` matching `/broadcast transaction .*not found on the prepared chain/i` at 250/500/1000 ms, then `BroadcastConfirmationError`. **VERIFIED** `dist/index.js` |
-| Send 200 `status: pending` | Brickken accepted the pair; chain confirmation incomplete | Poll |
+| Broadcast, RPC not verified | Local `txHash` exists | Trusted RPC verifies immutable identity and fee envelope; never resend. |
+| RPC verified, correlation pending | Exact pair exists | Correlate or bounded-retry only the identical pair. Temporary not-found stays pending. |
+| Correlation HTTP 202 `pending` | Brickken accepted the pair; chain confirmation incomplete | Poll `/transaction-status` and trusted RPC independently. |
 | Status `pending` | Broadcast, not mined/confirmed | Poll. Do not resubmit. |
 | Status `success` | Brickken terminal success | Read-back. Token address is not in this payload. |
 | Status `rejected` | Brickken terminal failure + `error` | Do not issue a receipt. |
@@ -543,7 +546,7 @@ Stored under `src/server/brickken/test-vectors/`. Provenance is in `index.json`.
 
 1. Sandbox host is `https://api.sandbox.brickken.com`. Production is out of scope.
 2. Dapp writes: `POST /prepare-transactions` with `method` `newTokenization` | `whitelist` | `mintToken`.
-3. Dapp reads used by MVP: `GET /get-token-info`, `/get-tokenizer-info`, `/get-whitelist-status`, `/get-balance-whitelist`, `/get-transaction-status`.
+3. Dapp reads used by MVP: `GET /get-token-info`, `/get-tokenizer-info`, `/get-whitelist-status`, `/get-balance-whitelist`, `/transaction-status`.
 4. Dapp methods require `x-api-key`. Do not send x402. Do not use `brickken-relayed`.
 5. Pin `brickken-sdk@0.2.1` behind `server-only`. Namespaces: `tokenization.create/whitelist/mint/info/tokenizer/whitelistStatus/balanceAndWhitelist`, `tx.prepare/send/status`.
 6. Set `executionMode: "client-broadcast"` and `execute: false`. Do not pass a browser wallet into the SDK. Do not set SDK `rpcUrl` for the Edict wallet path.
@@ -575,7 +578,7 @@ Do not resolve these by guesswork. They remain gates for the authorized contract
 6. Whether Brickken confirm accepts a wallet-broadcast hash when nonce/gas were omitted per browser-wallets guidance.
 7. Whether `needKyc: false` on whitelist/mint is accepted on the sandbox key in use.
 8. Whether standalone whitelist (with investor email) then `mintToken` `needWhitelist: false` prepares **one** transaction and mints to the already-whitelisted address.
-9. Whether `/get-transaction-status` for a Dapp `client-broadcast` tx requires the key (Edict will send it regardless).
+9. Whether `/transaction-status` for a Dapp `client-broadcast` tx requires the key (Edict will send it regardless).
 10. When `newTokenization` and `whitelist` credits are decremented (prepare vs send).
 11. Prepared-tx expiry and outstanding-prepare numeric cap.
 12. Finality: is `success` 1-block mined or deeper?
@@ -601,7 +604,7 @@ Minimum adapter:
 7. Validate prepare: `txId` is a non-empty string (not array); `transactions.length === 1`; `from` matches planned tokenizer; numeric `chainId` is Sepolia; persist the raw sanitized body before returning anything to the browser.
 8. Accept both unsigned-tx encodings; preserve unknown keys for diagnostics; project a normalised view for the browser (`to`, `data`, `value`, `gas` hex) without claiming that view is what Brickken hashed.
 9. `send` only `{ txId, txHash }` after the hash is persisted. Retry only that pair.
-10. Poll `GET /get-transaction-status` with the API key and at least `txId`; accept `transactionHash` or `hash` if present; persist `pending`/`success`/`rejected` only.
+10. Poll `GET /transaction-status` with the API key and at least `txId`; accept `transactionHash` or `hash` if present; persist `pending`/`success`/`rejected` only.
 11. Reads through SDK or raw GET with runtime schemas copied from §7. Fail closed on missing fields. Compare addresses case-insensitively; compare quantities as integers.
 12. Contract-test against the sourced vectors with injected fetch. Do not call the live API in CI.
 

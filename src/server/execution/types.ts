@@ -2,6 +2,11 @@ import type {
   OnchainTransactionEvidenceV1,
   TransactionReceiptEvidenceV1,
 } from "./onchain-evidence";
+import type {
+  FeeAuthorizationV1,
+  ImmutableExecutionIdentityV1,
+  WalletExecutionIntentV1,
+} from "@/shared/wallet/execution-authorization";
 
 export type IsoUtcTimestamp = string;
 
@@ -40,7 +45,16 @@ export type OperationStage =
   | "READ_BACK_VERIFIED"
   | "REJECTED"
   | "PREPARE_UNKNOWN"
-  | "BROADCAST_UNKNOWN";
+  | "BROADCAST_UNKNOWN"
+  | "PREPARED_STALE"
+  | "REPREPARE_INTENT"
+  | "RPC_TRANSACTION_VERIFIED"
+  | "POLICY_VIOLATION_ONCHAIN"
+  | "RPC_TRANSACTION_RECONCILIATION_REQUIRED"
+  | "BRICKKEN_CORRELATION_PENDING"
+  | "BRICKKEN_CORRELATED";
+
+export type OperationStageV4 = OperationStage;
 
 export type EventActor = "USER" | "SERVER" | "WALLET" | "BRICKKEN";
 
@@ -136,6 +150,124 @@ export interface WriteOperationV3 extends WriteOperation {
   readonly transactionReceiptEvidence: TransactionReceiptEvidenceV1 | null;
 }
 
+export interface PreparationAttemptV1 {
+  readonly attemptId: string;
+  readonly sequence: number;
+  readonly state: "PREPARED" | "STALE" | "REPREPARE_INTENT" | "PREPARE_UNKNOWN" | "REFUSED";
+  readonly txId: string | null;
+  readonly unsignedTransaction: Record<string, unknown> | null;
+  readonly preparationFingerprint: string | null;
+  readonly immutableIdentity: ImmutableExecutionIdentityV1 | null;
+  readonly feeAuthorization: FeeAuthorizationV1 | null;
+  readonly preparedAt: IsoUtcTimestamp | null;
+  readonly preparedRunRevision: number | null;
+  readonly freshnessPolicyVersion: string;
+  readonly freshnessEvaluatedAt: IsoUtcTimestamp | null;
+  readonly nonceFreshnessEvidence: NonceFreshnessEvidenceV1 | null;
+  readonly staleAt: IsoUtcTimestamp | null;
+  readonly staleReason: "NONCE_MISMATCH" | null;
+}
+
+export interface NonceFreshnessEvidenceV1 {
+  readonly evidenceVersion: "1.0";
+  readonly policyVersion: string;
+  readonly authority: "TRUSTED_SERVER_RPC";
+  readonly rpcMethod: "eth_getTransactionCount";
+  readonly blockTag: "pending";
+  readonly chainId: "11155111";
+  readonly requiredSigner: string;
+  readonly preparedNonce: string;
+  readonly observedPendingNonce: string;
+  readonly status: "FRESH" | "STALE";
+  readonly observedAt: IsoUtcTimestamp;
+}
+
+export interface WalletPromptAuthorizationRecordV1 {
+  readonly authorizationVersion: "1.0";
+  readonly walletIntent: WalletExecutionIntentV1;
+  readonly walletIntentHash: string;
+  readonly providerInvocation: "PROVEN_NOT_INVOKED" | "INVOKED_OR_UNKNOWN";
+  readonly invocationAttemptId: string | null;
+  readonly authorityReleasedAt: IsoUtcTimestamp | null;
+  readonly unresolvedOutcome:
+    | "BROWSER_DISAPPEARED"
+    | "CLIENT_CLAIMED_NOT_INVOKED"
+    | "PROVIDER_4001"
+    | "PROVIDER_TIMEOUT"
+    | "PROVIDER_ERROR"
+    | "HASH_PERSISTENCE_UNCONFIRMED"
+    | null;
+  readonly unresolvedAt: IsoUtcTimestamp | null;
+  readonly recordedAt: IsoUtcTimestamp;
+}
+
+export interface RpcTransactionAuthorizationEvidenceV1 {
+  readonly evidenceVersion: "1.0";
+  readonly observedAt: IsoUtcTimestamp;
+  readonly transactionHash: string;
+  readonly immutableIdentity: Omit<ImmutableExecutionIdentityV1, "chainId"> & {
+    readonly chainId: string;
+  };
+  readonly immutableIdentityStatus: "MATCH" | "MISMATCH";
+  readonly feeAuthorizationStatus: "WITHIN_ENVELOPE" | "POLICY_VIOLATION" | "NOT_EVALUATED";
+  readonly feePolicyViolationCode:
+    | "LEGACY_GAS_PRICE"
+    | "FEE_MODEL_CHANGED"
+    | "ACCESS_LIST_CHANGED"
+    | "GAS_LIMIT_CAP_EXCEEDED"
+    | "MAX_FEE_CAP_EXCEEDED"
+    | "PRIORITY_FEE_CAP_EXCEEDED"
+    | "NETWORK_FEE_CAP_EXCEEDED"
+    | "INVALID_FEE_EVIDENCE"
+    | null;
+  readonly observedMaximumNetworkFeeWei: string | null;
+}
+
+export interface BrickkenCorrelationAttemptV1 {
+  readonly attempt: number;
+  readonly authorizedAt: IsoUtcTimestamp;
+  readonly result: "AUTHORIZED" | "TEMPORARILY_NOT_FOUND" | "TRANSPORT_UNKNOWN";
+}
+
+export interface BrickkenCorrelationV1 {
+  readonly correlationVersion: "1.0";
+  readonly pair: { readonly txId: string; readonly txHash: string };
+  readonly lifecycle: "PENDING" | "CORRELATED";
+  readonly attempts: readonly BrickkenCorrelationAttemptV1[];
+  readonly correlatedAt: IsoUtcTimestamp | null;
+}
+
+export interface BrickkenStatusEvidenceV1 {
+  readonly evidenceVersion: "1.0";
+  readonly observedAt: IsoUtcTimestamp;
+  readonly txId: string;
+  readonly txHash: string;
+  readonly status: "pending" | "success" | "rejected";
+}
+
+export interface TokenIdentityV1 {
+  readonly identityVersion: "1.0";
+  readonly chainId: "11155111";
+  readonly tokenAddress: string;
+  readonly tokenSymbol: string;
+  readonly tokenizerWalletAddress: string;
+  readonly tokenizationTxHash: string;
+  readonly manifestHash: string;
+  readonly planHash: string;
+  readonly verifiedAt: IsoUtcTimestamp;
+  readonly readBackEvidenceHash: string;
+}
+
+export interface WriteOperationV4 extends Omit<WriteOperationV3, "stage"> {
+  readonly stage: OperationStageV4;
+  readonly preparationAttempts: readonly PreparationAttemptV1[];
+  readonly activePreparationAttemptId: string | null;
+  readonly walletPromptAuthorization: WalletPromptAuthorizationRecordV1 | null;
+  readonly rpcTransactionEvidence: RpcTransactionAuthorizationEvidenceV1 | null;
+  readonly brickkenCorrelation: BrickkenCorrelationV1 | null;
+  readonly brickkenStatusEvidence: readonly BrickkenStatusEvidenceV1[];
+}
+
 export interface AuditEvent {
   readonly id: string;
   readonly sequence: number;
@@ -188,7 +320,14 @@ export interface ExecutionRunV3 extends Omit<ExecutionRunV1, "schemaVersion" | "
   readonly operations: readonly [WriteOperationV3, WriteOperationV3, WriteOperationV3];
 }
 
-export type ExecutionRun = ExecutionRunV1 | ExecutionRunV2 | ExecutionRunV3;
+export interface ExecutionRunV4 extends Omit<ExecutionRunV1, "schemaVersion" | "approval" | "operations"> {
+  readonly schemaVersion: "4.0";
+  readonly approval: ApprovalRecordV2;
+  readonly operations: readonly [WriteOperationV4, WriteOperationV4, WriteOperationV4];
+  readonly tokenIdentity: TokenIdentityV1 | null;
+}
+
+export type ExecutionRun = ExecutionRunV1 | ExecutionRunV2 | ExecutionRunV3 | ExecutionRunV4;
 
 export type ExecutionRunEvent =
   | {

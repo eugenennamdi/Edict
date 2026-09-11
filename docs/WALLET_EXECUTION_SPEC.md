@@ -52,7 +52,9 @@ No public prepare, wallet-prompt, wallet-result, confirmation, polling, read-bac
 
 ## Canonical wallet intent
 
-**DECISION** — `WalletIntentV1` is an explicit canonical JSON object, not concatenated text. Its SHA-256 integrity hash binds the domain tag, run ID, manifest hash, plan hash, sandbox environment, operation ID and kind, prepared transaction ID, required signer, Sepolia chain ID, durable prompt revision, wallet-request version, and exact canonical wallet request.
+**DECISION — V4 wallet execution intent** — The new canonical `WalletExecutionIntentV1` separates and hash-binds: immutable execution identity (`chainId`, `from`, `to`, `data`, `value`, `nonce`); bounded EIP-1559 fee authorization; Brickken preparation identity (`method`, `executionMode`, attempt ID, `txId`, preparation fingerprint); run/revision, approval digest/revision, manifest/plan hashes, operation, signer and environment; and an independently evaluated semantic-policy decision. The calldata commitment is integrity evidence only and is never described as proof of transaction meaning.
+
+**DECISION** — Exact prepared gas values remain hash-bound defaults. Initial caps equal those defaults, and `maximumNetworkFeeWei = maximumGasLimit × maximumMaxFeePerGas` is computed with exact integer arithmetic. Actual gas fields may decrease, but legacy `gasPrice`, type or fee-model switching, access-list changes, any individual cap increase, or a product above the network-fee cap violates policy. `FeeAuthorizationV1` is an authorization and audit boundary; it cannot physically control an external wallet after provider invocation. Production semantic authorization and wallet submission remain deny-all.
 
 **DECISION** — The server rederives the prompt envelope from the durable `WALLET_PROMPT_RECORDED` run and never treats a client-supplied intent hash as authority. The browser validates the strict envelope, reconstructs the same intent, and recomputes the hash before invoking the provider. Raw Brickken responses, persistence snapshots, emails, API headers, and unvalidated transaction objects are not part of the browser prompt.
 
@@ -64,15 +66,29 @@ No public prepare, wallet-prompt, wallet-result, confirmation, polling, read-bac
 
 **DECISION** — Live execution cannot be enabled until a controlled wallet/version test establishes either that the wallet safely accepts transaction-level `chainId`, or that its active-chain behavior preserves Edict's intended signed-chain constraint with the field represented as a provider precondition. A wallet unable to represent the complete Edict projection safely is execution-incompatible; no wallet-specific rewriting is allowed.
 
+## Trusted nonce freshness and stale preparation
+
+**DECISION** — Browser/provider inspection selects the provider, authorizes the account, proves the required signer is selected, and proves Sepolia readiness. It is not authoritative for prepared-nonce freshness. Immediately before prompt authorization, the server must use trusted Sepolia RPC `eth_getTransactionCount(requiredSigner, "pending")` and persist the result with `preparedAt`, `freshnessPolicyVersion`, and `freshnessEvaluatedAt`. Edict does not invent a Brickken expiry.
+
+**DECISION** — A nonce mismatch produces `PREPARED_STALE` and prohibits wallet invocation. Only an explicit user action may enter `REPREPARE_INTENT` and authorize one new preparation for the same operation. The prior attempt remains immutable. No new run or plan approval is required when manifest and plan semantics are unchanged; no nonce is changed locally.
+
 ## Invocation ambiguity and retry rules
 
-**DECISION** — A durable wallet-prompt transition must succeed before `eth_sendTransaction`. Immediately before the direct provider call, the coordinator marks provider invocation as started without an asynchronous boundary between the marker and the call.
+**DECISION** — A durable wallet-prompt transition must succeed before `eth_sendTransaction`. A second CAS must durably change prompt authority from `PROVEN_NOT_INVOKED` to `INVOKED_OR_UNKNOWN`, bind a unique invocation-attempt ID and record authority release before the execution-authorized envelope is released to the browser. `PROVEN_NOT_INVOKED` is server proof that send authority was never released; it can never be restored or established by an untrusted post-authority client claim. Only the CAS winner may make that one provider call. A crash after authority release but before invocation remains conservatively unknown.
 
 **DECISION** — Account/chain revalidation, provider-generation checks, prompt validation, intent mismatch, semantic refusal, or durable prompt failure before invocation cause zero send calls and are not labeled potentially broadcast. A durable prompt may remain as the replay lock; local validation failure is not falsely recorded as user rejection.
 
 **DECISION** — Once the provider method has been invoked, every rejected, timed-out, malformed, disconnected or otherwise unsuccessful result is potentially broadcast, including provider code `4001`. A `4001` is definite cancellation only when Edict proves invocation never began; an error returned by the provider is not that proof. A valid nonzero transaction hash is handed to durable storage immediately. Every other post-invocation outcome requires reconciliation and cannot authorize another prompt or resend.
 
 **DECISION** — Failed hash handoff triggers a read of durable state only. A matching stored hash is accepted; otherwise the run remains blocked for reconciliation. The coordinator never sends again, prepares a replacement, or creates a replacement transaction automatically.
+
+**DECISION** — A post-authority browser disappearance, browser assertion of non-invocation, provider `4001`, provider timeout, provider error, or unconfirmed hash handoff all persist as `BROADCAST_UNKNOWN/RECONCILIATION_REQUIRED`. None can restore `PROVEN_NOT_INVOKED` or authorize a second send.
+
+## Brickken correlation
+
+**SUPPORT-CONFIRMED — 2026-09-11** — After the wallet returns a hash, Edict persists it by CAS before any Brickken call. `POST /send-transactions {txId,txHash}` correlates the already-broadcast transaction; it does not broadcast. A successful correlation is HTTP 202 with `results[0].result` containing the matching hash, `pending`, and `client-broadcast`. The same pair is idempotent and may receive at most one initial call plus two bounded retries. A changed identifier or any further `eth_sendTransaction` call is forbidden.
+
+**DECISION** — Trusted RPC first compares the six immutable fields and separately evaluates fees. A six-field mismatch persists distinct reconciliation evidence, preserves the hash, continues trusted-RPC observation, forbids correlation and never resubmits. A six-field match with fees outside `FeeAuthorizationV1` persists `POLICY_VIOLATION_ONCHAIN`, preserves the hash, continues transaction/receipt/finality evidence, and may correlate only the same durable `txId + txHash`; that Brickken correlation records an already-broadcast reality and is not a second blockchain submission. Policy-violation evidence is not approval: the run remains `RECONCILIATION_REQUIRED`, never automatically advances to WHITELIST/MINT, and requires an operator decision after chain state is known. Normal correlation progresses `BROADCAST_HASH_PERSISTED → RPC_TRANSACTION_VERIFIED → BRICKKEN_CORRELATION_PENDING → BRICKKEN_CORRELATED`. Temporary mempool not-found or transport uncertainty stays correlation-pending. Recovery uses `GET /transaction-status` and the persisted pair. TOKENIZE advances only after compliant fees, Brickken success, matching successful finalized RPC evidence, read-back, and durable `TokenIdentityV1`; WHITELIST and MINT consume that identity and never accept a caller-selected token address.
 
 **DECISION** — Phase 8 captures the provider object and descriptor-backed `request`, `on`, and `removeListener` methods once; accessor-backed methods, later mutation, partial listener registration, stale generations, duplicate initialization and collision races fail closed. Provider snapshot generation spans the complete account/chain read pair. A hostile `Proxy` can still execute its own reflection traps in the same JavaScript realm; Edict catches and sanitizes failures but does not claim those traps are harmless.
 

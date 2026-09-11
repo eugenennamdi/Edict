@@ -43,6 +43,13 @@ const operationStageSchema = z.enum([
   "REJECTED",
   "PREPARE_UNKNOWN",
   "BROADCAST_UNKNOWN",
+  "PREPARED_STALE",
+  "REPREPARE_INTENT",
+  "RPC_TRANSACTION_VERIFIED",
+  "POLICY_VIOLATION_ONCHAIN",
+  "RPC_TRANSACTION_RECONCILIATION_REQUIRED",
+  "BRICKKEN_CORRELATION_PENDING",
+  "BRICKKEN_CORRELATED",
 ]);
 
 function publicOperationSchema(kind: "TOKENIZE" | "WHITELIST" | "MINT") {
@@ -92,7 +99,7 @@ export type PublicExecutionPreparation = Readonly<{
 
 export const publicRunProjectionSchema = z.strictObject({
   id: publicRunIdSchema,
-  schemaVersion: z.enum(["1.0", "2.0", "3.0"]),
+  schemaVersion: z.enum(["1.0", "2.0", "3.0", "4.0"]),
   manifestHash: digestSchema,
   planHash: digestSchema,
   environment: z.literal("sandbox"),

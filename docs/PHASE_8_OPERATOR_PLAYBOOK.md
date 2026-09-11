@@ -4,6 +4,8 @@
 
 **DECISION** — Phase 8 is complete offline. It provides hardened provider handling, `ExecutionRunV3`, strict trusted-RPC transaction/receipt comparators, a deny-by-default authorization harness, and one concrete `BRICKKEN_READ` executor. The executor implementation did not start the harness, apply migration `0002_gorgeous_squadron_sinister.sql`, access Neon, call Brickken or RPC, request a wallet account/signature/transaction, broadcast, confirm, poll, or read back.
 
+**CURRENT VERIFIED STATUS — 2026-09-11** — The statement above describes what the Phase 8 executor did at that historical checkpoint. A later read-only Neon audit proved migration `0002_gorgeous_squadron_sinister.sql` is now recorded in the live migration ledger and the live constraint permits V3. It must not be interpreted as currently unapplied.
+
 **DECISION** — The harness is an authorization and evidence-validation shell, not a production route and not a general live-action dispatcher. `runPhase8HarnessCli()` accepts only an explicitly injected, action-specific executor factory. The sole concrete composition is `BRICKKEN_READ`: a credential-bearing Brickken sandbox connectivity and Sepolia network-information check. It is not approved for operator execution, is not imported by the production application, and has not been run. Every later action still requires a separately reviewed executor.
 
 **DECISION** — No wallet is selected, privileged or verified. EIP-6963 display metadata is self-asserted. A result applies only to the exact selected provider instance, operator-recorded wallet version, run, operation and wallet-request hash. It does not certify a wallet brand, another version, WalletConnect, another operation or another prepared transaction.

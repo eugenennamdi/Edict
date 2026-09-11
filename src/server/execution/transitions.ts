@@ -15,7 +15,7 @@ import type {
   ExecutionRunV3,
 } from "./types";
 
-type ExecutionRunV1 = ExecutionRun;
+type ExecutionRunV1 = Exclude<ExecutionRun, { readonly schemaVersion: "4.0" }>;
 
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 const WALLET = /^0x[0-9a-f]{40}$/;
@@ -763,7 +763,10 @@ function recordFinalVerification(
   );
 }
 
-export function applyRunEvent(run: ExecutionRunV1, event: ExecutionRunEvent): ExecutionRunV1 {
+export function applyRunEvent(run: ExecutionRun, event: ExecutionRunEvent): ExecutionRun {
+  if (run.schemaVersion === "4.0") {
+    throw new IllegalStateTransitionError("V4 runs require the V4 transition contract.");
+  }
   const current = cloneRun(run);
   switch (event.type) {
     case "APPROVE_PLAN":
@@ -816,10 +819,10 @@ export function applyRunEvent(run: ExecutionRunV1, event: ExecutionRunEvent): Ex
 }
 
 export function persistedConfirmationPair(
-  run: ExecutionRunV1,
+  run: ExecutionRun,
   kind: OperationKind,
 ): { txId: string; txHash: string } | null {
-  const current = op(run, kind);
+  const current = run.operations[operationIndex(kind)];
   if (current.preparedTxId === null || current.blockchainTxHash === null) {
     return null;
   }

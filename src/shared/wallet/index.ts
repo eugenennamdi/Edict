@@ -1,5 +1,6 @@
 export * from "./approval";
 export * from "./bounds";
+export * from "./execution-authorization";
 export * from "./intent";
 export * from "./limits";
 export * from "./preparation-review";
