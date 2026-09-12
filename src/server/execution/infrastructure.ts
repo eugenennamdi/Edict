@@ -9,6 +9,7 @@ export interface IdGenerator {
   runId(): string;
   operationId(): string;
   eventId(): string;
+  invocationAttemptId?(): string;
 }
 
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -30,6 +31,7 @@ export function cryptoIdGenerator(): IdGenerator {
     runId: () => globalThis.crypto.randomUUID(),
     operationId: () => globalThis.crypto.randomUUID(),
     eventId: () => globalThis.crypto.randomUUID(),
+    invocationAttemptId: () => `inv-${globalThis.crypto.randomUUID()}`,
   };
 }
 

@@ -4,7 +4,9 @@ import { WALLET_BOUNDARY_LIMITS } from "./limits";
 
 const MAX_UINT256 = (1n << 256n) - 1n;
 const address = z.string().regex(/^0x[0-9a-f]{40}$/);
-const hash = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+export const walletExecutionIntentHashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+export type WalletExecutionIntentHash = z.infer<typeof walletExecutionIntentHashSchema>;
+const hash = walletExecutionIntentHashSchema;
 const digest = z.string().regex(/^0x[0-9a-f]{64}$/);
 const quantity = z
   .string()
