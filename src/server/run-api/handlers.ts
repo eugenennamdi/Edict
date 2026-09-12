@@ -8,7 +8,9 @@ import {
   RepositoryRevisionConflictError,
 } from "../execution";
 import {
+  browserBroadcastUnknownInputSchema,
   BrickkenWritesDisabledError,
+  ingestBroadcastHashInputSchema,
   OrchestrationError,
 } from "../orchestration";
 import { SecurityTokenError } from "../security";
@@ -41,6 +43,7 @@ type ErrorCode =
   | "STATE_CONFLICT"
   | "PREPARATION_DISABLED"
   | "PREPARATION_UNCONFIRMED"
+  | "EXECUTION_AUTHORIZATION_UNAVAILABLE"
   | "SERVICE_UNAVAILABLE";
 
 function response(status: number, body: unknown, extraHeaders?: HeadersInit): Response {
@@ -133,6 +136,9 @@ function mapError(error: unknown): Response {
   if (error instanceof BrickkenWritesDisabledError) return failure(404, "PREPARATION_DISABLED");
   if (error instanceof RepositoryRevisionConflictError) return failure(409, "REVISION_CONFLICT");
   if (error instanceof OrchestrationError) {
+    if (error.code === "AUTHORIZATION_DENIED") {
+      return failure(403, "EXECUTION_AUTHORIZATION_UNAVAILABLE");
+    }
     if (error.code === "EXECUTION_INVARIANT_FAILED") return failure(409, "STATE_CONFLICT");
     return failure(503, "PREPARATION_UNCONFIRMED");
   }
@@ -144,6 +150,23 @@ function mapError(error: unknown): Response {
     return failure(503, "SERVICE_UNAVAILABLE");
   }
   return failure(400, "BAD_REQUEST");
+}
+
+async function authorizeMutation(
+  request: Request,
+  runId: string,
+  options?: RunApiHandlerOptions,
+): Promise<{ api: RunApiRuntime; config: RunApiDeploymentConfig } | Response> {
+  const config = guardedConfig(request, options);
+  if (config instanceof Response) return config;
+  const api = runtime(options);
+  await authorize(
+    request,
+    runId,
+    api,
+    runAccessCookieOptions(config.trustedOrigin, options?.nodeEnv).name,
+  );
+  return { api, config };
 }
 
 async function authorize(request: Request, runId: string, api: RunApiRuntime, cookieName: string): Promise<void> {
@@ -255,6 +278,66 @@ export async function prepareNextOperationHandler(
     if (!api.execution) throw new BrickkenWritesDisabledError();
     const prepared = await api.execution.prepareNextOperation(runId, body.expectedRevision);
     return response(200, { ok: true, run: await projectPublicRun(prepared) });
+  } catch (error) {
+    return mapError(error);
+  }
+}
+
+export async function walletAuthorizationHandler(
+  request: Request,
+  runId: string,
+  options?: RunApiHandlerOptions,
+): Promise<Response> {
+  try {
+    const authorized = await authorizeMutation(request, runId, options);
+    if (authorized instanceof Response) return authorized;
+    const body = revisionBodySchema.parse(await readJson(request, 1024));
+    if (!authorized.api.walletExecution) {
+      return failure(404, "EXECUTION_AUTHORIZATION_UNAVAILABLE");
+    }
+    const { envelope } = await authorized.api.walletExecution.releaseSendAuthority(
+      runId,
+      body.expectedRevision,
+    );
+    return response(200, { ok: true, envelope });
+  } catch (error) {
+    return mapError(error);
+  }
+}
+
+export async function ingestBroadcastHashHandler(
+  request: Request,
+  runId: string,
+  options?: RunApiHandlerOptions,
+): Promise<Response> {
+  try {
+    const authorized = await authorizeMutation(request, runId, options);
+    if (authorized instanceof Response) return authorized;
+    const body = ingestBroadcastHashInputSchema.parse(await readJson(request, 8 * 1024));
+    if (!authorized.api.walletExecution) {
+      return failure(404, "EXECUTION_AUTHORIZATION_UNAVAILABLE");
+    }
+    const run = await authorized.api.walletExecution.ingestBroadcastHash(runId, body);
+    return response(200, { ok: true, run: await projectPublicRun(run) });
+  } catch (error) {
+    return mapError(error);
+  }
+}
+
+export async function recordBroadcastUnknownHandler(
+  request: Request,
+  runId: string,
+  options?: RunApiHandlerOptions,
+): Promise<Response> {
+  try {
+    const authorized = await authorizeMutation(request, runId, options);
+    if (authorized instanceof Response) return authorized;
+    const body = browserBroadcastUnknownInputSchema.parse(await readJson(request, 8 * 1024));
+    if (!authorized.api.walletExecution) {
+      return failure(404, "EXECUTION_AUTHORIZATION_UNAVAILABLE");
+    }
+    const run = await authorized.api.walletExecution.recordBrowserBroadcastUnknown(runId, body);
+    return response(200, { ok: true, run: await projectPublicRun(run) });
   } catch (error) {
     return mapError(error);
   }

@@ -142,7 +142,7 @@ export function ExecutionReviewSection({
             </section>
 
             <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-relaxed text-foreground">
-              This review is not wallet authorization. A future wallet prompt requires a separate durable prompt revision, fresh wallet checks, and an explicit human action.
+              This review is not wallet authorization. The browser wallet boundary below requires a separate durable authority release, fresh wallet checks, and an explicit human action. Production authorization remains deny-all.
             </div>
           </>
         )}

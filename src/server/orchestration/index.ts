@@ -22,6 +22,8 @@ export {
   type BrickkenStatusFetcher,
   type PreflightWalletAuthorizationResult,
   type SendAuthorizedEnvelopeV1,
+  browserBroadcastUnknownInputSchema,
+  type BrowserBroadcastUnknownInput,
   ingestBroadcastHashInputSchema,
   type IngestBroadcastHashInput,
   type BroadcastUnknownReason,

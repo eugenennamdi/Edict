@@ -20,8 +20,11 @@ const EXPECTED_API_ROUTES = Object.freeze([
   "/api/runs/[runId]",
   "/api/runs/[runId]/approval",
   "/api/runs/[runId]/approval-challenges",
+  "/api/runs/[runId]/broadcast-hash",
+  "/api/runs/[runId]/broadcast-unknown",
   "/api/runs/[runId]/cancel",
   "/api/runs/[runId]/prepare",
+  "/api/runs/[runId]/wallet-authorization",
 ] as const);
 
 const EXPECTED_APP_PATHS = Object.freeze([

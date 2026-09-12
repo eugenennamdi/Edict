@@ -619,12 +619,12 @@ describe("ExecutionV4Orchestrator", () => {
       expect(promptAuth?.invocationAttemptId).toBe(envelope.invocationAttemptId);
       expect(envelope.invocationAttemptId).toMatch(/^inv-attempt-\d+$/);
 
-      // Envelope is bound to immutable identity, fee auth, plan/manifest hashes
-      expect(envelope.walletIntent.manifestHash).toBe(releasedRun.manifestHash);
-      expect(envelope.walletIntent.planHash).toBe(releasedRun.planHash);
-      expect(envelope.walletIntent.immutableIdentity.nonce).toBe("0x5");
-      expect(envelope.walletIntent.immutableIdentity.from).toBe(TOKENIZER_ADDRESS);
-      expect(envelope.walletIntent.immutableIdentity.to).toBe(TO);
+      // Public envelope contains only the exact provider request and durable bindings.
+      expect(envelope.expectedRevision).toBe(releasedRun.revision);
+      expect(envelope.walletRequest.nonce).toBe("0x5");
+      expect(envelope.walletRequest.from).toBe(TOKENIZER_ADDRESS);
+      expect(envelope.walletRequest.to).toBe(TO);
+      expect(envelope).not.toHaveProperty("walletIntent");
 
       // Once INVOKED_OR_UNKNOWN is set, it cannot be re-released
       await expect(
@@ -800,6 +800,35 @@ describe("ExecutionV4Orchestrator", () => {
       ).toBe("PROVIDER_TIMEOUT");
     });
 
+    it("binds browser ambiguity reports to the released invocation and intent", async () => {
+      const h = createHarness();
+      const runV2 = await createPreparedV2Run(h);
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      const { envelope, run: releasedRun } = await h.v4.releaseSendAuthority(
+        v4Run.id,
+        v4Run.revision,
+      );
+      const base = {
+        expectedRevision: releasedRun.revision,
+        invocationAttemptId: envelope.invocationAttemptId,
+        walletIntentHash: envelope.walletIntentHash,
+        reason: "PROVIDER_4001" as const,
+      };
+
+      await expect(h.v4.recordBrowserBroadcastUnknown(releasedRun.id, {
+        ...base,
+        invocationAttemptId: "altered",
+      })).rejects.toThrow(IllegalStateTransitionError);
+      await expect(h.v4.recordBrowserBroadcastUnknown(releasedRun.id, {
+        ...base,
+        walletIntentHash: `sha256:${"0".repeat(64)}`,
+      })).rejects.toThrow(IllegalStateTransitionError);
+
+      const unknown = await h.v4.recordBrowserBroadcastUnknown(releasedRun.id, base);
+      expect(unknown.status).toBe("RECONCILIATION_REQUIRED");
+      expect(unknown.operations[0]).toMatchObject({ stage: "BROADCAST_UNKNOWN" });
+    });
+
     it("records pre-invocation user rejection as WALLET_REJECTED", async () => {
       const h = createHarness();
       const runV2 = await createPreparedV2Run(h);
@@ -872,7 +901,9 @@ describe("ExecutionV4Orchestrator", () => {
       expect(envelope.walletIntentHash.startsWith("0x")).toBe(false);
 
       // 2. Canonical server-generated hash matches hashWalletExecutionIntentV1 over the intent
-      const recalculated = await hashWalletExecutionIntentV1(envelope.walletIntent);
+      const durableIntent = releasedRun.operations[0].walletPromptAuthorization?.walletIntent;
+      expect(durableIntent).toBeDefined();
+      const recalculated = await hashWalletExecutionIntentV1(durableIntent);
       expect(envelope.walletIntentHash).toBe(recalculated.hash);
 
       // 3. Durable persisted walletPromptAuthorization matches exactly

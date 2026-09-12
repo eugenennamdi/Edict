@@ -19,18 +19,20 @@ describe("wallet trust-boundary invariants", () => {
   it("keeps runtime wallet modules explicitly client-only", () => {
     for (const path of [
       "src/client/run-api/approval-gateway.ts",
+      "src/client/run-api/wallet-execution-gateway.ts",
       "src/client/wallet/approval.ts",
       "src/client/wallet/discovery.ts",
       "src/client/wallet/errors.ts",
       "src/client/wallet/execution.ts",
       "src/client/wallet/index.ts",
       "src/client/wallet/session.ts",
+      "src/client/wallet/v4-execution.ts",
     ]) {
       expect(source(path)).toMatch(/^"use client";\n\nimport "client-only";/);
     }
   });
 
-  it("keeps the callable route inventory at the six approved preparation-only routes", () => {
+  it("keeps the callable route inventory at the nine approved routes", () => {
     const routes = filesBelow(join(root, "src/app/api"))
       .filter((path) => path.endsWith("route.ts"))
       .map((path) => relative(join(root, "src/app"), path))
@@ -38,9 +40,12 @@ describe("wallet trust-boundary invariants", () => {
     expect(routes).toEqual([
       "api/runs/[runId]/approval-challenges/route.ts",
       "api/runs/[runId]/approval/route.ts",
+      "api/runs/[runId]/broadcast-hash/route.ts",
+      "api/runs/[runId]/broadcast-unknown/route.ts",
       "api/runs/[runId]/cancel/route.ts",
       "api/runs/[runId]/prepare/route.ts",
       "api/runs/[runId]/route.ts",
+      "api/runs/[runId]/wallet-authorization/route.ts",
       "api/runs/route.ts",
     ]);
   });
@@ -93,11 +98,21 @@ describe("wallet trust-boundary invariants", () => {
     );
   });
 
+  it("keeps the V4 provider call singular and excludes raw signing", () => {
+    const execution = source("src/client/wallet/v4-execution.ts");
+    expect(execution.match(/requestExplicit\("eth_sendTransaction"/gu)).toHaveLength(1);
+    expect(execution).not.toMatch(/eth_sendRawTransaction|eth_signTransaction|privateKey|seed phrase/u);
+  });
+
   it("performs no provider or network call when wallet modules are imported", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     vi.resetModules();
-    await Promise.all([import("./index"), import("../run-api/approval-gateway")]);
+    await Promise.all([
+      import("./index"),
+      import("../run-api/approval-gateway"),
+      import("../run-api/wallet-execution-gateway"),
+    ]);
     expect(fetchSpy).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });

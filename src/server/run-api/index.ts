@@ -7,7 +7,10 @@ export {
   cancelRunHandler,
   createRunHandler,
   getRunHandler,
+  ingestBroadcastHashHandler,
   prepareNextOperationHandler,
+  recordBroadcastUnknownHandler,
+  walletAuthorizationHandler,
   type RunApiHandlerOptions,
 } from "./handlers";
 export { createRunApiRuntime, type RunApiRuntime } from "./runtime";

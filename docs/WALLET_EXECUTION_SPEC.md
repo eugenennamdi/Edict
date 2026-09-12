@@ -2,6 +2,12 @@
 
 ## Status and safety posture
 
+**DECISION — Browser-wallet composition behind production deny-all, 2026-09-12** — The canonical record UI now composes the existing EIP-6963 discovery and `SelectedWalletSession` with a V4-only HTTP gateway and one-shot coordinator. The browser never constructs semantic or transaction authority. `POST /wallet-authorization` accepts only the displayed revision; only a test-injected allow evaluator can release an envelope, and release occurs after durable `INVOKED_OR_UNKNOWN` CAS. Production uses the default `DenyAllSemanticAuthorizationEvaluator`, so no usable envelope or provider send can be reached.
+
+**DECISION** — `SendAuthorizedEnvelopeV1` contains only `domain`, post-release `expectedRevision`, server-generated `invocationAttemptId`, canonical `walletIntentHash`, `requiredSigner`, the fixed Sepolia chain requirement, and the exact frozen `WalletTransactionRequestV1` reprojected from the durable active preparation after the final CAS. The client strictly parses and freezes it, rechecks provider generation/account/chain, preserves the explicit nonce and fees, and makes exactly one `eth_sendTransaction` request. It never signs raw transactions or calls `eth_sendRawTransaction`.
+
+**DECISION** — Every failure after an envelope may be ambiguous. The client attempts one bounded `broadcast-unknown` report; report failure does not unlock the durable invocation. A valid canonical hash is submitted alone with revision/invocation/hash bindings to `broadcast-hash`. Neither browser result route calls Brickken or RPC, and neither permits an operation, signer, chain, destination, calldata, nonce, gas, fee, or internal state supplied by the browser.
+
 **DECISION** — Phase 7 is complete as an offline, vendor-neutral browser boundary. It adds EIP-6963 discovery, explicit provider selection, EIP-1193 approval signing, strict prepared-transaction projection, canonical wallet-intent integrity, and durable prompt/send/hash-handoff coordination. It adds no UI and no callable route.
 
 **DECISION** — The Phase 9C transport checkpoint adds a dormant production same-origin `ApprovalGateway` for the existing three approval reads/writes. It uses the existing strict public run DTO, validates complete challenge and approval envelopes, bounds response bodies, sends same-origin credentials, refuses redirects and caching, and adds no route or wallet/provider/UI activation.
@@ -10,7 +16,7 @@
 
 **DECISION** — Phase 9E activates that previously dormant approval path through one explicit **Approve this plan** action. The approval authority snapshot now binds the displayed run, revision, manifest hash, plan hash, environment, chain, and exact signer to the coordinator's preflight and final durable classification. Rapid clicks are synchronously serialized. A signature or approval POST never establishes success; only the exact same-authority `approved=true`, revision `N+1`, `TOKENIZATION/PREPARING`, nonterminal durable GET does. Submission uncertainty locks further signing until one explicit read-only status refresh. The UI stops at **Approval recorded** and composes no transaction-execution module or external write path.
 
-**DECISION** — Production execution remains disabled. The production semantic policy is deny-all, Brickken writes remain gated off, and the callable route inventory remains exactly:
+**HISTORICAL DECISION** — At the approval checkpoint, production execution remained disabled and the callable route inventory was exactly:
 
 - `POST /api/runs`
 - `GET /api/runs/[runId]`

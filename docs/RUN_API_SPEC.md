@@ -2,7 +2,7 @@
 
 ## Status and public surface
 
-**DECISION** — Phase 10 execution activation adds one narrowly scoped route. The current callable routes are:
+**DECISION** — The browser-wallet composition checkpoint adds three narrowly scoped V4 routes. The current callable routes are:
 
 - `POST /api/runs`
 - `GET /api/runs/[runId]`
@@ -10,6 +10,13 @@
 - `POST /api/runs/[runId]/approval`
 - `POST /api/runs/[runId]/cancel`
 - `POST /api/runs/[runId]/prepare`
+- `POST /api/runs/[runId]/wallet-authorization`
+- `POST /api/runs/[runId]/broadcast-hash`
+- `POST /api/runs/[runId]/broadcast-unknown`
+
+**DECISION** — Wallet authorization accepts exactly `{ "expectedRevision": positiveInteger }`. Production constructs `ExecutionV4Orchestrator` without a semantic evaluator, so its default `DenyAllSemanticAuthorizationEvaluator` rejects before run lookup, freshness RPC, CAS, or envelope release. Test-only injected allow evaluators can exercise the full boundary. A successful test authorization response is exactly `{ "ok": true, "envelope": SendAuthorizedEnvelopeV1 }`; the envelope contains the post-release expected revision, server-generated invocation attempt ID, canonical wallet-intent hash, required signer, fixed Sepolia requirement, and exact normalized `WalletTransactionRequestV1`. It omits the durable wallet intent, semantic policy record, Brickken evidence, secrets, and capability material.
+
+**DECISION** — Broadcast-hash ingestion accepts exactly `{ expectedRevision, invocationAttemptId, walletIntentHash, txHash }`. Broadcast-unknown accepts the first three binding fields plus one of `PROVIDER_4001`, `PROVIDER_TIMEOUT`, `PROVIDER_ERROR`, or `HASH_PERSISTENCE_UNCONFIRMED`. Both rederive the active operation from durable state. Hash persistence is one CAS and performs no RPC or Brickken call. Unknown recording uses the V4 `BROADCAST_UNKNOWN` plus `RECONCILIATION_REQUIRED` transition and never restores resend authority.
 
 **DECISION** — `POST /api/runs/[runId]/prepare` is the only public execution-effect route. It exists because preparation is a durable mutation plus one server-only Brickken sandbox request and therefore cannot be exposed through GET or folded into approval/cancellation without mixing authorities. Its strict body is exactly `{ "expectedRevision": positiveInteger }`; the browser cannot supply an operation, method, signer, chain, hashes, transaction fields, or Brickken payload. Exact trusted-origin and run-capability checks precede body parsing and repository lookup.
 
@@ -19,7 +26,7 @@
 
 **DECISION** — GET remains read-only. Page mount, refresh, direct `/records/[runId]` recovery, and a second authorized tab only reconstruct the durable projection and never prepare automatically. After a lost POST response, the browser performs at most one GET; it never retries preparation. A stranded `PREPARE_INTENT` or `PREPARE_UNKNOWN` state blocks another prepare pending operator reconciliation.
 
-**DECISION** — This route stops before the separate durable wallet-prompt transition. There is no public prompt, wallet-result, broadcast, confirmation, polling, read-back or receipt route, and the production wallet semantic policy remains deny-all.
+**HISTORICAL DECISION** — The preparation milestone stopped before the separate durable wallet-prompt transition. The later browser-wallet checkpoint exposes only authorization, hash ingestion, and bounded ambiguity recording; confirmation, polling, Brickken correlation, read-back, whitelist, mint, and receipt routes remain absent, and production semantic authorization remains deny-all.
 
 **HISTORICAL DECISION** — In Phase 6, prepare, wallet prompt/result, confirmation, polling, read-back and final-verification methods existed only on the injected internal orchestration boundary. Phase 10 exposes preparation only; every later method remains internal and uncomposed.
 

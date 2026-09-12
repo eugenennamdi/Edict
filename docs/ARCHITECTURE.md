@@ -22,7 +22,7 @@
 
 **DECISION** — Phase 6 is complete. The public surface is limited to run creation/read, approval challenge/verification and pre-broadcast cancellation. It is deny-by-default and constructs no write-capable Brickken adapter. The injected internal orchestrator implements durable CAS intent ordering, gate rechecks, single adapter attempts and manual-reconciliation outcomes for later phases. [`RUN_API_SPEC.md`](RUN_API_SPEC.md) owns the detailed HTTP, capability, approval and orchestration contract.
 
-**DECISION** — Phase 7 is complete offline. Its vendor-neutral browser boundary performs passive EIP-6963 discovery, explicit EIP-1193 provider selection, server-issued EIP-712 approval, strict transaction projection, canonical wallet-intent verification, and prompt-before-send/hash-handoff ordering. It adds no UI or route, and production transaction authorization remains deny-all. [`WALLET_EXECUTION_SPEC.md`](WALLET_EXECUTION_SPEC.md) owns the detailed wallet contract.
+**DECISION** — The vendor-neutral browser boundary performs passive EIP-6963 discovery, explicit EIP-1193 provider selection, server-issued EIP-712 approval, strict transaction projection, and V4 release-before-send/hash-handoff ordering. The browser-wallet composition adds three narrowly scoped V4 routes and minimum UI while production transaction authorization remains deny-all. [`WALLET_EXECUTION_SPEC.md`](WALLET_EXECUTION_SPEC.md) owns the detailed wallet contract.
 
 **DECISION** — Phase 8 is complete offline. It hardens hostile provider handling, persists bounded trusted-RPC transaction and receipt evidence in `ExecutionRunV3`, and supplies an isolated loopback operator harness under `tools/phase8-harness/`. Its sole concrete executor is a fixed, read-only `BRICKKEN_READ` sandbox connectivity and Sepolia network-information check; it has not been run. The harness is excluded from the production build and route tree. No live action, authenticated write, RPC lookup, migration application or named-wallet verification occurred. [`PHASE_8_OPERATOR_PLAYBOOK.md`](PHASE_8_OPERATOR_PLAYBOOK.md) owns its operating contract.
 
@@ -36,7 +36,7 @@
 
 **DECISION** — The returned `PreparedTransactionReviewV1` is an immutable, strict display contract over the exact persisted transaction. Its fingerprint binds the run, current revision, approval revision, manifest/plan hashes, TOKENIZE operation, signer, sandbox/Sepolia, Brickken action and normalized wallet request. Calldata is deliberately labeled opaque because no production destination/selector allowlist has been authorized. This review fingerprint does not compete with or authorize `WalletIntentV1`: the latter remains rederived only after a future separate durable wallet-prompt revision.
 
-**DECISION** — Phase 10 stops at `TOKENIZATION/AWAITING_WALLET` with `TOKENIZE/PREPARED` and `walletConfirmation: NOT_REQUESTED`. No route or UI can record the prompt, import the wallet execution coordinator, call `eth_sendTransaction`, persist a blockchain hash, confirm, poll, reconcile broadcast, read back, advance to whitelist, or issue a receipt. Mount/recovery/refresh are GET-only and never initiate preparation.
+**HISTORICAL DECISION** — Phase 10 stopped at `TOKENIZATION/AWAITING_WALLET` with `TOKENIZE/PREPARED` and `walletConfirmation: NOT_REQUESTED`. The next checkpoint composes V4 authorization, exact one-shot provider invocation, hash persistence, and ambiguity recording, but keeps them unreachable from production send authority through default deny-all. Confirmation, polling, Brickken correlation, read-back, WHITELIST, MINT, and receipt remain unexposed.
 
 **SUPPORT-CONFIRMED CONTRACT — Phase 10 offline execution foundation, 2026-09-11** — In `client-broadcast`, Brickken prepares an unsigned transaction and `txId`; the user's wallet is the only component that submits the transaction through `eth_sendTransaction`; Edict durably records the returned hash; `POST /send-transactions {txId,txHash}` correlates that already-broadcast transaction and never rebroadcasts it; progress uses `GET /transaction-status`; trusted Sepolia RPC independently proves transaction identity, successful canonical inclusion and finality before read-back. Brickken compares exactly `chainId`, `from`, `to`, `data`, `value`, and `nonce`. `gasLimit`, `maxFeePerGas`, and `maxPriorityFeePerGas` may vary within an explicit Edict fee authorization. Same-pair correlation is idempotent; no retry may change either identifier or invoke the wallet again.
 
@@ -68,7 +68,7 @@ Browser UI
   └─ run status / verification / receipt viewer
           │ public run commands and txHash only
           ▼
-Next.js route handlers (same origin; current surface adds preparation only)
+Next.js route handlers (same origin; preparation plus three V4 wallet-boundary mutations)
   ├─ domain: validate, canonicalize, plan, hashes
   ├─ orchestrator: internal-only effect methods + approval/CAS/write gates
   ├─ brickken.server: Edict-owned server adapter wrapping pinned SDK + Zod wire validation

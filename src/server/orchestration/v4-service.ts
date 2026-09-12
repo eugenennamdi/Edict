@@ -1,11 +1,17 @@
 import "server-only";
 
+import { canonicalizeJson } from "@/core";
 import {
   type SemanticAuthorizationV1,
-  type WalletExecutionIntentV1,
   type WalletExecutionIntentHash,
   walletExecutionIntentHashSchema,
 } from "@/shared/wallet/execution-authorization";
+import {
+  parseSendAuthorizedEnvelopeV1,
+  type SendAuthorizedEnvelopeV1,
+} from "@/shared/wallet/send-authorization";
+export type { SendAuthorizedEnvelopeV1 } from "@/shared/wallet/send-authorization";
+import { projectPreparedTransactionV1 } from "@/shared/wallet/transaction";
 import {
   type BrickkenCorrelationOutcome,
   type BrickkenCorrelationResult,
@@ -161,16 +167,6 @@ export type PreflightWalletAuthorizationResult =
       detail?: string;
     }>;
 
-export interface SendAuthorizedEnvelopeV1 {
-  readonly domain: "edict.send-authorized-envelope.v1";
-  readonly runId: string;
-  readonly runRevision: number;
-  readonly operationKind: OperationKind;
-  readonly invocationAttemptId: string;
-  readonly walletIntentHash: WalletExecutionIntentHash;
-  readonly walletIntent: WalletExecutionIntentV1;
-}
-
 export type OrchestrationCorrelationResult =
   | BrickkenCorrelationResult
   | Readonly<{
@@ -190,6 +186,20 @@ export const ingestBroadcastHashInputSchema = z
   .strict();
 
 export type IngestBroadcastHashInput = z.infer<typeof ingestBroadcastHashInputSchema>;
+
+export const browserBroadcastUnknownInputSchema = z.strictObject({
+  expectedRevision: z.number().int().positive(),
+  invocationAttemptId: z.string().min(1).max(1024),
+  walletIntentHash: walletExecutionIntentHashSchema,
+  reason: z.enum([
+    "PROVIDER_4001",
+    "PROVIDER_TIMEOUT",
+    "PROVIDER_ERROR",
+    "HASH_PERSISTENCE_UNCONFIRMED",
+  ]),
+});
+
+export type BrowserBroadcastUnknownInput = z.infer<typeof browserBroadcastUnknownInputSchema>;
 
 export interface ActiveOperationInfo<T extends ExecutionRun = ExecutionRun> {
   readonly kind: OperationKind;
@@ -605,14 +615,48 @@ export class ExecutionV4Orchestrator {
       nextRun,
     )) as ExecutionRunV4;
 
-    const envelope: SendAuthorizedEnvelopeV1 = Object.freeze({
+    const released = deriveActiveOperation(updatedRun).operation;
+    const releasedPrompt = released.walletPromptAuthorization;
+    const releasedAttempt = getActiveAttempt(released);
+    if (
+      releasedPrompt === null ||
+      releasedPrompt.invocationAttemptId !== invocationAttemptId ||
+      releasedAttempt.unsignedTransaction === null
+    ) {
+      throw new IllegalStateTransitionError();
+    }
+    const prepared = projectPreparedTransactionV1(releasedAttempt.unsignedTransaction);
+    const request = prepared.walletRequest;
+    const identity = releasedPrompt.walletIntent.immutableIdentity;
+    const fees = releasedPrompt.walletIntent.feeAuthorization;
+    if (
+      prepared.chainId !== releasedPrompt.walletIntent.chainRequirement.rpcChainId ||
+      request.from !== releasedPrompt.walletIntent.requiredSigner ||
+      request.from !== identity.from ||
+      request.to !== identity.to ||
+      request.data !== identity.data ||
+      request.value !== identity.value ||
+      request.nonce !== identity.nonce ||
+      request.gas !== fees.preparedDefaults.gasLimit ||
+      request.type !== fees.transactionType ||
+      request.maxFeePerGas !== fees.preparedDefaults.maxFeePerGas ||
+      request.maxPriorityFeePerGas !== fees.preparedDefaults.maxPriorityFeePerGas ||
+      request.gasPrice !== undefined ||
+      canonicalizeJson(request.accessList ?? []) !== canonicalizeJson(fees.preparedAccessList)
+    ) {
+      throw new IllegalStateTransitionError();
+    }
+    const envelope = parseSendAuthorizedEnvelopeV1({
       domain: "edict.send-authorized-envelope.v1",
-      runId: updatedRun.id,
-      runRevision: updatedRun.revision,
-      operationKind: kind,
+      expectedRevision: updatedRun.revision,
       invocationAttemptId,
-      walletIntentHash: prompt.walletIntentHash as WalletExecutionIntentHash,
-      walletIntent: prompt.walletIntent,
+      walletIntentHash: releasedPrompt.walletIntentHash as WalletExecutionIntentHash,
+      requiredSigner: releasedPrompt.walletIntent.requiredSigner,
+      chainRequirement: {
+        decimalChainId: releasedPrompt.walletIntent.chainRequirement.decimalChainId,
+        rpcChainId: releasedPrompt.walletIntent.chainRequirement.rpcChainId,
+      },
+      walletRequest: prepared.walletRequest,
     });
 
     return { envelope, run: updatedRun };
@@ -637,6 +681,39 @@ export class ExecutionV4Orchestrator {
     return (await this.#deps.repository.update(
       runId,
       expectedRevision,
+      nextRun,
+    )) as ExecutionRunV4;
+  }
+
+  async recordBrowserBroadcastUnknown(
+    runId: string,
+    rawInput: BrowserBroadcastUnknownInput,
+  ): Promise<ExecutionRunV4> {
+    const input = browserBroadcastUnknownInputSchema.parse(rawInput);
+    const current = await this.#deps.repository.getById(runId);
+    assertRevision(current, input.expectedRevision);
+    assertV4(current);
+    const { kind, operation } = deriveActiveOperation(current);
+    const prompt = operation.walletPromptAuthorization;
+    if (
+      operation.stage !== "WALLET_PROMPT_RECORDED" ||
+      prompt === null ||
+      prompt.providerInvocation !== "INVOKED_OR_UNKNOWN" ||
+      prompt.invocationAttemptId !== input.invocationAttemptId ||
+      prompt.walletIntentHash !== input.walletIntentHash
+    ) {
+      throw new IllegalStateTransitionError();
+    }
+    const nextRun = recordBroadcastUnknownV4({
+      run: current,
+      kind,
+      reason: input.reason,
+      id: this.#deps.ids.eventId(),
+      at: this.#deps.clock.nowIso(),
+    });
+    return (await this.#deps.repository.update(
+      runId,
+      input.expectedRevision,
       nextRun,
     )) as ExecutionRunV4;
   }

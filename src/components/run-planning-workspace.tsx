@@ -14,6 +14,7 @@ import {
 import { MandateForm } from "./planning-form";
 import { ApprovalReadinessSection } from "./approval/approval-section";
 import { ExecutionReviewSection } from "./execution-review-section";
+import { WalletExecutionSection } from "./wallet-execution-section";
 import {
   DraftSummary,
   PlanDocument,
@@ -470,6 +471,10 @@ export default function RunPlanningWorkspace({
                     pending={state.pending === "prepare"}
                     preparationUnconfirmed={state.preparationUnconfirmed}
                     onPrepare={() => void prepareNextOperation()}
+                  />
+                  <WalletExecutionSection
+                    run={view.run}
+                    onRefresh={async () => { await workspace.refresh(); }}
                   />
                 </div>
               )

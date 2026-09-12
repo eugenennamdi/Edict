@@ -4,6 +4,7 @@ import type { BrickkenServerAdapter, PreparedOperation } from "../brickken/types
 import { BrickkenAdapterError } from "../brickken/errors";
 import { ExecutionRunService } from "../execution/run-service";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
+import { RepositoryRevisionConflictError } from "../execution/errors";
 import { createApprovalProofFixture } from "../execution/test-fixtures";
 import type { Clock, IdGenerator } from "../execution/infrastructure";
 import { DomainSeparatedTokenMac, type NonceSource, type TokenClock } from "../security/tokens";
@@ -12,7 +13,19 @@ import { WalletApprovalService } from "../security/wallet-approval";
 import { ExecutionOrchestrator } from "../orchestration/service";
 import { createPreparationOnlyBrickkenWriteGate } from "../orchestration/write-gate";
 import type { RunApiRuntime } from "./runtime";
-import { createRunHandler, getRunHandler, approvalChallengeHandler, approveRunHandler, cancelRunHandler, prepareNextOperationHandler } from "./handlers";
+import { ExecutionV4Orchestrator } from "../orchestration";
+import { createTrustedSepoliaRpcClient } from "../rpc";
+import {
+  createRunHandler,
+  getRunHandler,
+  approvalChallengeHandler,
+  approveRunHandler,
+  cancelRunHandler,
+  prepareNextOperationHandler,
+  walletAuthorizationHandler,
+  ingestBroadcastHashHandler,
+  recordBroadcastUnknownHandler,
+} from "./handlers";
 
 const config = { enabled: true, trustedOrigin: "https://edict.example" } as const;
 
@@ -247,7 +260,7 @@ describe("browser run reads", () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
-  it.each([createRunHandler, approvalChallengeHandler, approveRunHandler, cancelRunHandler, prepareNextOperationHandler])("retains exact origin validation for mutation handler %s", async (handler) => {
+  it.each([createRunHandler, approvalChallengeHandler, approveRunHandler, cancelRunHandler, prepareNextOperationHandler, walletAuthorizationHandler, ingestBroadcastHashHandler, recordBroadcastUnknownHandler])("retains exact origin validation for mutation handler %s", async (handler) => {
     let constructed = 0;
     const options = { config, runtime: () => { constructed++; throw new Error("Unexpected runtime"); } };
     for (const origin of [null, "https://other.example", "null", `${config.trustedOrigin}/`]) {
@@ -258,6 +271,151 @@ describe("browser run reads", () => {
       expect(response.status).toBe(403);
     }
     expect(constructed).toBe(0);
+  });
+});
+
+describe("V4 browser wallet run routes", () => {
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const walletIntentHash = `sha256:${"ab".repeat(32)}` as const;
+  const txHash = `0x${"cd".repeat(32)}`;
+  const envelope = {
+    domain: "edict.send-authorized-envelope.v1" as const,
+    expectedRevision: 9,
+    invocationAttemptId: "inv-server-generated",
+    walletIntentHash,
+    requiredSigner: TOKENIZER_ADDRESS,
+    chainRequirement: { decimalChainId: "11155111" as const, rpcChainId: "0xaa36a7" as const },
+    walletRequest: {
+      from: TOKENIZER_ADDRESS,
+      to: "0x3333333333333333333333333333333333333333",
+      data: "0x12345678",
+      value: "0x0",
+      nonce: "0x1",
+      gas: "0x5208",
+      type: "0x2" as const,
+      maxFeePerGas: "0x10",
+      maxPriorityFeePerGas: "0x1",
+    },
+  };
+
+  async function setup() {
+    const api = createRuntime();
+    const created = await createRunHandler(
+      request(`${config.trustedOrigin}/api/runs`, { manifest: createValidRawManifest() }),
+      { config, runtime: () => api },
+    );
+    const cookie = created.headers.get("set-cookie")!.split(";")[0]!;
+    const durable = await api.runs.getRun(runId);
+    const walletExecution = {
+      releaseSendAuthority: vi.fn(async () => ({ envelope, run: durable as never })),
+      ingestBroadcastHash: vi.fn(async () => durable as never),
+      recordBrowserBroadcastUnknown: vi.fn(async () => durable as never),
+    };
+    const runtime: RunApiRuntime = { ...api, walletExecution };
+    const options = { config, runtime: () => runtime };
+    const call = (
+      handler: typeof walletAuthorizationHandler,
+      suffix: string,
+      body: unknown,
+      suppliedCookie = cookie,
+      headers: Record<string, string> = {},
+    ) => handler(
+      request(`${config.trustedOrigin}/api/runs/${runId}/${suffix}`, body, {
+        cookie: suppliedCookie,
+        "sec-fetch-site": "same-origin",
+        ...headers,
+      }),
+      runId,
+      options,
+    );
+    return { api, durable, cookie, walletExecution, runtime, options, call };
+  }
+
+  it("keeps production semantic authorization deny-all and returns no envelope", async () => {
+    const value = await setup();
+    const repository = new InMemoryExecutionRunRepository();
+    const denied = new ExecutionV4Orchestrator({
+      repository,
+      clock: { nowIso: () => "2026-09-12T12:00:00.000Z" },
+      ids: {
+        runId: () => runId,
+        operationId: () => "operation",
+        eventId: () => "event",
+        invocationAttemptId: () => "must-not-be-used",
+      },
+      rpc: createTrustedSepoliaRpcClient({ request: async () => { throw new Error("must not call RPC"); } }),
+    });
+    const response = await walletAuthorizationHandler(
+      request(`${config.trustedOrigin}/api/runs/${runId}/wallet-authorization`, { expectedRevision: 1 }, {
+        cookie: value.cookie,
+        "sec-fetch-site": "same-origin",
+      }),
+      runId,
+      { config, runtime: () => ({ ...value.api, walletExecution: denied }) },
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      ok: false,
+      error: { code: "EXECUTION_AUTHORIZATION_UNAVAILABLE" },
+    });
+  });
+
+  it("accepts only expectedRevision and never accepts browser-selected authority fields", async () => {
+    const value = await setup();
+    const success = await value.call(walletAuthorizationHandler, "wallet-authorization", { expectedRevision: 8 });
+    expect(success.status).toBe(200);
+    expect(await success.json()).toEqual({ ok: true, envelope });
+    expect(value.walletExecution.releaseSendAuthority).toHaveBeenCalledWith(runId, 8);
+
+    for (const extra of ["invocationAttemptId", "operation", "to", "from", "data", "nonce", "gas", "chainId"]) {
+      const response = await value.call(walletAuthorizationHandler, "wallet-authorization", {
+        expectedRevision: 8,
+        [extra]: "browser-selected",
+      });
+      expect(response.status, extra).toBe(400);
+    }
+    expect(value.walletExecution.releaseSendAuthority).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects missing/wrong capability, untrusted origin, malformed bodies, and stale revisions", async () => {
+    const value = await setup();
+    expect((await value.call(walletAuthorizationHandler, "wallet-authorization", { expectedRevision: 8 }, "")).status).toBe(403);
+    expect((await value.call(walletAuthorizationHandler, "wallet-authorization", { expectedRevision: 8 }, `${RUN_ACCESS_COOKIE}=wrong`)).status).toBe(403);
+    expect((await value.call(walletAuthorizationHandler, "wallet-authorization", { expectedRevision: 8 }, value.cookie, { origin: "https://evil.example" })).status).toBe(403);
+    expect((await value.call(walletAuthorizationHandler, "wallet-authorization", { expectedRevision: 0 })).status).toBe(400);
+    vi.mocked(value.walletExecution.releaseSendAuthority).mockRejectedValueOnce(new RepositoryRevisionConflictError());
+    expect((await value.call(walletAuthorizationHandler, "wallet-authorization", { expectedRevision: 7 })).status).toBe(409);
+  });
+
+  it("ingests exactly the four permitted hash fields and invokes no RPC or Brickken service", async () => {
+    const value = await setup();
+    const body = {
+      expectedRevision: 9,
+      invocationAttemptId: "inv-server-generated",
+      walletIntentHash,
+      txHash,
+    };
+    const response = await value.call(ingestBroadcastHashHandler, "broadcast-hash", body);
+    expect(response.status).toBe(200);
+    expect(value.walletExecution.ingestBroadcastHash).toHaveBeenCalledWith(runId, body);
+    for (const extra of ["to", "from", "data", "nonce", "gas", "kind"]) {
+      expect((await value.call(ingestBroadcastHashHandler, "broadcast-hash", { ...body, [extra]: "x" })).status).toBe(400);
+    }
+    expect((await value.call(ingestBroadcastHashHandler, "broadcast-hash", { ...body, txHash: "0x0" })).status).toBe(400);
+  });
+
+  it("accepts only bound browser ambiguity fields and a bounded reason enum", async () => {
+    const value = await setup();
+    const body = {
+      expectedRevision: 9,
+      invocationAttemptId: "inv-server-generated",
+      walletIntentHash,
+      reason: "PROVIDER_4001" as const,
+    };
+    expect((await value.call(recordBroadcastUnknownHandler, "broadcast-unknown", body)).status).toBe(200);
+    expect(value.walletExecution.recordBrowserBroadcastUnknown).toHaveBeenCalledWith(runId, body);
+    expect((await value.call(recordBroadcastUnknownHandler, "broadcast-unknown", { ...body, reason: "raw provider detail" })).status).toBe(400);
+    expect((await value.call(recordBroadcastUnknownHandler, "broadcast-unknown", { ...body, error: { message: "secret" } })).status).toBe(400);
   });
 });
 

@@ -27,8 +27,11 @@ const EXPECTED_APP_PATHS = {
   "/api/runs/[runId]/approval/route": "app/api/runs/[runId]/approval/route.js",
   "/api/runs/[runId]/approval-challenges/route":
     "app/api/runs/[runId]/approval-challenges/route.js",
+  "/api/runs/[runId]/broadcast-hash/route": "app/api/runs/[runId]/broadcast-hash/route.js",
+  "/api/runs/[runId]/broadcast-unknown/route": "app/api/runs/[runId]/broadcast-unknown/route.js",
   "/api/runs/[runId]/cancel/route": "app/api/runs/[runId]/cancel/route.js",
   "/api/runs/[runId]/prepare/route": "app/api/runs/[runId]/prepare/route.js",
+  "/api/runs/[runId]/wallet-authorization/route": "app/api/runs/[runId]/wallet-authorization/route.js",
 };
 
 const temporaryDirectories: string[] = [];
@@ -174,8 +177,11 @@ describe("fresh source-bound Phase 8 client artifact audit", () => {
         "/api/runs/[runId]",
         "/api/runs/[runId]/approval",
         "/api/runs/[runId]/approval-challenges",
+        "/api/runs/[runId]/broadcast-hash",
+        "/api/runs/[runId]/broadcast-unknown",
         "/api/runs/[runId]/cancel",
         "/api/runs/[runId]/prepare",
+        "/api/runs/[runId]/wallet-authorization",
       ],
     });
     expect(build).toHaveBeenCalledOnce();

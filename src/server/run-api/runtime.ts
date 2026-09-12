@@ -5,9 +5,11 @@ import { ExecutionRunService, cryptoIdGenerator, systemClock } from "../executio
 import { getServerEnv } from "../env";
 import {
   ExecutionOrchestrator,
+  ExecutionV4Orchestrator,
   createPreparationOnlyBrickkenWriteGate,
 } from "../orchestration";
 import { createNeonExecutionRunRepository } from "../persistence";
+import { createTrustedSepoliaRpcClient } from "../rpc";
 import {
   RunAccessService,
   WalletApprovalService,
@@ -21,6 +23,10 @@ export interface RunApiRuntime {
   readonly access: RunAccessService;
   readonly approvals: WalletApprovalService;
   readonly execution?: Pick<ExecutionOrchestrator, "prepareNextOperation">;
+  readonly walletExecution?: Pick<
+    ExecutionV4Orchestrator,
+    "releaseSendAuthority" | "ingestBroadcastHash" | "recordBrowserBroadcastUnknown"
+  >;
   readonly nowIso: () => string;
 }
 
@@ -34,6 +40,8 @@ export function createRunApiRuntime(): RunApiRuntime {
     ids: cryptoIdGenerator(),
   });
   const preparationEnabled = getServerEnv().EDICT_TRANSACTION_PREPARATION_ENABLED === "1";
+  const ids = cryptoIdGenerator();
+  const clock = systemClock();
   return Object.freeze({
     runs,
     access: new RunAccessService({ mac, clock: systemTokenClock, nonces: cryptoNonceSource }),
@@ -43,6 +51,16 @@ export function createRunApiRuntime(): RunApiRuntime {
       runs,
       brickken: createBrickkenServerAdapter(),
       writeGate: createPreparationOnlyBrickkenWriteGate(preparationEnabled),
+    }),
+    walletExecution: new ExecutionV4Orchestrator({
+      repository,
+      clock,
+      ids,
+      rpc: createTrustedSepoliaRpcClient({
+        request: async () => {
+          throw new Error("TRUSTED_RPC_NOT_CONFIGURED");
+        },
+      }),
     }),
     nowIso: () => new Date().toISOString(),
   });
