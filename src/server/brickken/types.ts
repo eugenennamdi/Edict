@@ -1,4 +1,37 @@
+import {
+  canonicalizeTxHash,
+  type BrickkenCorrelationEvidenceV1,
+  type BrickkenCorrelationInput,
+  type BrickkenCorrelationOutcome,
+  type BrickkenCorrelationResult,
+  type CorrelationPair,
+  type CorrelationRetryAuthorization,
+  type CorrelationRetryEvaluationInput,
+} from "./correlation";
 import type { BrickkenAdapterError } from "./errors";
+import type {
+  BrickkenStatusDurableEvidenceV1,
+  BrickkenStatusEvidenceClassification,
+  BrickkenTransactionLocator,
+  BrickkenTransactionStatusResult,
+  BuildStatusDurableEvidenceInput,
+} from "./status";
+
+export { canonicalizeTxHash };
+export type {
+  BrickkenCorrelationEvidenceV1,
+  BrickkenCorrelationInput,
+  BrickkenCorrelationOutcome,
+  BrickkenCorrelationResult,
+  CorrelationPair,
+  CorrelationRetryAuthorization,
+  CorrelationRetryEvaluationInput,
+  BrickkenStatusDurableEvidenceV1,
+  BrickkenStatusEvidenceClassification,
+  BrickkenTransactionLocator,
+  BrickkenTransactionStatusResult,
+  BuildStatusDurableEvidenceInput,
+};
 
 export type AdapterResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -65,9 +98,14 @@ export interface BroadcastConfirmation {
 }
 
 export interface TransactionStatusView {
-  readonly status: "pending" | "success" | "rejected";
+  readonly status: string | null;
   readonly transactionHash: string | null;
+  readonly diagnosticError?: string | null;
+  /** @deprecated Transient diagnostic only. Never persist or publicly project raw upstream error prose as durable evidence. */
   readonly error: string | null;
+  readonly httpStatus?: number;
+  readonly responseByteCount?: number;
+  readonly contentType?: string | null;
 }
 
 export interface TokenInfoView {
@@ -117,14 +155,45 @@ export interface BrickkenServerAdapter {
     input: PrepareMintInput,
     evidence: ConfirmedWhitelistEvidence,
   ): Promise<AdapterResult<PreparedOperation>>;
+
+  /**
+   * Correlates an already-broadcast blockchain transaction with Brickken via POST /send-transactions.
+   * In client-broadcast execution mode, Brickken does NOT broadcast or rebroadcast the transaction;
+   * instead, it verifies the transaction against Brickken's Sepolia RPC.
+   * Repeating the exact same (txId, txHash) pair is idempotent and does not consume extra credits.
+   */
+  correlateClientBroadcast(input: {
+    readonly txId: string;
+    readonly txHash: string;
+    readonly correlatedAt?: string;
+  }): Promise<AdapterResult<BrickkenCorrelationResult>>;
+
+  /**
+   * @deprecated Use `correlateClientBroadcast` for client-broadcast execution mode.
+   * This legacy method is preserved for backward compatibility with earlier orchestration layers.
+   * Note: In client-broadcast execution mode, Brickken does NOT broadcast or rebroadcast
+   * transactions on-chain; this call strictly correlates an already-broadcast hash with Brickken's RPC.
+   */
   confirmBroadcast(input: {
     txId: string;
     txHash: string;
   }): Promise<AdapterResult<BroadcastConfirmation>>;
-  getTransactionStatus(query: {
-    txId?: string;
-    hash?: string;
-  }): Promise<AdapterResult<TransactionStatusView>>;
+
+  /**
+   * Queries transaction status via GET /transaction-status?txId=... or GET /transaction-status?hash=...
+   * Allows optional binding to `expectedTxHash` for post-broadcast server orchestration verification.
+   * Note: Enforces exactly one locator (txId XOR hash). The obsolete /get-transaction-status route is strictly refused.
+   */
+  getTransactionStatus(
+    query:
+      | (BrickkenTransactionLocator & { readonly expectedTxHash?: string })
+      | {
+          readonly txId?: string;
+          readonly hash?: string;
+          readonly expectedTxHash?: string;
+        },
+  ): Promise<AdapterResult<TransactionStatusView>>;
+
   getTokenInfo(query: { tokenSymbol: string }): Promise<AdapterResult<TokenInfoView>>;
   getTokenizerInfo(query: { tokenSymbol: string }): Promise<AdapterResult<TokenizerInfoView>>;
   getWhitelistStatus(query: {

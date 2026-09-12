@@ -41,6 +41,7 @@ function adapter(
     async prepareTokenization() { prepares += 1; return prepareResult; },
     async prepareWhitelist() { prepares += 1; return prepareResult; },
     async prepareMint() { prepares += 1; return prepareResult; },
+    async correlateClientBroadcast() { throw new Error("unused"); },
     async confirmBroadcast(input) { confirmations.push(input); return { ok: true, value: { txHash: input.txHash, status: "pending" } }; },
     async getTransactionStatus() { return statusResult; },
     async getTokenInfo() { throw new Error("unused"); },

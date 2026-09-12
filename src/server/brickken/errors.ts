@@ -5,6 +5,7 @@ export type BrickkenAdapterErrorCode =
   | "CREDITS_EXHAUSTED"
   | "INVALID_REQUEST"
   | "INVALID_EXTERNAL_RESPONSE"
+  | "STATUS_CONTRADICTION"
   | "UNSUPPORTED_TRANSACTION_BATCH"
   | "UNSUPPORTED_CHAIN"
   | "PREPARED_TRANSACTION_INCOMPLETE"
@@ -55,6 +56,8 @@ export function safeErrorMessage(
     CREDITS_EXHAUSTED: "The sandbox credential has no remaining credits for this method.",
     INVALID_REQUEST: "The Brickken request was rejected as invalid.",
     INVALID_EXTERNAL_RESPONSE: "The Brickken response could not be trusted.",
+    STATUS_CONTRADICTION:
+      "The transaction status response contradicts the expected transaction hash or contains contradictory hash fields.",
     UNSUPPORTED_TRANSACTION_BATCH: "client-broadcast requires exactly one prepared transaction.",
     UNSUPPORTED_CHAIN: "Only Ethereum Sepolia is supported.",
     PREPARED_TRANSACTION_INCOMPLETE:

@@ -18,6 +18,17 @@ import {
 } from "./config";
 import { BrickkenAdapterError, safeErrorMessage } from "./errors";
 import { parsePreparedOperation } from "./prepared-transaction";
+import {
+  brickkenCorrelationRequestSchema,
+  classifyCorrelationResponse,
+  classifyCorrelationTransportError,
+} from "./correlation";
+import {
+  buildTransactionStatusPath,
+  parseTransactionStatusResponse,
+  type BrickkenTransactionLocatorInput,
+} from "./status";
+import { executeBrickkenDirectRequest } from "./transport";
 import type {
   AdapterResult,
   BalanceWhitelistView,
@@ -36,7 +47,6 @@ import {
   sendResponseSchema,
   tokenInfoAssetSchema,
   tokenizerInfoSchema,
-  transactionStatusSchema,
   whitelistStatusSchema,
 } from "./wire-schemas";
 
@@ -57,6 +67,9 @@ function fail<T>(code: BrickkenAdapterError["code"], secret?: string): AdapterRe
 
 function mapCaughtError(error: unknown, secret?: string): BrickkenAdapterError {
   if (error instanceof BrickkenAdapterError) return error;
+  if (error instanceof Error && error.message.includes("STATUS_CONTRADICTION")) {
+    return safeErrorMessage("STATUS_CONTRADICTION", secret);
+  }
   if (error instanceof AuthError) return safeErrorMessage("AUTHENTICATION_REJECTED", secret);
   if (error instanceof CreditsExhaustedError) return safeErrorMessage("CREDITS_EXHAUSTED", secret);
   if (error instanceof UnauthorizedTokenSymbolError) {
@@ -203,6 +216,52 @@ export function createBrickkenServerAdapter(
       });
     },
 
+    async correlateClientBroadcast(input) {
+      const parsedInput = brickkenCorrelationRequestSchema.safeParse(input);
+      if (!parsedInput.success) {
+        return fail("INVALID_REQUEST");
+      }
+
+      const config = runtimeConfig();
+      if (!config.apiKey) return fail("CONFIGURATION_MISSING");
+      if (!isSandboxBaseUrl(config.baseUrl)) return fail("CONFIGURATION_MISSING", config.apiKey);
+
+      const correlatedAt = input.correlatedAt ?? new Date().toISOString();
+
+      try {
+        const directRes = await executeBrickkenDirectRequest({
+          path: "/send-transactions",
+          method: "POST",
+          body: {
+            txId: parsedInput.data.txId,
+            txHash: parsedInput.data.txHash,
+          },
+          fetch: injectedFetch,
+          runtimeConfig: config,
+        });
+
+        const classified = classifyCorrelationResponse({
+          requestedTxHash: parsedInput.data.txHash,
+          txId: parsedInput.data.txId,
+          status: directRes.status,
+          bodyText: directRes.bodyText,
+          json: directRes.json,
+          correlatedAt,
+        });
+
+        return { ok: true, value: classified };
+      } catch (error) {
+        const classified = classifyCorrelationTransportError(error);
+        return { ok: true, value: classified };
+      }
+    },
+
+    /**
+     * @deprecated Legacy alias. Use `correlateClientBroadcast` for all client-broadcast execution.
+     * Note: In client-broadcast execution mode, Brickken NEVER broadcasts or rebroadcasts transactions
+     * on-chain; this call strictly delegates to correlation semantics with Brickken's Sepolia RPC.
+     * No future production service should call this method by preference.
+     */
     async confirmBroadcast(input) {
       if (typeof input.txId !== "string" || typeof input.txHash !== "string") {
         return fail("INVALID_REQUEST");
@@ -224,27 +283,64 @@ export function createBrickkenServerAdapter(
     },
 
     async getTransactionStatus(query) {
-      if (query.txId === undefined && query.hash === undefined) {
+      if (
+        (query.txId === undefined && query.hash === undefined) ||
+        (query.txId !== undefined && query.hash !== undefined)
+      ) {
         return fail("INVALID_REQUEST");
       }
-      return withClient(async (client, apiKey) => {
-        const result = await client.tx.status({
-          ...(query.txId === undefined ? {} : { txId: query.txId }),
-          ...(query.hash === undefined ? {} : { hash: query.hash }),
+
+      const locator: BrickkenTransactionLocatorInput =
+        query.txId !== undefined
+          ? { txId: query.txId }
+          : { hash: query.hash! };
+
+      const config = runtimeConfig();
+      if (!config.apiKey) return fail("CONFIGURATION_MISSING");
+      if (!isSandboxBaseUrl(config.baseUrl)) return fail("CONFIGURATION_MISSING", config.apiKey);
+
+      try {
+        const path = buildTransactionStatusPath(locator);
+        const directRes = await executeBrickkenDirectRequest({
+          path,
+          method: "GET",
+          fetch: injectedFetch,
+          runtimeConfig: config,
         });
-        assertBoundedBrickkenResponse(result.raw);
-        const parsed = transactionStatusSchema.safeParse(result.raw);
-        if (!parsed.success) return fail("INVALID_EXTERNAL_RESPONSE", apiKey);
-        const hash = parsed.data.transactionHash ?? parsed.data.hash ?? null;
+
+        if (!directRes.ok) {
+          if (directRes.status === 401 || directRes.status === 403) {
+            return fail("AUTHENTICATION_REJECTED", config.apiKey);
+          }
+          if (directRes.status === 400 || directRes.status === 422) {
+            return fail("INVALID_REQUEST", config.apiKey);
+          }
+          return fail("INVALID_EXTERNAL_RESPONSE", config.apiKey);
+        }
+
+        const parsed = parseTransactionStatusResponse({
+          json: directRes.json,
+          locator,
+          expectedTxHash: "expectedTxHash" in query ? query.expectedTxHash : undefined,
+          httpStatus: directRes.status,
+          responseByteCount: directRes.bodyText.length,
+          contentType: directRes.headers.get("content-type"),
+        });
         return {
           ok: true,
           value: {
-            status: parsed.data.status,
-            transactionHash: typeof hash === "string" ? hash : null,
-            error: parsed.data.error ?? null,
+            status: parsed.rawStatusText,
+            transactionHash: parsed.transactionHash,
+            diagnosticError: parsed.diagnosticError,
+            error: parsed.diagnosticError,
+            httpStatus: parsed.httpStatus,
+            responseByteCount: parsed.responseByteCount,
+            contentType: parsed.contentType,
           } satisfies TransactionStatusView,
         };
-      });
+      } catch (error) {
+        return { ok: false, error: mapCaughtError(error, config.apiKey) };
+      }
     },
 
     async getTokenInfo(query) {
