@@ -31,7 +31,7 @@ describe("wallet trust-boundary invariants", () => {
     }
   });
 
-  it("keeps the callable route inventory at the nine approved routes", () => {
+  it("keeps the callable route inventory at the twelve approved routes", () => {
     const routes = filesBelow(join(root, "src/app/api"))
       .filter((path) => path.endsWith("route.ts"))
       .map((path) => relative(join(root, "src/app"), path))
@@ -43,7 +43,10 @@ describe("wallet trust-boundary invariants", () => {
       "api/runs/[runId]/broadcast-unknown/route.ts",
       "api/runs/[runId]/cancel/route.ts",
       "api/runs/[runId]/prepare/route.ts",
+      "api/runs/[runId]/promote/route.ts",
+      "api/runs/[runId]/readiness/route.ts",
       "api/runs/[runId]/route.ts",
+      "api/runs/[runId]/track/route.ts",
       "api/runs/[runId]/wallet-authorization/route.ts",
       "api/runs/route.ts",
     ]);

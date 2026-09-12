@@ -24,6 +24,9 @@ const EXPECTED_API_ROUTES = Object.freeze([
   "/api/runs/[runId]/broadcast-unknown",
   "/api/runs/[runId]/cancel",
   "/api/runs/[runId]/prepare",
+  "/api/runs/[runId]/promote",
+  "/api/runs/[runId]/readiness",
+  "/api/runs/[runId]/track",
   "/api/runs/[runId]/wallet-authorization",
 ] as const);
 

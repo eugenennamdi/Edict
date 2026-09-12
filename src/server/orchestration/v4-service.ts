@@ -70,6 +70,7 @@ import {
 } from "../rpc";
 import { z } from "zod";
 import { OrchestrationError } from "./errors";
+export { OrchestrationError } from "./errors";
 
 export type BroadcastUnknownReason =
   | "BROWSER_DISAPPEARED"
@@ -175,6 +176,14 @@ export type OrchestrationCorrelationResult =
       reconciliationRequired: true;
       reason: string;
     }>;
+
+export interface TrackExecutionResult {
+  readonly run: ExecutionRunV4;
+  readonly rpcEvaluation?: TransactionComparisonEvaluation;
+  readonly receiptEvaluation?: ReceiptFinalityEvaluation;
+  readonly correlationResult?: OrchestrationCorrelationResult;
+  readonly statusResult?: BrickkenTransactionStatusResult;
+}
 
 export const ingestBroadcastHashInputSchema = z
   .object({
@@ -822,6 +831,9 @@ export class ExecutionV4Orchestrator {
         "RPC_TRANSACTION_VERIFIED",
         "POLICY_VIOLATION_ONCHAIN",
         "RPC_TRANSACTION_RECONCILIATION_REQUIRED",
+        "BRICKKEN_CORRELATION_PENDING",
+        "BRICKKEN_CORRELATED",
+        "READ_BACK_VERIFIED",
       ].includes(op.stage)
     ) {
       return { evaluation, run: current };
@@ -1021,6 +1033,25 @@ export class ExecutionV4Orchestrator {
       txId: active.txId,
       txHash: op.blockchainTxHash,
     });
+
+    if (op.stage === "BRICKKEN_CORRELATED" || op.stage === "READ_BACK_VERIFIED") {
+      return {
+        result: {
+          outcome: "CORRELATED_PENDING",
+          retryable: false,
+          reconciliationRequired: false,
+          evidence: {
+            evidenceVersion: "1.0",
+            correlatedAt: op.brickkenCorrelation?.correlatedAt ?? this.#deps.clock.nowIso(),
+            txId: active.txId,
+            txHash: op.blockchainTxHash,
+            status: "pending",
+            executionMode: "client-broadcast",
+          },
+        },
+        run: current,
+      };
+    }
 
     let activeRun = current;
     if (op.stage !== "BRICKKEN_CORRELATION_PENDING") {
@@ -1310,11 +1341,32 @@ export class ExecutionV4Orchestrator {
     const active = getActiveAttempt(op);
 
     if (
-      op.stage !== "BRICKKEN_CORRELATED" ||
+      (op.stage !== "BRICKKEN_CORRELATED" && op.stage !== "READ_BACK_VERIFIED") ||
       active.txId === null ||
       op.blockchainTxHash === null
     ) {
       throw new IllegalStateTransitionError();
+    }
+
+    if (op.stage === "READ_BACK_VERIFIED") {
+      const lastEvidence = op.brickkenStatusEvidence.at(-1);
+      const observedAt = this.#deps.clock.nowIso();
+      const locator: BrickkenTransactionLocator = locatorInput ?? { txId: active.txId };
+      const statusResult: BrickkenTransactionStatusResult = {
+        httpStatus: 200,
+        responseByteCount: 0,
+        contentType: "application/json",
+        transactionHash: op.blockchainTxHash,
+        rawStatusText: lastEvidence?.status ?? "success",
+        diagnosticError: null,
+        error: null,
+      };
+      const durableEvidence = buildStatusDurableEvidence({
+        diagnostic: statusResult,
+        locator,
+        observedAt,
+      });
+      return { statusResult, durableEvidence, run: current };
     }
 
     const locator: BrickkenTransactionLocator =
@@ -1429,6 +1481,15 @@ export class ExecutionV4Orchestrator {
       statusResult.rawStatusText === "success" ||
       statusResult.rawStatusText === "rejected"
     ) {
+      const lastStatus = op.brickkenStatusEvidence.at(-1);
+      if (
+        lastStatus &&
+        lastStatus.status === statusResult.rawStatusText &&
+        op.brickkenStatus === statusResult.rawStatusText
+      ) {
+        return { statusResult, durableEvidence, run: current };
+      }
+
       const nextRun = recordBrickkenStatusEvidenceV4({
         run: current,
         kind,
@@ -1450,5 +1511,106 @@ export class ExecutionV4Orchestrator {
     }
 
     return { statusResult, durableEvidence, run: current };
+  }
+
+  async trackExecution(
+    runId: string,
+    expectedRevision: number,
+  ): Promise<TrackExecutionResult> {
+    let current = await this.#deps.repository.getById(runId);
+    assertRevision(current, expectedRevision);
+    assertV4(current);
+
+    const { operation: initialOp } = deriveActiveOperation(current);
+    if (initialOp.blockchainTxHash === null) {
+      throw new IllegalStateTransitionError();
+    }
+
+    let rpcEvaluation: TransactionComparisonEvaluation | undefined;
+    let receiptEvaluation: ReceiptFinalityEvaluation | undefined;
+    let correlationResult: OrchestrationCorrelationResult | undefined;
+    let statusResult: BrickkenTransactionStatusResult | undefined;
+
+    // 1. Onchain Transaction Verification
+    if (initialOp.stage === "BROADCAST_HASH_PERSISTED") {
+      const verifyRes = await this.verifyOnchainTransaction(runId, current.revision);
+      current = verifyRes.run;
+      rpcEvaluation = verifyRes.evaluation;
+    }
+
+    let currentOp = deriveActiveOperation(current).operation;
+
+    // If transaction was not found on chain or is not yet observed, cannot evaluate receipt or correlation yet
+    if (
+      rpcEvaluation &&
+      (rpcEvaluation.presence === "NOT_FOUND" ||
+        rpcEvaluation.observedTransaction === null ||
+        rpcEvaluation.evidence === null)
+    ) {
+      return { run: current, rpcEvaluation };
+    }
+
+    // 2. Receipt & Finality Evaluation
+    if (
+      [
+        "RPC_TRANSACTION_VERIFIED",
+        "POLICY_VIOLATION_ONCHAIN",
+        "RPC_TRANSACTION_RECONCILIATION_REQUIRED",
+        "BRICKKEN_CORRELATION_PENDING",
+        "BRICKKEN_CORRELATED",
+      ].includes(currentOp.stage) &&
+      currentOp.blockchainTxHash !== null &&
+      currentOp.rpcTransactionEvidence !== null
+    ) {
+      const receiptRes = await this.evaluateAndRecordReceiptFinality(
+        runId,
+        current.revision,
+      );
+      current = receiptRes.run;
+      receiptEvaluation = receiptRes.evaluation;
+      currentOp = deriveActiveOperation(current).operation;
+    }
+
+    // 3. Brickken Correlation
+    if (
+      [
+        "RPC_TRANSACTION_VERIFIED",
+        "POLICY_VIOLATION_ONCHAIN",
+        "BRICKKEN_CORRELATION_PENDING",
+      ].includes(currentOp.stage) &&
+      currentOp.rpcTransactionEvidence?.immutableIdentityStatus === "MATCH"
+    ) {
+      const corrRes = await this.correlateWithBrickken(runId, current.revision);
+      current = corrRes.run;
+      correlationResult = corrRes.result;
+      currentOp = deriveActiveOperation(current).operation;
+    }
+
+    // 4. Brickken Status
+    if (currentOp.stage === "BRICKKEN_CORRELATED") {
+      const statusRes = await this.checkBrickkenStatus(runId, current.revision);
+      current = statusRes.run;
+      statusResult = statusRes.statusResult;
+    }
+
+    return {
+      run: current,
+      rpcEvaluation,
+      receiptEvaluation,
+      correlationResult,
+      statusResult,
+    };
+  }
+
+  async recordTokenIdentityFromReadBack(
+    _runId: string,
+    _expectedRevision: number,
+    _readBack?: unknown,
+  ): Promise<ExecutionRunV4> {
+    // EDICT_SECURITY: A caller-supplied token address must NEVER be sufficient to create
+    // TokenIdentityV1. TokenIdentityV1 must ultimately come from a server-owned verified read
+    // after successful receipt, canonical inclusion, and FINALIZED state.
+    // Untrusted caller input is rejected and read-back verification remains disabled.
+    throw new OrchestrationError("READ_BACK_FAILED");
   }
 }

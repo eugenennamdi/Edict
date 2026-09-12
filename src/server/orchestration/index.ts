@@ -28,6 +28,7 @@ export {
   type IngestBroadcastHashInput,
   type BroadcastUnknownReason,
   type OrchestrationCorrelationResult,
+  type TrackExecutionResult,
   deriveActiveOperation,
   type ActiveOperationInfo,
 } from "./v4-service";

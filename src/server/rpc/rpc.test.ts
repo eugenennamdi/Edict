@@ -986,6 +986,172 @@ describe("Trusted Sepolia RPC client & contracts", () => {
       expect(result.evidence?.identityStatus).toBe("MISMATCH");
       expect(result.evidence?.reconciliationStatus).toBe("REQUIRED");
     });
+
+    it("20. detects exact calldata mismatch between observed transaction input and expected data", async () => {
+      const run = await createPreparedTestRun();
+      const attempt = run.operations[0].preparationAttempts[0];
+      const immutable = attempt.immutableIdentity!;
+      const feeAuth = attempt.feeAuthorization!;
+
+      const normalizedTx: NormalizedRpcTransaction = {
+        hash: TX_HASH,
+        chainId: "11155111",
+        rpcChainId: "0xaa36a7",
+        from: immutable.from,
+        to: immutable.to,
+        input: "0x12345678aacc", // differs from expected "0x12345678aabb"
+        value: immutable.value,
+        nonce: immutable.nonce,
+        type: "0x2",
+        gas: feeAuth.preparedDefaults.gasLimit,
+        gasPrice: null,
+        maxFeePerGas: feeAuth.preparedDefaults.maxFeePerGas,
+        maxPriorityFeePerGas: feeAuth.preparedDefaults.maxPriorityFeePerGas,
+        accessList: [],
+        blockHash: BLOCK_HASH,
+        blockNumber: "0x10",
+        transactionIndex: "0x0",
+        presence: "MINED",
+      };
+
+      const result = compareNormalizedTransaction({
+        transaction: normalizedTx,
+        expectedImmutableIdentity: immutable,
+        expectedFeeAuthorization: feeAuth,
+        observedAt: NOW,
+      });
+
+      expect(result.outcome).toBe("IMMUTABLE_MISMATCH");
+      expect(result.immutableIdentityStatus).toBe("MISMATCH");
+      expect(result.reconciliationRequired).toBe(true);
+    });
+
+    it("21. treats pending nonce both lower and higher than prepared nonce as STALE_NONCE", async () => {
+      const run = await createPreparedTestRun(); // prepared nonce is "0x5"
+
+      // Case A: pending nonce is LOWER (e.g. 0x4)
+      const transportLower = new FakeRpcTransport()
+        .on("eth_chainId", () => "0xaa36a7")
+        .on("eth_getTransactionCount", () => "0x4")
+        .on("eth_getBalance", () => "0x1000000000000000000")
+        .on("eth_getBlockByNumber", () => ({
+          number: "0x1",
+          hash: BLOCK_HASH,
+          parentHash: `0x${"00".repeat(32)}`,
+          baseFeePerGas: "0x10",
+        }));
+      const clientLower = createTrustedSepoliaRpcClient(transportLower);
+      const resLower = await evaluatePreparedFreshness({
+        client: clientLower,
+        run,
+        kind: "TOKENIZE",
+        policyVersion: "policy-v1",
+        observedAt: NOW,
+      });
+      expect(resLower.outcome).toBe("STALE_NONCE");
+      expect(resLower.eligible).toBe(false);
+      expect(resLower.nonceStatus).toBe("STALE");
+
+      // Case B: pending nonce is HIGHER (e.g. 0x6)
+      const transportHigher = new FakeRpcTransport()
+        .on("eth_chainId", () => "0xaa36a7")
+        .on("eth_getTransactionCount", () => "0x6")
+        .on("eth_getBalance", () => "0x1000000000000000000")
+        .on("eth_getBlockByNumber", () => ({
+          number: "0x1",
+          hash: BLOCK_HASH,
+          parentHash: `0x${"00".repeat(32)}`,
+          baseFeePerGas: "0x10",
+        }));
+      const clientHigher = createTrustedSepoliaRpcClient(transportHigher);
+      const resHigher = await evaluatePreparedFreshness({
+        client: clientHigher,
+        run,
+        kind: "TOKENIZE",
+        policyVersion: "policy-v1",
+        observedAt: NOW,
+      });
+      expect(resHigher.outcome).toBe("STALE_NONCE");
+      expect(resHigher.eligible).toBe(false);
+      expect(resHigher.nonceStatus).toBe("STALE");
+
+      // Case C: pending nonce is EQUAL (0x5) -> FRESH & ELIGIBLE
+      const transportEqual = new FakeRpcTransport()
+        .on("eth_chainId", () => "0xaa36a7")
+        .on("eth_getTransactionCount", () => "0x5")
+        .on("eth_getBalance", () => "0x1000000000000000000")
+        .on("eth_getBlockByNumber", () => ({
+          number: "0x1",
+          hash: BLOCK_HASH,
+          parentHash: `0x${"00".repeat(32)}`,
+          baseFeePerGas: "0x10",
+        }));
+      const clientEqual = createTrustedSepoliaRpcClient(transportEqual);
+      const resEqual = await evaluatePreparedFreshness({
+        client: clientEqual,
+        run,
+        kind: "TOKENIZE",
+        policyVersion: "policy-v1",
+        observedAt: NOW,
+      });
+      expect(resEqual.outcome).toBe("ELIGIBLE");
+      expect(resEqual.eligible).toBe(true);
+      expect(resEqual.nonceStatus).toBe("FRESH");
+    });
+
+    it("22. enforces finalized-head finality strictly without confirmation count fallback", async () => {
+      // Receipt at block 0x20. Finalized head at block 0x1f (receipt block > finalized block).
+      // Regardless of how many unfinalized blocks have elapsed, finality MUST be INCLUDED.
+      const transport = new FakeRpcTransport()
+        .on("eth_chainId", () => "0xaa36a7")
+        .on("eth_getTransactionReceipt", () => ({
+          transactionHash: TX_HASH,
+          transactionIndex: "0x0",
+          blockHash: BLOCK_HASH,
+          blockNumber: "0x20",
+          from: TOKENIZER_ADDRESS,
+          to: TO,
+          cumulativeGasUsed: "0x50",
+          gasUsed: "0x50",
+          effectiveGasPrice: "0x15",
+          contractAddress: null,
+          logs: [],
+          type: "0x2",
+          status: "0x1",
+        }))
+        .on("eth_getBlockByNumber", (params) => {
+          if (params?.[0] === "finalized") {
+            return {
+              number: "0x1f",
+              hash: `0x${"1f".repeat(32)}`,
+              parentHash: `0x${"00".repeat(32)}`,
+            }; // One block behind receipt
+          }
+          if (params?.[0] === "0x20") {
+            return {
+              number: "0x20",
+              hash: BLOCK_HASH,
+              parentHash: `0x${"00".repeat(32)}`,
+            };
+          }
+          return null;
+        });
+      const client = createTrustedSepoliaRpcClient(transport);
+
+      const result = await evaluateReceiptAndFinality({
+        client,
+        txHash: TX_HASH,
+        expectedFrom: TOKENIZER_ADDRESS,
+        expectedTo: TO,
+        observedAt: NOW,
+      });
+
+      expect(result.receiptStatus).toBe("SUCCESS");
+      expect(result.canonicality).toBe("CANONICAL");
+      expect(result.finality).toBe("INCLUDED"); // Must NOT be FINALIZED
+      expect(result.evidence?.finalityStatus).toBe("INCLUDED");
+      expect(result.evidence?.finalizedBlockHash).toBeNull();
+    });
   });
 
   it("19. verifies server-only boundary enforcement across RPC modules", () => {

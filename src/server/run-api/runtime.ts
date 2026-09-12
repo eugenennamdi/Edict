@@ -28,7 +28,12 @@ export interface RunApiRuntime {
   readonly execution?: Pick<ExecutionOrchestrator, "prepareNextOperation">;
   readonly walletExecution?: Pick<
     ExecutionV4Orchestrator,
-    "releaseSendAuthority" | "ingestBroadcastHash" | "recordBrowserBroadcastUnknown"
+    | "releaseSendAuthority"
+    | "ingestBroadcastHash"
+    | "recordBrowserBroadcastUnknown"
+    | "promotePreparedRunToV4"
+    | "evaluateAndApplyPreparedFreshness"
+    | "trackExecution"
   >;
   readonly nowIso: () => string;
 }

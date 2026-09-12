@@ -31,6 +31,9 @@ const EXPECTED_APP_PATHS = {
   "/api/runs/[runId]/broadcast-unknown/route": "app/api/runs/[runId]/broadcast-unknown/route.js",
   "/api/runs/[runId]/cancel/route": "app/api/runs/[runId]/cancel/route.js",
   "/api/runs/[runId]/prepare/route": "app/api/runs/[runId]/prepare/route.js",
+  "/api/runs/[runId]/promote/route": "app/api/runs/[runId]/promote/route.js",
+  "/api/runs/[runId]/readiness/route": "app/api/runs/[runId]/readiness/route.js",
+  "/api/runs/[runId]/track/route": "app/api/runs/[runId]/track/route.js",
   "/api/runs/[runId]/wallet-authorization/route": "app/api/runs/[runId]/wallet-authorization/route.js",
 };
 
@@ -181,6 +184,9 @@ describe("fresh source-bound Phase 8 client artifact audit", () => {
         "/api/runs/[runId]/broadcast-unknown",
         "/api/runs/[runId]/cancel",
         "/api/runs/[runId]/prepare",
+        "/api/runs/[runId]/promote",
+        "/api/runs/[runId]/readiness",
+        "/api/runs/[runId]/track",
         "/api/runs/[runId]/wallet-authorization",
       ],
     });

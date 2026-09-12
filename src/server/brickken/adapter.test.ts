@@ -390,6 +390,50 @@ describe("Brickken server adapter", () => {
     if (!result.ok) expect(result.error.code).toBe("INVALID_EXTERNAL_RESPONSE");
   });
 
+  it("serializes exact { txId, txHash } wire JSON body to POST /send-transactions without id or hash", async () => {
+    let capturedUrl: string | undefined;
+    let capturedInit: RequestInit | undefined;
+    const adapter = createBrickkenServerAdapter({
+      runtimeConfig: {
+        apiKey: TEST_KEY,
+        baseUrl: "https://api.sandbox.brickken.com",
+        chainId: "11155111",
+      },
+      fetch: async (input, init) => {
+        capturedUrl = String(input);
+        capturedInit = init;
+        return jsonResponse(sendPending, 202);
+      },
+    });
+
+    const result = await adapter.correlateClientBroadcast({
+      txId: "durable-tx-id-456",
+      txHash: "0x9f2c1f4b6e8a3d5c7b0e1a2d4f6c8b0a3e5d7c9f1b3a5c7e9d1f3b5a7c9e1d3f",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(capturedUrl).toBe("https://api.sandbox.brickken.com/send-transactions");
+    expect(capturedInit?.method).toBe("POST");
+    expect(capturedInit?.headers).toBeInstanceOf(Headers);
+    expect((capturedInit?.headers as Headers).get("content-type")).toBe("application/json");
+
+    // Exact raw serialized string
+    const expectedBody = JSON.stringify({
+      txId: "durable-tx-id-456",
+      txHash: "0x9f2c1f4b6e8a3d5c7b0e1a2d4f6c8b0a3e5d7c9f1b3a5c7e9d1f3b5a7c9e1d3f",
+    });
+    expect(capturedInit?.body).toBe(expectedBody);
+
+    // Exact property schema: contains txId and txHash, NEVER id or hash
+    const parsedBody = JSON.parse(String(capturedInit?.body));
+    expect(parsedBody).toEqual({
+      txId: "durable-tx-id-456",
+      txHash: "0x9f2c1f4b6e8a3d5c7b0e1a2d4f6c8b0a3e5d7c9f1b3a5c7e9d1f3b5a7c9e1d3f",
+    });
+    expect(parsedBody).not.toHaveProperty("id");
+    expect(parsedBody).not.toHaveProperty("hash");
+  });
+
   it("excludes the live smoke test from the default Vitest config", () => {
     const config = fs.readFileSync(path.resolve(__dirname, "../../../vitest.config.mts"), "utf-8");
     expect(config).toContain("live-read.smoke.test.ts");

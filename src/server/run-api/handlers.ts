@@ -342,3 +342,72 @@ export async function recordBroadcastUnknownHandler(
     return mapError(error);
   }
 }
+
+export async function promotePreparedRunHandler(
+  request: Request,
+  runId: string,
+  options?: RunApiHandlerOptions,
+): Promise<Response> {
+  try {
+    const authorized = await authorizeMutation(request, runId, options);
+    if (authorized instanceof Response) return authorized;
+    const body = revisionBodySchema.parse(await readJson(request, 1024));
+    if (!authorized.api.walletExecution?.promotePreparedRunToV4) {
+      return failure(404, "EXECUTION_AUTHORIZATION_UNAVAILABLE");
+    }
+    const run = await authorized.api.walletExecution.promotePreparedRunToV4(
+      runId,
+      body.expectedRevision,
+    );
+    return response(200, { ok: true, run: await projectPublicRun(run) });
+  } catch (error) {
+    return mapError(error);
+  }
+}
+
+export async function evaluateReadinessHandler(
+  request: Request,
+  runId: string,
+  options?: RunApiHandlerOptions,
+): Promise<Response> {
+  try {
+    const authorized = await authorizeMutation(request, runId, options);
+    if (authorized instanceof Response) return authorized;
+    const body = revisionBodySchema.parse(await readJson(request, 1024));
+    if (!authorized.api.walletExecution?.evaluateAndApplyPreparedFreshness) {
+      return failure(404, "EXECUTION_AUTHORIZATION_UNAVAILABLE");
+    }
+    const result = await authorized.api.walletExecution.evaluateAndApplyPreparedFreshness(
+      runId,
+      body.expectedRevision,
+    );
+    return response(200, {
+      ok: true,
+      run: await projectPublicRun(result.run),
+    });
+  } catch (error) {
+    return mapError(error);
+  }
+}
+
+export async function trackExecutionHandler(
+  request: Request,
+  runId: string,
+  options?: RunApiHandlerOptions,
+): Promise<Response> {
+  try {
+    const authorized = await authorizeMutation(request, runId, options);
+    if (authorized instanceof Response) return authorized;
+    const body = revisionBodySchema.parse(await readJson(request, 1024));
+    if (!authorized.api.walletExecution?.trackExecution) {
+      return failure(404, "EXECUTION_AUTHORIZATION_UNAVAILABLE");
+    }
+    const result = await authorized.api.walletExecution.trackExecution(
+      runId,
+      body.expectedRevision,
+    );
+    return response(200, { ok: true, run: await projectPublicRun(result.run) });
+  } catch (error) {
+    return mapError(error);
+  }
+}

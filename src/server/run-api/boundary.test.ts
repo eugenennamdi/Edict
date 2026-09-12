@@ -23,7 +23,10 @@ describe("public run API boundary", () => {
       "runs/[runId]/broadcast-unknown/route.ts",
       "runs/[runId]/cancel/route.ts",
       "runs/[runId]/prepare/route.ts",
+      "runs/[runId]/promote/route.ts",
+      "runs/[runId]/readiness/route.ts",
       "runs/[runId]/route.ts",
+      "runs/[runId]/track/route.ts",
       "runs/[runId]/wallet-authorization/route.ts",
       "runs/route.ts",
     ]);
@@ -34,6 +37,9 @@ describe("public run API boundary", () => {
       "src/app/api/runs/[runId]/wallet-authorization/route.ts",
       "src/app/api/runs/[runId]/broadcast-hash/route.ts",
       "src/app/api/runs/[runId]/broadcast-unknown/route.ts",
+      "src/app/api/runs/[runId]/promote/route.ts",
+      "src/app/api/runs/[runId]/readiness/route.ts",
+      "src/app/api/runs/[runId]/track/route.ts",
       "src/server/run-api/handlers.ts",
     ]) {
       const source = fs.readFileSync(path.join(root, relative), "utf8");

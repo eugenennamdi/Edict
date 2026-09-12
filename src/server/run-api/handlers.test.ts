@@ -16,15 +16,18 @@ import type { RunApiRuntime } from "./runtime";
 import { ExecutionV4Orchestrator } from "../orchestration";
 import { createTrustedSepoliaRpcClient } from "../rpc";
 import {
-  createRunHandler,
-  getRunHandler,
   approvalChallengeHandler,
   approveRunHandler,
   cancelRunHandler,
-  prepareNextOperationHandler,
-  walletAuthorizationHandler,
+  createRunHandler,
+  evaluateReadinessHandler,
+  getRunHandler,
   ingestBroadcastHashHandler,
+  prepareNextOperationHandler,
+  promotePreparedRunHandler,
   recordBroadcastUnknownHandler,
+  trackExecutionHandler,
+  walletAuthorizationHandler,
 } from "./handlers";
 
 const config = { enabled: true, trustedOrigin: "https://edict.example" } as const;
@@ -260,7 +263,19 @@ describe("browser run reads", () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
-  it.each([createRunHandler, approvalChallengeHandler, approveRunHandler, cancelRunHandler, prepareNextOperationHandler, walletAuthorizationHandler, ingestBroadcastHashHandler, recordBroadcastUnknownHandler])("retains exact origin validation for mutation handler %s", async (handler) => {
+  it.each([
+    createRunHandler,
+    approvalChallengeHandler,
+    approveRunHandler,
+    cancelRunHandler,
+    prepareNextOperationHandler,
+    walletAuthorizationHandler,
+    ingestBroadcastHashHandler,
+    recordBroadcastUnknownHandler,
+    promotePreparedRunHandler,
+    evaluateReadinessHandler,
+    trackExecutionHandler,
+  ])("retains exact origin validation for mutation handler %s", async (handler) => {
     let constructed = 0;
     const options = { config, runtime: () => { constructed++; throw new Error("Unexpected runtime"); } };
     for (const origin of [null, "https://other.example", "null", `${config.trustedOrigin}/`]) {
@@ -310,6 +325,23 @@ describe("V4 browser wallet run routes", () => {
       releaseSendAuthority: vi.fn(async () => ({ envelope, run: durable as never })),
       ingestBroadcastHash: vi.fn(async () => durable as never),
       recordBrowserBroadcastUnknown: vi.fn(async () => durable as never),
+      promotePreparedRunToV4: vi.fn(async () => durable as never),
+      evaluateAndApplyPreparedFreshness: vi.fn(async () => ({
+        evaluation: {
+          outcome: "ELIGIBLE" as const,
+          eligible: true,
+          nonceStatus: "FRESH" as const,
+          nonceEvidence: null,
+          balanceStatus: "SUFFICIENT" as const,
+          observedBalanceWei: "0x100",
+          requiredBalanceWei: "0x50",
+          feeFreshnessStatus: "FRESH" as const,
+          observedBaseFeeWei: "0x10",
+          authorizedMaxFeeWei: "0x20",
+        },
+        run: durable as never,
+      })),
+      trackExecution: vi.fn(async () => ({ run: durable as never })),
     };
     const runtime: RunApiRuntime = { ...api, walletExecution };
     const options = { config, runtime: () => runtime };
@@ -416,6 +448,67 @@ describe("V4 browser wallet run routes", () => {
     expect(value.walletExecution.recordBrowserBroadcastUnknown).toHaveBeenCalledWith(runId, body);
     expect((await value.call(recordBroadcastUnknownHandler, "broadcast-unknown", { ...body, reason: "raw provider detail" })).status).toBe(400);
     expect((await value.call(recordBroadcastUnknownHandler, "broadcast-unknown", { ...body, error: { message: "secret" } })).status).toBe(400);
+  });
+
+  it("promotes V2 prepared run to V4 accepting strictly expectedRevision and returning strict public DTO", async () => {
+    const value = await setup();
+    const response = await value.call(promotePreparedRunHandler, "promote", { expectedRevision: 2 });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.ok).toBe(true);
+    expect(body.run.id).toBe(runId);
+    expect(body.run).not.toHaveProperty("rpcTransactionEvidence");
+    expect(body.run).not.toHaveProperty("preparationAttempts");
+    expect(value.walletExecution.promotePreparedRunToV4).toHaveBeenCalledWith(runId, 2);
+
+    // Rejects extra caller-supplied fields
+    expect((await value.call(promotePreparedRunHandler, "promote", { expectedRevision: 2, phase: "MINT" })).status).toBe(400);
+
+    // Handles CAS conflict
+    vi.mocked(value.walletExecution.promotePreparedRunToV4).mockRejectedValueOnce(new RepositoryRevisionConflictError());
+    expect((await value.call(promotePreparedRunHandler, "promote", { expectedRevision: 1 })).status).toBe(409);
+  });
+
+  it("evaluates execution readiness accepting strictly expectedRevision and returning strict public DTO", async () => {
+    const value = await setup();
+    const response = await value.call(evaluateReadinessHandler, "readiness", { expectedRevision: 2 });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.ok).toBe(true);
+    expect(body.run.id).toBe(runId);
+    expect(body).not.toHaveProperty("evaluation");
+    expect(body.run).not.toHaveProperty("rpcTransactionEvidence");
+    expect(body.run).not.toHaveProperty("nonceEvidence");
+    expect(body.run).not.toHaveProperty("observedBalanceWei");
+    expect(value.walletExecution.evaluateAndApplyPreparedFreshness).toHaveBeenCalledWith(runId, 2);
+
+    // Rejects extra fields
+    expect((await value.call(evaluateReadinessHandler, "readiness", { expectedRevision: 2, extra: true })).status).toBe(400);
+
+    // Handles CAS conflict
+    vi.mocked(value.walletExecution.evaluateAndApplyPreparedFreshness).mockRejectedValueOnce(new RepositoryRevisionConflictError());
+    expect((await value.call(evaluateReadinessHandler, "readiness", { expectedRevision: 1 })).status).toBe(409);
+  });
+
+  it("tracks post-broadcast execution accepting strictly expectedRevision and returning strict public DTO", async () => {
+    const value = await setup();
+    const response = await value.call(trackExecutionHandler, "track", { expectedRevision: 2 });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.ok).toBe(true);
+    expect(body.run.id).toBe(runId);
+    expect(body.run).not.toHaveProperty("rpcTransactionEvidence");
+    expect(body.run).not.toHaveProperty("brickkenCorrelation");
+    expect(body.run).not.toHaveProperty("brickkenStatusEvidence");
+    expect(value.walletExecution.trackExecution).toHaveBeenCalledWith(runId, 2);
+
+    // Rejects caller-supplied txHash or operation fields
+    expect((await value.call(trackExecutionHandler, "track", { expectedRevision: 2, txHash })).status).toBe(400);
+    expect((await value.call(trackExecutionHandler, "track", { expectedRevision: 2, operation: "TOKENIZE" })).status).toBe(400);
+
+    // Handles CAS conflict
+    vi.mocked(value.walletExecution.trackExecution).mockRejectedValueOnce(new RepositoryRevisionConflictError());
+    expect((await value.call(trackExecutionHandler, "track", { expectedRevision: 1 })).status).toBe(409);
   });
 });
 
