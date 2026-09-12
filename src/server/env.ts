@@ -15,12 +15,16 @@ export interface ServerEnv {
   readonly EDICT_RUN_API_ENABLED?: string;
   readonly EDICT_TRUSTED_ORIGIN?: string;
   readonly EDICT_TRANSACTION_PREPARATION_ENABLED?: string;
+  readonly EDICT_SEPOLIA_RPC_URL?: string;
 }
 
 export function getServerEnv(): ServerEnv {
-  // Guard: no NEXT_PUBLIC_ variable may contain a Brickken credential
+  // Guard: no NEXT_PUBLIC_ variable may contain a Brickken credential or private RPC configuration
   for (const key of Object.keys(process.env)) {
-    if (key.startsWith("NEXT_PUBLIC_") && (key.includes("KEY") || key.includes("SECRET"))) {
+    if (
+      key.startsWith("NEXT_PUBLIC_") &&
+      (key.includes("KEY") || key.includes("SECRET") || key.includes("RPC"))
+    ) {
       throw new Error(
         `Security violation: Credential variable "${key}" must never use NEXT_PUBLIC_ prefix.`
       );
@@ -37,5 +41,6 @@ export function getServerEnv(): ServerEnv {
     EDICT_TRUSTED_ORIGIN: process.env.EDICT_TRUSTED_ORIGIN || undefined,
     EDICT_TRANSACTION_PREPARATION_ENABLED:
       process.env.EDICT_TRANSACTION_PREPARATION_ENABLED || undefined,
+    EDICT_SEPOLIA_RPC_URL: process.env.EDICT_SEPOLIA_RPC_URL || undefined,
   };
 }

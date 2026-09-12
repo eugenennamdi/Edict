@@ -9,7 +9,10 @@ import {
   createPreparationOnlyBrickkenWriteGate,
 } from "../orchestration";
 import { createNeonExecutionRunRepository } from "../persistence";
-import { createTrustedSepoliaRpcClient } from "../rpc";
+import {
+  createProductionSepoliaRpcTransport,
+  createTrustedSepoliaRpcClient,
+} from "../rpc";
 import {
   RunAccessService,
   WalletApprovalService,
@@ -56,11 +59,7 @@ export function createRunApiRuntime(): RunApiRuntime {
       repository,
       clock,
       ids,
-      rpc: createTrustedSepoliaRpcClient({
-        request: async () => {
-          throw new Error("TRUSTED_RPC_NOT_CONFIGURED");
-        },
-      }),
+      rpc: createTrustedSepoliaRpcClient(createProductionSepoliaRpcTransport()),
     }),
     nowIso: () => new Date().toISOString(),
   });

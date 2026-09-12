@@ -60,3 +60,20 @@ export {
   evaluateReceiptAndFinality,
   type EvaluateReceiptAndFinalityInput,
 } from "./finality";
+
+export {
+  readSepoliaRpcConfig,
+  RpcConfigurationError,
+  type SepoliaRpcConfig,
+} from "./config";
+
+export {
+  HttpRpcTransport,
+  createProductionSepoliaRpcTransport,
+  RpcTransportError,
+  RpcJsonRpcError,
+  type RpcTransportErrorCode,
+  type HttpRpcTransportOptions,
+  MAX_RPC_RESPONSE_BYTES,
+  DEFAULT_RPC_DEADLINE_MS,
+} from "./http-transport";
