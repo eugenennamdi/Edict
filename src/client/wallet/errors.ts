@@ -23,6 +23,11 @@ export type WalletErrorCode =
   | "MALFORMED_PROMPT_ENVELOPE"
   | "WALLET_INTENT_HASH_MISMATCH"
   | "SEMANTIC_POLICY_REFUSED"
+  | "EXECUTION_AUTHORIZATION_UNAVAILABLE"
+  | "AUTHORIZATION_STATE_CHANGED"
+  | "AUTHORIZATION_RESPONSE_UNKNOWN"
+  | "AUTHORIZATION_RESPONSE_MALFORMED"
+  | "AUTHORIZATION_REQUEST_REFUSED"
   | "PRE_SEND_ABORTED"
   | "TRANSACTION_REJECTED"
   | "BROADCAST_OUTCOME_UNKNOWN"
@@ -57,6 +62,11 @@ const messages: Readonly<Record<WalletErrorCode, string>> = Object.freeze({
   MALFORMED_PROMPT_ENVELOPE: "The durable wallet prompt is malformed.",
   WALLET_INTENT_HASH_MISMATCH: "The durable wallet prompt failed its integrity check.",
   SEMANTIC_POLICY_REFUSED: "The transaction is not authorized by the semantic policy.",
+  EXECUTION_AUTHORIZATION_UNAVAILABLE: "Execution authorization is unavailable.",
+  AUTHORIZATION_STATE_CHANGED: "The durable run changed before authorization completed.",
+  AUTHORIZATION_RESPONSE_UNKNOWN: "The authorization response was not received safely.",
+  AUTHORIZATION_RESPONSE_MALFORMED: "The authorization response was malformed.",
+  AUTHORIZATION_REQUEST_REFUSED: "The authorization request was refused.",
   PRE_SEND_ABORTED: "The transaction was not submitted because validation changed before invocation.",
   TRANSACTION_REJECTED: "The wallet transaction was rejected.",
   BROADCAST_OUTCOME_UNKNOWN: "The wallet may have broadcast the transaction.",

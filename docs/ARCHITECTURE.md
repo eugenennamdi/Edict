@@ -151,12 +151,14 @@ Brickken sandbox API ──► Ethereum Sepolia
 1. **DECISION** — Server checks the run version, phase, approval record, expected signer, selected Sepolia chain, and absence of an existing `preparedTxId` before prepare.
 2. **DECISION** — Server calls the SDK with `executionMode: "client-broadcast"`, `execute: false`, and the approved `signerAddress`, validates the response, persists `txId` and the exact unsigned transaction, then returns a sanitized transaction view.
 3. **DECISION** — Server projects the persisted transaction through the strict Edict-owned DTO and canonical wallet intent. Browser recomputes its integrity, verifies operation identity, signer, chain and prompt revision, and applies the injected semantic policy; production policy remains deny-all.
-4. **DECISION** — The selected injected wallet confirms, signs, and broadcasts the exact frozen DTO through `eth_sendTransaction`. Edict never asks for key material or a raw private key.
+4. **DECISION** — The selected injected wallet confirms, signs, and broadcasts the exact frozen DTO through the sole product `eth_sendTransaction` invocation site. Immediately before that one invocation, Edict revalidates provider generation, Sepolia chain and the exact signer, with the last generation assertion adjacent to the captured provider call. Edict never asks for key material or a raw private key.
 5. **DECISION** — Browser posts `txHash` and operation ID to the server. Server verifies shape and expected phase and persists the hash atomically before external reconciliation.
 6. **VERIFIED** — Server sends the identical `{txId, txHash}` to Brickken; resubmission of that same pair is idempotent. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send)
 7. **DECISION** — Server polls by persisted identifiers. Refresh loads the run and resumes from `AWAITING_WALLET`, `BROADCAST_RECORDED`, `CONFIRMING`, or `TIMED_OUT` without repeating completed steps.
 
 **OPEN QUESTION** — Injected wallets may normalize or reject some prepared EIP-1559 fields. Phase 7 retains nonce/type/fee fields and omits transaction-level chain ID in favor of a revalidated provider precondition, which is not universally atomic. Contract-test the exact Brickken payload and chain behavior on an explicit wallet/version before any live-write path is enabled.
+
+**ASSUMPTION** — EIP-1193 exposes no atomic chain/account snapshot plus send operation. A provider that silently changes internal state after the final reads and emits no event cannot be detected by browser code before its own request implementation runs. The single-send boundary minimizes this interval and fails closed on every observable generation/read mismatch; a returned or uncertain send is never replaced automatically.
 
 ## Verification strategy
 

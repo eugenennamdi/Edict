@@ -23,7 +23,6 @@ describe("wallet trust-boundary invariants", () => {
       "src/client/wallet/approval.ts",
       "src/client/wallet/discovery.ts",
       "src/client/wallet/errors.ts",
-      "src/client/wallet/execution.ts",
       "src/client/wallet/index.ts",
       "src/client/wallet/session.ts",
       "src/client/wallet/v4-execution.ts",
@@ -92,16 +91,14 @@ describe("wallet trust-boundary invariants", () => {
     expect(approvalBoundary).not.toMatch(/personal_sign|eth_sign"|eth_sendTransaction/u);
   });
 
-  it("marks invocation immediately before the direct provider call with no await boundary", () => {
-    expect(source("src/client/wallet/execution.ts")).toMatch(
-      /providerInvoked = true;\n\s+const pendingResult = input\.wallet\.requestExplicit\("eth_sendTransaction"/u,
-    );
-  });
-
-  it("keeps the V4 provider call singular and excludes raw signing", () => {
-    const execution = source("src/client/wallet/v4-execution.ts");
-    expect(execution.match(/requestExplicit\("eth_sendTransaction"/gu)).toHaveLength(1);
-    expect(execution).not.toMatch(/eth_sendRawTransaction|eth_signTransaction|privateKey|seed phrase/u);
+  it("keeps exactly one V4 product send call site and excludes raw signing", () => {
+    const productionClientSource = ["src/client", "src/components"]
+      .flatMap((directory) => filesBelow(join(root, directory)))
+      .filter((path) => /\.(?:ts|tsx)$/.test(path) && !/\.test\.(?:ts|tsx)$/.test(path))
+      .map((path) => readFileSync(path, "utf8"))
+      .join("\n");
+    expect(productionClientSource.match(/method:\s*"eth_sendTransaction"/gu)).toHaveLength(1);
+    expect(productionClientSource).not.toMatch(/eth_sendRawTransaction|eth_signTransaction|privateKey|seed phrase/u);
   });
 
   it("performs no provider or network call when wallet modules are imported", async () => {

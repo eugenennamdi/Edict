@@ -33,6 +33,21 @@ const unknownInputSchema = bindingSchema.extend({
   ]),
 });
 
+export type WalletExecutionGatewayErrorCode =
+  | "EXECUTION_AUTHORIZATION_UNAVAILABLE"
+  | "REVISION_CONFLICT"
+  | "AUTHORIZATION_RESPONSE_UNKNOWN"
+  | "MALFORMED_RESPONSE"
+  | "SERVER_REJECTION"
+  | "MALFORMED_REQUEST";
+
+export class WalletExecutionGatewayError extends Error {
+  constructor(readonly code: WalletExecutionGatewayErrorCode) {
+    super(code);
+    this.name = "WalletExecutionGatewayError";
+  }
+}
+
 export type BrowserBroadcastUnknownReason =
   | "PROVIDER_4001"
   | "PROVIDER_TIMEOUT"
@@ -64,7 +79,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
     contentType !== "application/json" ||
     response.body === null ||
     (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_RESPONSE_BYTES))
-  ) throw new Error("MALFORMED_WALLET_EXECUTION_RESPONSE");
+  ) throw new WalletExecutionGatewayError("MALFORMED_RESPONSE");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;
@@ -75,7 +90,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
       length += result.value.byteLength;
       if (length > MAX_RESPONSE_BYTES) {
         try { await reader.cancel(); } catch { /* Response is already refused. */ }
-        throw new Error("MALFORMED_WALLET_EXECUTION_RESPONSE");
+        throw new WalletExecutionGatewayError("MALFORMED_RESPONSE");
       }
       chunks.push(result.value);
     }
@@ -86,8 +101,9 @@ async function readBoundedJson(response: Response): Promise<unknown> {
       offset += chunk.byteLength;
     }
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  } catch {
-    throw new Error("MALFORMED_WALLET_EXECUTION_RESPONSE");
+  } catch (error) {
+    if (error instanceof WalletExecutionGatewayError) throw error;
+    throw new WalletExecutionGatewayError("MALFORMED_RESPONSE");
   } finally {
     reader.releaseLock();
   }
@@ -97,6 +113,7 @@ async function post(
   transport: WalletExecutionHttpTransport,
   path: string,
   body: unknown,
+  authorizationRequest = false,
 ): Promise<unknown> {
   let response: Response;
   try {
@@ -110,22 +127,56 @@ async function post(
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch {
-    throw new Error("WALLET_EXECUTION_TRANSPORT_FAILURE");
+    throw new WalletExecutionGatewayError(
+      authorizationRequest ? "AUTHORIZATION_RESPONSE_UNKNOWN" : "SERVER_REJECTION",
+    );
   }
   const raw = await readBoundedJson(response);
-  if (!response.ok) throw new Error("WALLET_EXECUTION_REQUEST_FAILED");
+  if (!response.ok) {
+    if (
+      authorizationRequest &&
+      response.status === 403 &&
+      isErrorCode(raw, "EXECUTION_AUTHORIZATION_UNAVAILABLE")
+    ) throw new WalletExecutionGatewayError("EXECUTION_AUTHORIZATION_UNAVAILABLE");
+    if (response.status === 409 && isErrorCode(raw, "REVISION_CONFLICT")) {
+      throw new WalletExecutionGatewayError("REVISION_CONFLICT");
+    }
+    throw new WalletExecutionGatewayError("SERVER_REJECTION");
+  }
   return raw;
+}
+
+function isErrorCode(raw: unknown, code: string): boolean {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+  const outer = raw as Record<string, unknown>;
+  if (Reflect.ownKeys(outer).length !== 2 || outer.ok !== false) return false;
+  const error = outer.error;
+  if (typeof error !== "object" || error === null || Array.isArray(error)) return false;
+  const inner = error as Record<string, unknown>;
+  return Reflect.ownKeys(inner).length === 1 && inner.code === code;
 }
 
 function envelopeFromResponse(raw: unknown): SendAuthorizedEnvelopeV1 {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new Error("MALFORMED_AUTHORIZATION_RESPONSE");
+    throw new WalletExecutionGatewayError("MALFORMED_RESPONSE");
   }
   const object = raw as Record<string, unknown>;
   if (Reflect.ownKeys(object).length !== 2 || object.ok !== true || !("envelope" in object)) {
-    throw new Error("MALFORMED_AUTHORIZATION_RESPONSE");
+    throw new WalletExecutionGatewayError("MALFORMED_RESPONSE");
   }
-  return parseSendAuthorizedEnvelopeV1(object.envelope);
+  try {
+    return parseSendAuthorizedEnvelopeV1(object.envelope);
+  } catch {
+    throw new WalletExecutionGatewayError("MALFORMED_RESPONSE");
+  }
+}
+
+function runFromResponse(raw: unknown): PublicRunProjection {
+  try {
+    return parsePublicRunMutationResponse(raw);
+  } catch {
+    throw new WalletExecutionGatewayError("MALFORMED_RESPONSE");
+  }
 }
 
 export function createWalletExecutionHttpGateway(
@@ -133,30 +184,40 @@ export function createWalletExecutionHttpGateway(
 ): WalletExecutionHttpGateway {
   return Object.freeze({
     async authorize(runId: string, expectedRevision: number) {
-      const parsedRunId = publicRunIdSchema.parse(runId);
-      const revision = revisionSchema.parse(expectedRevision);
+      const parsedRunId = publicRunIdSchema.safeParse(runId);
+      const revision = revisionSchema.safeParse(expectedRevision);
+      if (!parsedRunId.success || !revision.success) {
+        throw new WalletExecutionGatewayError("MALFORMED_REQUEST");
+      }
       return envelopeFromResponse(await post(
         transport,
-        `/api/runs/${parsedRunId}/wallet-authorization`,
-        { expectedRevision: revision },
+        `/api/runs/${parsedRunId.data}/wallet-authorization`,
+        { expectedRevision: revision.data },
+        true,
       ));
     },
     async ingestHash(runId: string, input: Parameters<WalletExecutionHttpGateway["ingestHash"]>[1]) {
-      const parsedRunId = publicRunIdSchema.parse(runId);
-      const parsed = hashInputSchema.parse(input);
-      return parsePublicRunMutationResponse(await post(
+      const parsedRunId = publicRunIdSchema.safeParse(runId);
+      const parsed = hashInputSchema.safeParse(input);
+      if (!parsedRunId.success || !parsed.success) {
+        throw new WalletExecutionGatewayError("MALFORMED_REQUEST");
+      }
+      return runFromResponse(await post(
         transport,
-        `/api/runs/${parsedRunId}/broadcast-hash`,
-        parsed,
+        `/api/runs/${parsedRunId.data}/broadcast-hash`,
+        parsed.data,
       ));
     },
     async recordUnknown(runId: string, input: Parameters<WalletExecutionHttpGateway["recordUnknown"]>[1]) {
-      const parsedRunId = publicRunIdSchema.parse(runId);
-      const parsed = unknownInputSchema.parse(input);
-      return parsePublicRunMutationResponse(await post(
+      const parsedRunId = publicRunIdSchema.safeParse(runId);
+      const parsed = unknownInputSchema.safeParse(input);
+      if (!parsedRunId.success || !parsed.success) {
+        throw new WalletExecutionGatewayError("MALFORMED_REQUEST");
+      }
+      return runFromResponse(await post(
         transport,
-        `/api/runs/${parsedRunId}/broadcast-unknown`,
-        parsed,
+        `/api/runs/${parsedRunId.data}/broadcast-unknown`,
+        parsed.data,
       ));
     },
   });

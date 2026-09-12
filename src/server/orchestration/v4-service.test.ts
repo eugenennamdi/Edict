@@ -771,6 +771,72 @@ describe("ExecutionV4Orchestrator", () => {
       expect(releasedRun.revision).toBe(v4Run.revision + 2);
     });
 
+    it("allows only one concurrent authority release directly from PREPARED", async () => {
+      const h = createHarness();
+      const runV2 = await createPreparedV2Run(h);
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+
+      const results = await Promise.allSettled([
+        h.v4.releaseSendAuthority(v4Run.id, v4Run.revision),
+        h.v4.releaseSendAuthority(v4Run.id, v4Run.revision),
+      ]);
+      expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+      expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
+
+      const durable = await h.repository.getById(v4Run.id);
+      assertV4(durable);
+      expect(durable.operations[0].walletPromptAuthorization?.providerInvocation)
+        .toBe("INVOKED_OR_UNKNOWN");
+    });
+
+    it("keeps authority consumed when the successful CAS response is lost", async () => {
+      const h = createHarness();
+      const runV2 = await createPreparedV2Run(h);
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+
+      await h.v4.releaseSendAuthority(v4Run.id, v4Run.revision);
+      const durable = await h.repository.getById(v4Run.id);
+      assertV4(durable);
+      expect(durable.operations[0].walletPromptAuthorization?.providerInvocation)
+        .toBe("INVOKED_OR_UNKNOWN");
+      await expect(h.v4.releaseSendAuthority(durable.id, durable.revision))
+        .rejects.toThrow(IllegalStateTransitionError);
+    });
+
+    it("rejects an old wallet intent hash after a newer preparation revision is authorized", async () => {
+      const oldHarness = createHarness();
+      const oldV2 = await createPreparedV2Run(oldHarness);
+      const oldV4 = await oldHarness.v4.promotePreparedRunToV4(oldV2.id, oldV2.revision);
+      const { envelope: oldEnvelope } = await oldHarness.v4.releaseSendAuthority(
+        oldV4.id,
+        oldV4.revision,
+      );
+
+      const h = createHarness();
+      const runV2 = await createPreparedV2Run(h);
+      const initial = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      h.fakeRpcTransport.on("eth_getTransactionCount", () => "0x6");
+      const stale = await h.v4.evaluateAndApplyPreparedFreshness(initial.id, initial.revision);
+      const intent = await h.v4.beginReprepare(stale.run.id, stale.run.revision, "attempt-2");
+      const reprepared = await h.v4.recordReprepared(
+        intent.id,
+        intent.revision,
+        "brickken-tx-2",
+        { ...UNSIGNED_TOKENIZE_TX, nonce: "0x6" },
+      );
+      const { envelope, run: released } = await h.v4.releaseSendAuthority(
+        reprepared.id,
+        reprepared.revision,
+      );
+      expect(envelope.walletIntentHash).not.toBe(oldEnvelope.walletIntentHash);
+      await expect(h.v4.ingestBroadcastHash(released.id, {
+        expectedRevision: released.revision,
+        invocationAttemptId: envelope.invocationAttemptId,
+        walletIntentHash: oldEnvelope.walletIntentHash,
+        txHash: TX_HASH,
+      })).rejects.toThrow(IllegalStateTransitionError);
+    });
+
     it("records ambiguous broadcast outcomes and forces RECONCILIATION_REQUIRED", async () => {
       const h = createHarness();
       const runV2 = await createPreparedV2Run(h);

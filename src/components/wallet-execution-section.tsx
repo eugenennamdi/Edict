@@ -12,22 +12,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { AlertTriangle, CheckCircle2, WalletCards } from "lucide-react";
+import {
+  classifyWalletExecutionFailure,
+  initialWalletExecutionUiModel,
+  reduceWalletExecutionUi,
+  type WalletExecutionUiModel,
+  type WalletExecutionViewState,
+} from "./wallet-execution-ui-state";
 
-type ViewState =
-  | "WALLET_REQUIRED"
-  | "PROVIDER_SELECTION"
-  | "ACCOUNT_ACCESS_REQUIRED"
-  | "WRONG_CHAIN"
-  | "REQUIRED_SIGNER_UNAVAILABLE"
-  | "READY"
-  | "AUTHORIZATION_UNAVAILABLE"
-  | "PROMPT_IN_PROGRESS"
-  | "HASH_RECORDED"
-  | "BROADCAST_UNCERTAIN"
-  | "RECONCILIATION_REQUIRED";
-
-function label(state: ViewState): string {
-  const labels: Record<ViewState, string> = {
+function label(state: WalletExecutionViewState): string {
+  const labels: Record<WalletExecutionViewState, string> = {
     WALLET_REQUIRED: "Wallet required",
     PROVIDER_SELECTION: "Select a wallet provider",
     ACCOUNT_ACCESS_REQUIRED: "Grant account access",
@@ -35,6 +29,7 @@ function label(state: ViewState): string {
     REQUIRED_SIGNER_UNAVAILABLE: "Required signer unavailable",
     READY: "Ready for wallet prompt",
     AUTHORIZATION_UNAVAILABLE: "Execution authorization unavailable",
+    DURABLE_REFRESH_REQUIRED: "Durable refresh required",
     PROMPT_IN_PROGRESS: "Wallet prompt in progress",
     HASH_RECORDED: "Transaction hash recorded",
     BROADCAST_UNCERTAIN: "Broadcast outcome uncertain",
@@ -52,7 +47,8 @@ export function WalletExecutionSection({
 }) {
   const eligible = run.approved && run.status === "AWAITING_WALLET" && run.operations[0].stage === "PREPARED";
   const [providers, setProviders] = useState<readonly DiscoveredWallet[]>([]);
-  const [state, setState] = useState<ViewState>("WALLET_REQUIRED");
+  const [model, setModel] = useState<WalletExecutionUiModel>(initialWalletExecutionUiModel);
+  const state = model.state;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const session = useRef<SelectedWalletSession | null>(null);
   const discovery = useRef<InjectedWalletDiscovery | null>(null);
@@ -62,13 +58,15 @@ export function WalletExecutionSection({
     if (!eligible) return;
     const value = new InjectedWalletDiscovery({
       events: window,
-      readLegacyProvider: () => (window as Window & { ethereum?: unknown }).ethereum,
     });
     discovery.current = value;
     const update = () => {
       const list = value.list();
       setProviders(list);
-      if (!session.current) setState(list.length > 0 ? "PROVIDER_SELECTION" : "WALLET_REQUIRED");
+      if (!session.current) setModel((current) => reduceWalletExecutionUi(current, {
+        type: "LOCAL_STATE",
+        state: list.length > 0 ? "PROVIDER_SELECTION" : "WALLET_REQUIRED",
+      }));
     };
     const unsubscribe = value.subscribe(update);
     value.start();
@@ -86,47 +84,49 @@ export function WalletExecutionSection({
 
   async function inspect(selected: SelectedWalletSession) {
     const readiness = await selected.inspect(run.requiredSigner.walletAddress);
-    setState(
+    setModel((current) => reduceWalletExecutionUi(current, { type: "LOCAL_STATE", state:
       readiness.state === "READY"
         ? "READY"
         : readiness.state === "UNAUTHORIZED"
           ? "ACCOUNT_ACCESS_REQUIRED"
           : readiness.state === "WRONG_CHAIN"
             ? "WRONG_CHAIN"
-            : "REQUIRED_SIGNER_UNAVAILABLE",
-    );
+            : "REQUIRED_SIGNER_UNAVAILABLE" }));
   }
 
   async function select(selectionId: string) {
-    if (busy.current || !discovery.current) return;
+    if (busy.current || model.locked || !discovery.current) return;
     session.current?.dispose();
     const selected = discovery.current.selectFromUserAction(selectionId);
     session.current = selected;
     setSelectedId(selectionId);
-    await inspect(selected).catch(() => setState("WALLET_REQUIRED"));
+    await inspect(selected).catch(() => setModel((current) => reduceWalletExecutionUi(current, {
+      type: "LOCAL_STATE",
+      state: "WALLET_REQUIRED",
+    })));
   }
 
   async function connect() {
     const selected = session.current;
-    if (!selected || busy.current) return;
+    if (!selected || busy.current || model.locked) return;
     await selected.requestAccountsFromUserAction(run.requiredSigner.walletAddress)
       .then(() => inspect(selected))
-      .catch(() => setState("REQUIRED_SIGNER_UNAVAILABLE"));
+      .catch(() => setModel((current) => reduceWalletExecutionUi(current, { type: "LOCAL_STATE", state: "REQUIRED_SIGNER_UNAVAILABLE" })));
   }
 
   async function switchNetwork() {
     const selected = session.current;
-    if (!selected || busy.current) return;
+    if (!selected || busy.current || model.locked) return;
     await selected.switchToSepoliaFromUserAction(run.requiredSigner.walletAddress)
       .then(() => inspect(selected))
-      .catch(() => setState("WRONG_CHAIN"));
+      .catch(() => setModel((current) => reduceWalletExecutionUi(current, { type: "LOCAL_STATE", state: "WRONG_CHAIN" })));
   }
 
   async function execute() {
     const selected = session.current;
-    if (!selected || busy.current || state !== "READY") return;
+    if (!selected || busy.current || model.locked || state !== "READY") return;
     busy.current = true;
-    setState("PROMPT_IN_PROGRESS");
+    setModel((current) => reduceWalletExecutionUi(current, { type: "START" }));
     try {
       await executeSendAuthorizedEnvelopeFromUserAction({
         runId: run.id,
@@ -135,16 +135,14 @@ export function WalletExecutionSection({
         wallet: selected,
         gateway: createWalletExecutionHttpGateway(),
       });
-      setState("HASH_RECORDED");
+      setModel((current) => reduceWalletExecutionUi(current, { type: "HASH_RECORDED" }));
       await onRefresh();
     } catch (error) {
-      if (error instanceof WalletBoundaryError && error.reconciliationRequired) {
-        setState(error.code === "BROADCAST_OUTCOME_UNKNOWN" ? "BROADCAST_UNCERTAIN" : "RECONCILIATION_REQUIRED");
-      } else if (error instanceof WalletBoundaryError && error.code === "SEMANTIC_POLICY_REFUSED") {
-        setState("AUTHORIZATION_UNAVAILABLE");
-      } else {
-        setState("REQUIRED_SIGNER_UNAVAILABLE");
-      }
+      const failure = classifyWalletExecutionFailure(
+        error instanceof WalletBoundaryError ? error.code : "UNKNOWN",
+      );
+      setModel((current) => reduceWalletExecutionUi(current, failure.event));
+      if (failure.refresh) await onRefresh().catch(() => undefined);
     } finally {
       busy.current = false;
     }
@@ -190,6 +188,11 @@ export function WalletExecutionSection({
         {state === "AUTHORIZATION_UNAVAILABLE" && (
           <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
             Production execution remains deny-all. No wallet transaction request was made.
+          </div>
+        )}
+        {state === "DURABLE_REFRESH_REQUIRED" && (
+          <div role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+            Authorization outcome or durable revision changed. Edict refreshed the run and will not retry authorization automatically.
           </div>
         )}
         {["BROADCAST_UNCERTAIN", "RECONCILIATION_REQUIRED"].includes(state) && (

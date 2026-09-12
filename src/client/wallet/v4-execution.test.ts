@@ -34,13 +34,25 @@ class Provider implements EdictEip1193Provider {
   sendResult: unknown = HASH;
   sendError: unknown = null;
   onSend: (() => void) | null = null;
+  onAccountRead: ((readNumber: number) => void) | null = null;
+  onChainRead: ((readNumber: number) => void) | null = null;
+  accountReads = 0;
+  chainReads = 0;
   readonly calls: Array<{ method: string; params?: readonly unknown[] | Record<string, unknown> }> = [];
   readonly listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
 
   readonly request = vi.fn(async (request: { method: string; params?: readonly unknown[] | Record<string, unknown> }) => {
     this.calls.push(request);
-    if (request.method === "eth_accounts" || request.method === "eth_requestAccounts") return this.accounts;
-    if (request.method === "eth_chainId") return this.chainId;
+    if (request.method === "eth_accounts" || request.method === "eth_requestAccounts") {
+      this.accountReads += 1;
+      this.onAccountRead?.(this.accountReads);
+      return this.accounts;
+    }
+    if (request.method === "eth_chainId") {
+      this.chainReads += 1;
+      this.onChainRead?.(this.chainReads);
+      return this.chainId;
+    }
     if (request.method === "wallet_switchEthereumChain") {
       this.chainId = "0xaa36a7";
       return null;
@@ -115,6 +127,11 @@ describe("V4 browser wallet execution coordinator", () => {
     expect(sends(value.provider)).toHaveLength(1);
     expect(sends(value.provider)[0]?.params).toEqual([envelope.walletRequest]);
     expect((sends(value.provider)[0]?.params as readonly [Record<string, unknown>])[0].nonce).toBe("0x7");
+    expect(value.provider.calls.slice(-3).map(({ method }) => method)).toEqual([
+      "eth_chainId",
+      "eth_accounts",
+      "eth_sendTransaction",
+    ]);
     expect(value.hashes).toEqual([{
       expectedRevision: 9,
       invocationAttemptId: "inv-test-1",
@@ -155,6 +172,32 @@ describe("V4 browser wallet execution coordinator", () => {
     }
   });
 
+  it.each(["chain", "account", "generation"] as const)(
+    "fails closed when the latest injectable %s state changes before the one send invocation",
+    async (change) => {
+      const value = harness();
+      if (change === "chain") {
+        value.provider.onChainRead = (readNumber) => {
+          if (readNumber === 3) {
+            value.provider.chainId = "0x1";
+            value.provider.emit("chainChanged");
+          }
+        };
+      } else {
+        value.provider.onAccountRead = (readNumber) => {
+          if (readNumber !== 3) return;
+          if (change === "account") {
+            value.provider.accounts = [OTHER];
+            value.provider.emit("accountsChanged");
+          } else value.provider.emit("disconnect");
+        };
+      }
+      await expect(execute(value)).rejects.toMatchObject({ code: "BROADCAST_OUTCOME_UNKNOWN" });
+      expect(sends(value.provider)).toHaveLength(0);
+      expect(value.unknowns).toHaveLength(1);
+    },
+  );
+
   it.each([
     ["4001", Object.assign(new Error("rejected"), { code: 4001 }), "PROVIDER_4001"],
     ["provider error", new Error("provider failed"), "PROVIDER_ERROR"],
@@ -162,7 +205,7 @@ describe("V4 browser wallet execution coordinator", () => {
     const value = harness();
     value.provider.sendError = error;
     await expect(execute(value)).rejects.toMatchObject({ code: "BROADCAST_OUTCOME_UNKNOWN" });
-    await expect(execute(value)).rejects.toMatchObject({ code: "SEMANTIC_POLICY_REFUSED" });
+    await expect(execute(value)).rejects.toMatchObject({ code: "AUTHORIZATION_REQUEST_REFUSED" });
     expect(sends(value.provider)).toHaveLength(1);
     expect(value.unknowns).toEqual([expect.objectContaining({ reason })]);
   });
@@ -213,6 +256,13 @@ describe("V4 browser wallet execution coordinator", () => {
     expect(lost.unknowns).toEqual([
       expect.objectContaining({ reason: "HASH_PERSISTENCE_UNCONFIRMED" }),
     ]);
+  });
+
+  it("canonicalizes a mixed-case provider hash before durable ingestion", async () => {
+    const value = harness();
+    value.provider.sendResult = `0x${"Ab".repeat(32)}`;
+    await expect(execute(value)).resolves.toEqual({ outcome: "BROADCAST_RECORDED", txHash: HASH });
+    expect(value.hashes).toEqual([expect.objectContaining({ txHash: HASH })]);
   });
 
   it("allows one send across repeated clicks, concurrent coordinators, and a retrying authorization request", async () => {

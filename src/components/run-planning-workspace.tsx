@@ -358,7 +358,7 @@ export default function RunPlanningWorkspace({
                     : "Plan approval not recorded"}
                 </span>
                 <Separator orientation="vertical" className="h-3 bg-border" />
-                <span className="text-muted-foreground">Preparation review only · Wallet submission unavailable</span>
+                <span className="text-muted-foreground">Wallet execution requires server authorization · Production deny-all</span>
               </div>
 
               <div className="flex items-center gap-2">

@@ -6,6 +6,7 @@ import type {
   BrowserBroadcastUnknownReason,
   WalletExecutionHttpGateway,
 } from "@/client/run-api/wallet-execution-gateway";
+import { WalletExecutionGatewayError } from "@/client/run-api/wallet-execution-gateway";
 import {
   parseSendAuthorizedEnvelopeV1,
   validateWalletTransactionRequestV1,
@@ -87,8 +88,20 @@ export async function executeSendAuthorizedEnvelopeFromUserAction(input: {
   let rawEnvelope: SendAuthorizedEnvelopeV1;
   try {
     rawEnvelope = await input.gateway.authorize(input.runId, input.expectedRevision);
-  } catch {
-    throw new WalletBoundaryError("SEMANTIC_POLICY_REFUSED");
+  } catch (error) {
+    if (!(error instanceof WalletExecutionGatewayError)) {
+      throw new WalletBoundaryError("AUTHORIZATION_REQUEST_REFUSED");
+    }
+    const code = error.code === "EXECUTION_AUTHORIZATION_UNAVAILABLE"
+      ? "EXECUTION_AUTHORIZATION_UNAVAILABLE"
+      : error.code === "REVISION_CONFLICT"
+        ? "AUTHORIZATION_STATE_CHANGED"
+        : error.code === "AUTHORIZATION_RESPONSE_UNKNOWN"
+          ? "AUTHORIZATION_RESPONSE_UNKNOWN"
+          : error.code === "MALFORMED_RESPONSE"
+            ? "AUTHORIZATION_RESPONSE_MALFORMED"
+            : "AUTHORIZATION_REQUEST_REFUSED";
+    throw new WalletBoundaryError(code);
   }
 
   let envelope: SendAuthorizedEnvelopeV1;
@@ -120,9 +133,11 @@ export async function executeSendAuthorizedEnvelopeFromUserAction(input: {
 
   let providerResult: unknown;
   try {
-    providerResult = await input.wallet.requestExplicit("eth_sendTransaction", [
-      envelope.walletRequest,
-    ]);
+    providerResult = await input.wallet.sendTransactionOnce({
+      expectedGeneration: generationBeforeAuthority,
+      requiredSigner: envelope.requiredSigner,
+      walletRequest: envelope.walletRequest,
+    });
   } catch (error) {
     return reportUnknown(
       input.gateway,
