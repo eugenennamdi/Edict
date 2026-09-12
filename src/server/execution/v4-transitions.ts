@@ -154,6 +154,35 @@ function v4OperationFromLegacy(
   };
 }
 
+export async function calculatePreparationFingerprintV1(input: {
+  readonly run: ExecutionRun | ExecutionRunV4;
+  readonly kind: OperationKind;
+  readonly attemptId: string;
+  readonly txId: string;
+  readonly preparedAt: IsoUtcTimestamp;
+  readonly preparedRunRevision: number;
+  readonly immutableIdentity: PreparationAttemptV1["immutableIdentity"];
+  readonly feeAuthorization: PreparationAttemptV1["feeAuthorization"];
+}): Promise<`sha256:${string}`> {
+  if (input.immutableIdentity === null || input.feeAuthorization === null) {
+    throw new IllegalStateTransitionError();
+  }
+  return (await hashCanonicalJson({
+    domain: "edict.preparation-attempt.v1",
+    runId: input.run.id,
+    runRevision: input.preparedRunRevision,
+    approvalRevision: input.run.approval?.approvalRevision,
+    manifestHash: input.run.manifestHash,
+    planHash: input.run.planHash,
+    operation: { id: input.run.operations[indexFor(input.kind)].id, kind: input.kind },
+    attemptId: input.attemptId,
+    txId: input.txId,
+    preparedAt: input.preparedAt,
+    immutableIdentity: input.immutableIdentity,
+    feeAuthorization: input.feeAuthorization,
+  })).hash as `sha256:${string}`;
+}
+
 async function preparedAttempt(input: {
   readonly run: ExecutionRun | ExecutionRunV4;
   readonly kind: OperationKind;
@@ -189,20 +218,16 @@ async function preparedAttempt(input: {
     maxPriorityFeePerGas: request.maxPriorityFeePerGas,
     preparedAccessList: request.accessList ?? [],
   });
-  const preparationFingerprint = (await hashCanonicalJson({
-    domain: "edict.preparation-attempt.v1",
-    runId: input.run.id,
-    runRevision: input.run.revision,
-    approvalRevision: input.run.approval?.approvalRevision,
-    manifestHash: input.run.manifestHash,
-    planHash: input.run.planHash,
-    operation: { id: input.run.operations[indexFor(input.kind)].id, kind: input.kind },
+  const preparationFingerprint = await calculatePreparationFingerprintV1({
+    run: input.run,
+    kind: input.kind,
     attemptId: input.attemptId,
     txId: input.txId,
     preparedAt: input.preparedAt,
+    preparedRunRevision: input.run.revision,
     immutableIdentity,
     feeAuthorization,
-  })).hash;
+  });
   return {
     attemptId: input.attemptId,
     sequence: input.sequence,

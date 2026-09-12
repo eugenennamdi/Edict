@@ -6,6 +6,7 @@ import { getServerEnv } from "../env";
 import {
   ExecutionOrchestrator,
   ExecutionV4Orchestrator,
+  createProductionSemanticAuthorizationEvaluator,
   createPreparationOnlyBrickkenWriteGate,
 } from "../orchestration";
 import { createNeonExecutionRunRepository } from "../persistence";
@@ -20,6 +21,7 @@ import {
   cryptoNonceSource,
   systemTokenClock,
 } from "../security";
+import type { SemanticAuthorizationEvaluator } from "../orchestration";
 
 export interface RunApiRuntime {
   readonly runs: ExecutionRunService;
@@ -36,6 +38,12 @@ export interface RunApiRuntime {
     | "trackExecution"
   >;
   readonly nowIso: () => string;
+}
+
+export function createRuntimeSemanticAuthorization(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): SemanticAuthorizationEvaluator {
+  return createProductionSemanticAuthorizationEvaluator(environment);
 }
 
 /** Called only after the deny-by-default deployment gate has passed. */
@@ -65,6 +73,7 @@ export function createRunApiRuntime(): RunApiRuntime {
       clock,
       ids,
       rpc: createTrustedSepoliaRpcClient(createProductionSepoliaRpcTransport()),
+      semanticAuthorization: createRuntimeSemanticAuthorization(),
     }),
     nowIso: () => new Date().toISOString(),
   });

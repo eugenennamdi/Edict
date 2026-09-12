@@ -15,6 +15,10 @@ export interface ServerEnv {
   readonly EDICT_RUN_API_ENABLED?: string;
   readonly EDICT_TRUSTED_ORIGIN?: string;
   readonly EDICT_TRANSACTION_PREPARATION_ENABLED?: string;
+  readonly EDICT_TOKENIZE_EXECUTION_ENABLED?: string;
+  readonly EDICT_TOKENIZE_ALLOWED_DESTINATION?: string;
+  readonly EDICT_TOKENIZE_FUNCTION_SIGNATURE?: string;
+  readonly EDICT_TOKENIZE_CALLDATA_COMMITMENT?: string;
   readonly EDICT_SEPOLIA_RPC_URL?: string;
 }
 
@@ -29,6 +33,9 @@ export function getServerEnv(): ServerEnv {
         `Security violation: Credential variable "${key}" must never use NEXT_PUBLIC_ prefix.`
       );
     }
+    if (key.startsWith("NEXT_PUBLIC_EDICT_TOKENIZE_")) {
+      throw new Error("Security violation: TOKENIZE execution policy must remain server-only.");
+    }
   }
 
   return {
@@ -41,6 +48,14 @@ export function getServerEnv(): ServerEnv {
     EDICT_TRUSTED_ORIGIN: process.env.EDICT_TRUSTED_ORIGIN || undefined,
     EDICT_TRANSACTION_PREPARATION_ENABLED:
       process.env.EDICT_TRANSACTION_PREPARATION_ENABLED || undefined,
+    EDICT_TOKENIZE_EXECUTION_ENABLED:
+      process.env.EDICT_TOKENIZE_EXECUTION_ENABLED || undefined,
+    EDICT_TOKENIZE_ALLOWED_DESTINATION:
+      process.env.EDICT_TOKENIZE_ALLOWED_DESTINATION || undefined,
+    EDICT_TOKENIZE_FUNCTION_SIGNATURE:
+      process.env.EDICT_TOKENIZE_FUNCTION_SIGNATURE || undefined,
+    EDICT_TOKENIZE_CALLDATA_COMMITMENT:
+      process.env.EDICT_TOKENIZE_CALLDATA_COMMITMENT || undefined,
     EDICT_SEPOLIA_RPC_URL: process.env.EDICT_SEPOLIA_RPC_URL || undefined,
   };
 }

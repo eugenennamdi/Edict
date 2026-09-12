@@ -97,10 +97,12 @@ export class DenyAllSemanticAuthorizationEvaluator
 {
   readonly isProductionDenyAll = true;
 
+  constructor(readonly reason: string = "AUTHORIZATION_DENIED") {}
+
   async evaluate(): Promise<Readonly<{ authorized: false; reason: string }>> {
     return Object.freeze({
       authorized: false,
-      reason: "AUTHORIZATION_DENIED",
+      reason: this.reason,
     });
   }
 }

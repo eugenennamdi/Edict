@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { sha256Utf8 } from "@/core";
 import { createValidRawManifest, TOKENIZER_ADDRESS } from "@/core/test-fixtures";
+import { toFunctionSelector } from "viem";
 import type { BrickkenServerAdapter, PreparedOperation } from "../brickken/types";
 import { BrickkenAdapterError } from "../brickken/errors";
 import { ExecutionRunService } from "../execution/run-service";
@@ -13,7 +15,14 @@ import { WalletApprovalService } from "../security/wallet-approval";
 import { ExecutionOrchestrator } from "../orchestration/service";
 import { createPreparationOnlyBrickkenWriteGate } from "../orchestration/write-gate";
 import type { RunApiRuntime } from "./runtime";
-import { ExecutionV4Orchestrator } from "../orchestration";
+import {
+  ExecutionV4Orchestrator,
+  TOKENIZE_ALLOWED_DESTINATION,
+  TOKENIZE_CALLDATA_COMMITMENT,
+  TOKENIZE_EXECUTION_GATE,
+  TOKENIZE_FUNCTION_SIGNATURE,
+  createProductionSemanticAuthorizationEvaluator,
+} from "../orchestration";
 import { createTrustedSepoliaRpcClient } from "../rpc";
 import {
   approvalChallengeHandler,
@@ -399,7 +408,10 @@ describe("V4 browser wallet run routes", () => {
     expect(await success.json()).toEqual({ ok: true, envelope });
     expect(value.walletExecution.releaseSendAuthority).toHaveBeenCalledWith(runId, 8);
 
-    for (const extra of ["invocationAttemptId", "operation", "to", "from", "data", "nonce", "gas", "chainId"]) {
+    for (const extra of [
+      "invocationAttemptId", "operation", "to", "from", "data", "nonce", "gas", "chainId",
+      "policy", "allowedDestination", "selector", "EDICT_TOKENIZE_EXECUTION_ENABLED",
+    ]) {
       const response = await value.call(walletAuthorizationHandler, "wallet-authorization", {
         expectedRevision: 8,
         [extra]: "browser-selected",
@@ -407,6 +419,87 @@ describe("V4 browser wallet run routes", () => {
       expect(response.status, extra).toBe(400);
     }
     expect(value.walletExecution.releaseSendAuthority).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns an envelope for exact test-enabled TOKENIZE state only after durable authority CAS", async () => {
+    const repository = new InMemoryExecutionRunRepository();
+    const api = createRuntime(undefined, repository);
+    const createdResponse = await createRunHandler(
+      request(`${config.trustedOrigin}/api/runs`, { manifest: createValidRawManifest() }),
+      { config, runtime: () => api },
+    );
+    const cookie = createdResponse.headers.get("set-cookie")!.split(";")[0]!;
+    const created = await api.runs.getRun(runId);
+    const approved = await api.runs.approvePlan(created.id, created.revision, {
+      planHash: created.planHash,
+      approvedByWallet: TOKENIZER_ADDRESS,
+      proof: createApprovalProofFixture(created, "2026-09-12T12:00:01.000Z"),
+    });
+    const preparing = await api.runs.beginPrepare(approved.id, approved.revision, "TOKENIZE");
+    const signature = "function createTokenization(bytes)";
+    const data = `${toFunctionSelector(signature)}${"00".repeat(32)}`;
+    const prepared = await api.runs.recordPrepared(preparing.id, preparing.revision, "TOKENIZE", {
+      txId: "brickken-tx-route-1",
+      unsignedTransaction: {
+        from: TOKENIZER_ADDRESS,
+        to: "0x4444444444444444444444444444444444444444",
+        data,
+        value: "0x0",
+        nonce: "0x5",
+        gasLimit: "0x5208",
+        type: 2,
+        maxFeePerGas: "0x20",
+        maxPriorityFeePerGas: "0x2",
+        chainId: 11155111,
+      },
+    });
+    let sequence = 0;
+    const walletExecution = new ExecutionV4Orchestrator({
+      repository,
+      clock: { nowIso: () => `2026-09-12T13:00:0${sequence++}.000Z` },
+      ids: {
+        runId: () => runId,
+        operationId: () => `wallet-operation-${sequence++}`,
+        eventId: () => `wallet-event-${sequence++}`,
+        invocationAttemptId: () => "invocation-route-1",
+      },
+      semanticAuthorization: createProductionSemanticAuthorizationEvaluator({
+        [TOKENIZE_EXECUTION_GATE]: "1",
+        [TOKENIZE_ALLOWED_DESTINATION]: "0x4444444444444444444444444444444444444444",
+        [TOKENIZE_FUNCTION_SIGNATURE]: signature,
+        [TOKENIZE_CALLDATA_COMMITMENT]: await sha256Utf8(data),
+      }),
+      rpc: createTrustedSepoliaRpcClient({ request: async (method, params) => {
+        if (method === "eth_chainId") return "0xaa36a7";
+        if (method === "eth_getTransactionCount") return "0x5";
+        if (method === "eth_getBalance") return "0x1000000000000000";
+        if (method === "eth_getBlockByNumber" && params?.[0] === "latest") return {
+          number: "0x10",
+          hash: `0x${"ab".repeat(32)}`,
+          parentHash: `0x${"cd".repeat(32)}`,
+          baseFeePerGas: "0x10",
+        };
+        throw new Error("unexpected RPC method");
+      } }),
+    });
+    const promoted = await walletExecution.promotePreparedRunToV4(prepared.id, prepared.revision);
+    const response = await walletAuthorizationHandler(
+      request(`${config.trustedOrigin}/api/runs/${runId}/wallet-authorization`, {
+        expectedRevision: promoted.revision,
+      }, { cookie, "sec-fetch-site": "same-origin" }),
+      runId,
+      { config, runtime: () => ({ ...api, walletExecution }) },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      envelope: expect.objectContaining({ invocationAttemptId: "invocation-route-1" }),
+    });
+    const durable = await repository.getById(runId);
+    expect(durable.schemaVersion).toBe("4.0");
+    if (durable.schemaVersion !== "4.0") throw new Error("expected V4");
+    expect(durable.operations[0].walletPromptAuthorization?.providerInvocation)
+      .toBe("INVOKED_OR_UNKNOWN");
   });
 
   it("rejects missing/wrong capability, untrusted origin, malformed bodies, and stale revisions", async () => {
