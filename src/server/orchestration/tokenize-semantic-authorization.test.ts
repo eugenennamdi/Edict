@@ -2,7 +2,7 @@ import { sha256Utf8, validateAssetManifestV1 } from "@/core";
 import { TOKENIZER_ADDRESS, createValidRawManifest } from "@/core/test-fixtures";
 import { describe, expect, it } from "vitest";
 import { ExecutionRunService } from "../execution/run-service";
-import { createApprovalProofFixture } from "../execution/test-fixtures";
+import { createApprovalProofFixture, createValidTokenizeCalldata } from "../execution/test-fixtures";
 import type { ExecutionRunV4, PreparationAttemptV1 } from "../execution/types";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
 import { createTrustedSepoliaRpcClient } from "../rpc";
@@ -33,7 +33,7 @@ const DESTINATION = REVIEWED_SEPOLIA_FACTORY;
 const OTHER = "0x5555555555555555555555555555555555555555";
 const SIGNATURE = REVIEWED_TOKENIZE_FUNCTION_SIGNATURE;
 const SELECTOR = REVIEWED_TOKENIZE_SELECTOR;
-const DATA = `${SELECTOR}${"00".repeat(32)}`;
+const DATA = createValidTokenizeCalldata();
 
 const unsignedTransaction = Object.freeze({
   from: TOKENIZER_ADDRESS,
@@ -267,6 +267,7 @@ describe("TOKENIZE-only semantic authorization", () => {
               hash: `0x${"ab".repeat(32)}`,
               parentHash: `0x${"cd".repeat(32)}`,
               baseFeePerGas: "0x10",
+              timestamp: "0x66e44000",
             };
           }
           throw new Error("unexpected RPC method");

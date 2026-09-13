@@ -1,13 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { sha256Utf8 } from "@/core";
 import { createValidRawManifest, TOKENIZER_ADDRESS } from "@/core/test-fixtures";
-import { toFunctionSelector } from "viem";
 import type { BrickkenServerAdapter, PreparedOperation } from "../brickken/types";
 import { BrickkenAdapterError } from "../brickken/errors";
 import { ExecutionRunService } from "../execution/run-service";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
 import { RepositoryRevisionConflictError } from "../execution/errors";
-import { createApprovalProofFixture } from "../execution/test-fixtures";
+import { createApprovalProofFixture, createValidTokenizeCalldata } from "../execution/test-fixtures";
 import type { Clock, IdGenerator } from "../execution/infrastructure";
 import { DomainSeparatedTokenMac, type NonceSource, type TokenClock } from "../security/tokens";
 import { RunAccessService, RUN_ACCESS_COOKIE } from "../security/run-access";
@@ -474,7 +473,7 @@ describe("V4 browser wallet run routes", () => {
     });
     const preparing = await api.runs.beginPrepare(approved.id, approved.revision, "TOKENIZE");
     const signature = REVIEWED_TOKENIZE_FUNCTION_SIGNATURE;
-    const data = `${toFunctionSelector(signature)}${"00".repeat(32)}`;
+    const data = createValidTokenizeCalldata();
     const prepared = await api.runs.recordPrepared(preparing.id, preparing.revision, "TOKENIZE", {
       txId: "brickken-tx-route-1",
       unsignedTransaction: {
@@ -515,6 +514,7 @@ describe("V4 browser wallet run routes", () => {
           hash: `0x${"ab".repeat(32)}`,
           parentHash: `0x${"cd".repeat(32)}`,
           baseFeePerGas: "0x10",
+          timestamp: "0x66e44000",
         };
         throw new Error("unexpected RPC method");
       } }),

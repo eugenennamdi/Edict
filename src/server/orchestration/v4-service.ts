@@ -353,7 +353,9 @@ export class ExecutionV4Orchestrator {
     });
 
     if (
-      evaluation.outcome === "STALE_NONCE" &&
+      (evaluation.outcome === "STALE_NONCE" ||
+        evaluation.outcome === "PRICE_REPORT_EXPIRED" ||
+        evaluation.outcome === "PRICE_REPORT_TOO_CLOSE_TO_EXPIRY") &&
       evaluation.nonceEvidence !== null
     ) {
       let foundation: V4PreparationFoundationInput = {
@@ -371,11 +373,14 @@ export class ExecutionV4Orchestrator {
           };
         }
       }
+      const staleReason =
+        evaluation.outcome === "STALE_NONCE" ? "NONCE_MISMATCH" : "PRICE_REPORT_EXPIRED";
       const nextRun = await markPreparedStaleV4({
         run: current,
         kind,
         foundation,
         nonceEvidence: evaluation.nonceEvidence,
+        staleReason,
         id: this.#deps.ids.eventId(),
         at: evaluation.nonceEvidence.observedAt,
       });

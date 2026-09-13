@@ -1,6 +1,7 @@
 import "server-only";
 
 import { WALLET_BOUNDARY_LIMITS, WALLET_PROVIDER_DEADLINES_MS } from "@/shared/wallet";
+import { decodeErrorResult, parseAbi } from "viem";
 import { readSepoliaRpcConfig } from "./config";
 import type { RpcTransport } from "./types";
 
@@ -33,11 +34,55 @@ export class RpcTransportError extends Error {
 
 export class RpcJsonRpcError extends Error {
   readonly rpcCode: number;
+  readonly data: string | null;
 
-  constructor(rpcCode: number, message: string) {
+  constructor(rpcCode: number, message: string, data?: string | null) {
     super(message);
     this.name = "RpcJsonRpcError";
     this.rpcCode = rpcCode;
+    this.data = data ?? null;
+  }
+}
+
+export const KNOWN_REVERT_ERRORS_ABI = parseAbi([
+  "error ExpiredSignature(uint256 deadline, uint256 currentTimestamp)",
+  "error Error(string message)",
+  "error Panic(uint256 code)",
+  "error UserIsNotWhitelisted(address user)",
+  "error InvalidSigner(address retrievedAddress, address validAddress)",
+  "error NotEnoughCredits()",
+  "error PremintGreaterThanMaxSupply()",
+]);
+
+export interface DecodedContractRevert {
+  readonly errorName: string;
+  readonly args: readonly unknown[];
+  readonly rawData: string;
+}
+
+/**
+ * Safely decodes contract revert data against independently verified canonical error ABIs.
+ * Never leaks credentials or URLs. Returns null if data is malformed or selector is unknown.
+ */
+export function decodeContractRevertData(data: unknown): DecodedContractRevert | null {
+  if (typeof data !== "string" || !data.startsWith("0x") || data.length < 10) {
+    return null;
+  }
+  if (data.length > 65536) {
+    return null;
+  }
+  try {
+    const decoded = decodeErrorResult({
+      abi: KNOWN_REVERT_ERRORS_ABI,
+      data: data as `0x${string}`,
+    });
+    return Object.freeze({
+      errorName: decoded.errorName,
+      args: Object.freeze([...(decoded.args ?? [])]),
+      rawData: data.toLowerCase(),
+    });
+  } catch {
+    return null;
   }
 }
 
@@ -279,7 +324,7 @@ export class HttpRpcTransport implements RpcTransport {
     }
 
     if ("error" in record && record.error !== null && record.error !== undefined) {
-      const errObj = record.error as { code?: unknown; message?: unknown };
+      const errObj = record.error as { code?: unknown; message?: unknown; data?: unknown };
       const errCode = typeof errObj.code === "number" ? errObj.code : -32603;
       const rawErrMsg = typeof errObj.message === "string" ? errObj.message : "RPC returned error";
 
@@ -292,7 +337,17 @@ export class HttpRpcTransport implements RpcTransport {
       }
 
       const sanitizedMsg = sanitizeText(rawErrMsg, sensitiveList);
-      throw new RpcJsonRpcError(errCode, `RPC error (${errCode}): ${sanitizedMsg}`);
+
+      let boundedData: string | null = null;
+      if (typeof errObj.data === "string") {
+        const rawData = errObj.data.trim();
+        // Allow up to 64 KiB of hex calldata/revert data
+        if (rawData.length <= 65536 && /^0x[0-9a-fA-F]*$/.test(rawData)) {
+          boundedData = rawData.toLowerCase();
+        }
+      }
+
+      throw new RpcJsonRpcError(errCode, `RPC error (${errCode}): ${sanitizedMsg}`, boundedData);
     }
 
     if (!("result" in record)) {

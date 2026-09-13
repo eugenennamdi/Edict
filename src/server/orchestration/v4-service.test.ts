@@ -36,11 +36,13 @@ import {
   type BrickkenServerAdapter,
   type BrickkenTransactionLocator,
 } from "../brickken";
+import { encodeFunctionData, parseAbi } from "viem";
 import {
   ERC1967_IMPLEMENTATION_SLOT,
   NEW_TOKENIZATION_EVENT_TOPIC,
   REVIEWED_SEPOLIA_FACTORY,
   REVIEWED_SEPOLIA_IMPLEMENTATION,
+  REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
 } from "./tokenize-receipt-binding";
 
 class FakeRpcTransport implements RpcTransport {
@@ -131,13 +133,29 @@ function indexedAddress(address: string): string {
   return `0x${"0".repeat(24)}${address.slice(2).toLowerCase()}`;
 }
 
+const TOKENIZE_ABI = parseAbi([`function ${REVIEWED_TOKENIZE_FUNCTION_SIGNATURE} external`]);
+
+export function createValidTokenizeCalldata(deadline: bigint = 2000000000n): string {
+  return encodeFunctionData({
+    abi: TOKENIZE_ABI,
+    functionName: "newTokenization",
+    args: [
+      ["Token", "TKN", "ipfs://meta", 1000000n, TOKENIZER_ADDRESS, TO, false, [], []],
+      [TO, 100n, TO, TOKENIZER_ADDRESS, deadline, 1n, "0x1234"],
+      [100n, TO, TO, 10n, 0, `0x${"00".repeat(32)}`, `0x${"00".repeat(32)}`],
+    ],
+  });
+}
+
+const VALID_TOKENIZE_CALLDATA = createValidTokenizeCalldata();
+
 const UNSIGNED_TOKENIZE_TX = {
   from: TOKENIZER_ADDRESS,
   to: TO,
   value: "0x0",
   nonce: "0x5",
   chainId: "0xaa36a7",
-  data: "0x12345678aabb",
+  data: VALID_TOKENIZE_CALLDATA,
   type: "0x2",
   maxPriorityFeePerGas: "0x4",
   maxFeePerGas: "0x20",
@@ -265,6 +283,7 @@ function createHarness(options: { readonly readBack?: boolean } = {}) {
         hash: FINALIZED_BLOCK_HASH,
         parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
         baseFeePerGas: "0x10",
+        timestamp: "0x66e44000",
       };
     }
     return {
@@ -272,6 +291,7 @@ function createHarness(options: { readonly readBack?: boolean } = {}) {
       hash: BLOCK_HASH,
       parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
       baseFeePerGas: "0x10",
+      timestamp: "0x66e44000",
     };
   });
 
@@ -309,7 +329,10 @@ function createHarness(options: { readonly readBack?: boolean } = {}) {
   };
 }
 
-async function createPreparedV2Run(harness: ReturnType<typeof createHarness>) {
+async function createPreparedV2Run(
+  harness: ReturnType<typeof createHarness>,
+  options?: { readonly unsignedTransaction?: typeof UNSIGNED_TOKENIZE_TX },
+) {
   const validation = validateAssetManifestV1(createValidRawManifest());
   if (!validation.ok) throw new Error("fixture manifest invalid");
   const created = await harness.runService.createRun(validation.value);
@@ -333,7 +356,7 @@ async function createPreparedV2Run(harness: ReturnType<typeof createHarness>) {
     "TOKENIZE",
     {
       txId: "brickken-tx-1",
-      unsignedTransaction: UNSIGNED_TOKENIZE_TX,
+      unsignedTransaction: options?.unsignedTransaction ?? UNSIGNED_TOKENIZE_TX,
     },
   );
 }
@@ -506,6 +529,7 @@ describe("ExecutionV4Orchestrator", () => {
         hash: BLOCK_HASH,
         parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
         baseFeePerGas: "0x50",
+        timestamp: "0x66e44000",
       }));
 
       const result = await h.v4.evaluateAndApplyPreparedFreshness(
@@ -618,6 +642,96 @@ describe("ExecutionV4Orchestrator", () => {
       await expect(
         h.v4.beginReprepare(releasedRun.id, releasedRun.revision),
       ).rejects.toThrow(IllegalStateTransitionError);
+    });
+
+    it("strictly forbids repreparation once authority is consumed or broadcast is recorded", async () => {
+      const h = createHarness();
+      const runV2 = await createPreparedV2Run(h);
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      const promptRun = await h.v4.recordWalletPrompt(v4Run.id, v4Run.revision);
+      const { envelope, run: releasedRun } = await h.v4.releaseSendAuthority(
+        promptRun.id,
+        promptRun.revision,
+      );
+
+      // 1. Authority released -> repreparation forbidden
+      await expect(
+        h.v4.beginReprepare(releasedRun.id, releasedRun.revision),
+      ).rejects.toThrow(IllegalStateTransitionError);
+
+      // 2. Broadcast recorded -> repreparation forbidden
+      const broadcastRun = await h.v4.ingestBroadcastHash(releasedRun.id, {
+        expectedRevision: releasedRun.revision,
+        invocationAttemptId: envelope.invocationAttemptId,
+        walletIntentHash: envelope.walletIntentHash,
+        txHash: TX_HASH,
+      });
+
+      await expect(
+        h.v4.beginReprepare(broadcastRun.id, broadcastRun.revision),
+      ).rejects.toThrow(IllegalStateTransitionError);
+    });
+
+    it("transitions to PREPARED_STALE with staleReason PRICE_REPORT_EXPIRED when price report is expired, and supports safe repreparation with fresh calldata commitment", async () => {
+      const h = createHarness();
+      // Block timestamp is 0x66e44000 = 1726234624
+      // Use expired calldata with deadline = 1000000000n (< 1726234624)
+      const expiredCalldata = createValidTokenizeCalldata(1000000000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(
+        runV2.id,
+        runV2.revision,
+      );
+
+      // Evaluate freshness -> must detect expired price report and mark PREPARED_STALE
+      const freshnessRes = await h.v4.evaluateAndApplyPreparedFreshness(
+        v4Run.id,
+        v4Run.revision,
+      );
+      expect(freshnessRes.evaluation.outcome).toBe("PRICE_REPORT_EXPIRED");
+      expect(freshnessRes.evaluation.priceReportStatus).toBe("EXPIRED");
+      const staleRun = freshnessRes.run as ExecutionRunV4;
+      expect(staleRun.operations[0].stage).toBe("PREPARED_STALE");
+      expect(staleRun.operations[0].preparationAttempts[0].staleReason).toBe("PRICE_REPORT_EXPIRED");
+
+      const attempt1Data = staleRun.operations[0].preparationAttempts[0].immutableIdentity?.data;
+      const attempt1Fingerprint = staleRun.operations[0].preparationAttempts[0].preparationFingerprint;
+
+      // Explicit begin reprepare
+      const repreparedIntentRun = await h.v4.beginReprepare(
+        staleRun.id,
+        staleRun.revision,
+        "attempt-2",
+      );
+      expect(repreparedIntentRun.operations[0].stage).toBe("REPREPARE_INTENT");
+      expect(repreparedIntentRun.operations[0].preparationAttempts).toHaveLength(2);
+      expect(repreparedIntentRun.operations[0].activePreparationAttemptId).toBe("attempt-2");
+
+      // Record fresh preparation outcome (e.g. deadline = 2000000000n)
+      const freshCalldata = createValidTokenizeCalldata(2000000000n);
+      const repreparedRun = await h.v4.recordReprepared(
+        repreparedIntentRun.id,
+        repreparedIntentRun.revision,
+        "brickken-tx-2",
+        { ...UNSIGNED_TOKENIZE_TX, data: freshCalldata },
+      );
+
+      expect(repreparedRun.operations[0].stage).toBe("PREPARED");
+      expect(repreparedRun.operations[0].preparedTxId).toBe("brickken-tx-2");
+      const activeAttempt = repreparedRun.operations[0].preparationAttempts[1];
+      expect(activeAttempt.state).toBe("PREPARED");
+      expect(activeAttempt.immutableIdentity?.data).not.toBe(attempt1Data);
+      expect(activeAttempt.preparationFingerprint).not.toBe(attempt1Fingerprint);
+
+      // Freshness now passes with fresh price report
+      const freshFreshness = await h.v4.evaluateAndApplyPreparedFreshness(
+        repreparedRun.id,
+        repreparedRun.revision,
+      );
+      expect(freshFreshness.evaluation.outcome).toBe("ELIGIBLE");
+      expect(freshFreshness.evaluation.priceReportStatus).toBe("FRESH");
     });
   });
 
@@ -1292,7 +1406,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: TO,
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",
@@ -1326,7 +1440,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: TO,
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",
@@ -1360,7 +1474,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: TO,
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",
@@ -1396,7 +1510,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: "0x5555555555555555555555555555555555555555",
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",
@@ -1431,7 +1545,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: TO,
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",
@@ -1485,7 +1599,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: TO,
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",
@@ -1689,7 +1803,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: TO,
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",
@@ -1967,7 +2081,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: TO,
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",
@@ -2193,7 +2307,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: TO,
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",
@@ -2374,7 +2488,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: TO,
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",
@@ -2467,7 +2581,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: TO,
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",
@@ -2550,7 +2664,7 @@ describe("ExecutionV4Orchestrator", () => {
         chainId: "0xaa36a7",
         from: TOKENIZER_ADDRESS,
         to: TO,
-        input: "0x12345678aabb",
+        input: VALID_TOKENIZE_CALLDATA,
         value: "0x0",
         nonce: "0x5",
         type: "0x2",

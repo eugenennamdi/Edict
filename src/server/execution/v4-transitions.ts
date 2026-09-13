@@ -316,6 +316,7 @@ export async function markPreparedStaleV4(input: {
   readonly kind: OperationKind;
   readonly foundation: V4PreparationFoundationInput;
   readonly nonceEvidence: unknown;
+  readonly staleReason?: "NONCE_MISMATCH" | "PRICE_REPORT_EXPIRED";
   readonly id: string;
   readonly at: IsoUtcTimestamp;
 }): Promise<ExecutionRunV4> {
@@ -327,7 +328,9 @@ export async function markPreparedStaleV4(input: {
   if (input.kind !== "TOKENIZE" && run.tokenIdentity === null) {
     throw new IllegalStateTransitionError();
   }
-  const evidence = assertNonceEvidence(run, input.kind, input.nonceEvidence, "STALE");
+  const staleReason = input.staleReason ?? "NONCE_MISMATCH";
+  const expectedNonceStatus = staleReason === "NONCE_MISMATCH" ? "STALE" : "FRESH";
+  const evidence = assertNonceEvidence(run, input.kind, input.nonceEvidence, expectedNonceStatus);
   if (evidence.observedAt !== input.at) throw new IllegalStateTransitionError();
   const attempt = activeAttempt(operation);
   const nextAttempt: PreparationAttemptV1 = {
@@ -336,7 +339,7 @@ export async function markPreparedStaleV4(input: {
     freshnessEvaluatedAt: evidence.observedAt,
     nonceFreshnessEvidence: evidence,
     staleAt: input.at,
-    staleReason: "NONCE_MISMATCH",
+    staleReason,
   };
   const nextOperation = {
     ...replaceActiveAttempt(operation, nextAttempt),

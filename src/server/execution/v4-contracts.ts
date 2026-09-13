@@ -61,7 +61,7 @@ export const preparationAttemptV1Schema = z.strictObject({
   freshnessEvaluatedAt: isoUtc.nullable(),
   nonceFreshnessEvidence: nonceFreshnessEvidenceV1Schema.nullable(),
   staleAt: isoUtc.nullable(),
-  staleReason: z.literal("NONCE_MISMATCH").nullable(),
+  staleReason: z.enum(["NONCE_MISMATCH", "PRICE_REPORT_EXPIRED"]).nullable(),
 }).superRefine((attempt, context) => {
   const complete = attempt.txId !== null && attempt.unsignedTransaction !== null &&
     attempt.preparationFingerprint !== null && attempt.immutableIdentity !== null &&
@@ -72,7 +72,7 @@ export const preparationAttemptV1Schema = z.strictObject({
   }
   if (
     (attempt.state === "STALE") !==
-      (attempt.staleAt !== null && attempt.staleReason === "NONCE_MISMATCH")
+      (attempt.staleAt !== null && attempt.staleReason !== null)
   ) {
     context.addIssue({ code: "custom", message: "preparation staleness mismatch" });
   }
@@ -94,7 +94,7 @@ export const preparationAttemptV1Schema = z.strictObject({
     context.addIssue({ code: "custom", message: "nonce freshness evidence mismatch" });
   }
   if (
-    (attempt.state === "STALE" && attempt.nonceFreshnessEvidence?.status !== "STALE") ||
+    (attempt.state === "STALE" && attempt.staleReason === "NONCE_MISMATCH" && attempt.nonceFreshnessEvidence?.status !== "STALE") ||
     (attempt.state === "PREPARED" && attempt.nonceFreshnessEvidence?.status === "STALE")
   ) {
     context.addIssue({ code: "custom", message: "nonce freshness state mismatch" });

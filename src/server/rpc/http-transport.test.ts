@@ -6,6 +6,7 @@ import {
 import { readSepoliaRpcConfig, RpcConfigurationError } from "./config";
 import {
   createProductionSepoliaRpcTransport,
+  decodeContractRevertData,
   HttpRpcTransport,
   MAX_RPC_RESPONSE_BYTES,
   RpcJsonRpcError,
@@ -414,5 +415,72 @@ describe("createProductionSepoliaRpcTransport factory", () => {
 
     // Only fails when request() is called
     await expect(transport.request("eth_chainId")).rejects.toThrow(RpcConfigurationError);
+  });
+});
+
+describe("RpcJsonRpcError and contract revert data decoding", () => {
+  const TEST_RPC_URL = "https://sepolia.example.com/rpc/v1/secret-key-12345";
+
+  it("retains sanitized, bounded revert data in RpcJsonRpcError when present in RPC error response", async () => {
+    const revertData =
+      "0xdba17e9a000000000000000000000000000000000000000000000000000000006aa6aaf8000000000000000000000000000000000000000000000000000000006aa6bf8c";
+    const mockFetch = vi.fn(async () => {
+      return createJsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        error: {
+          code: 3,
+          message: "execution reverted: custom error",
+          data: revertData,
+        },
+      });
+    });
+
+    const transport = new HttpRpcTransport({
+      rpcUrl: TEST_RPC_URL,
+      fetch: mockFetch as unknown as typeof fetch,
+    });
+
+    let thrownError: RpcJsonRpcError | null = null;
+    try {
+      await transport.request("eth_call");
+    } catch (err) {
+      if (err instanceof RpcJsonRpcError) {
+        thrownError = err;
+      }
+    }
+
+    expect(thrownError).not.toBeNull();
+    expect(thrownError?.rpcCode).toBe(3);
+    expect(thrownError?.data).toBe(revertData.toLowerCase());
+  });
+
+  it("decodes 0xdba17e9a... to ExpiredSignature(deadline, currentTimestamp)", () => {
+    const rawData =
+      "0xdba17e9a000000000000000000000000000000000000000000000000000000006aa6aaf8000000000000000000000000000000000000000000000000000000006aa6bf8c";
+    const decoded = decodeContractRevertData(rawData);
+
+    expect(decoded).not.toBeNull();
+    expect(decoded?.errorName).toBe("ExpiredSignature");
+    expect(decoded?.args).toEqual([1789307640n, 1789312908n]);
+    expect(decoded?.rawData).toBe(rawData.toLowerCase());
+  });
+
+  it("decodes standard Error(string) revert data", () => {
+    // Error("insufficient balance")
+    const rawData =
+      "0x08c379a000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000014696e73756666696369656e742062616c616e6365000000000000000000000000";
+    const decoded = decodeContractRevertData(rawData);
+
+    expect(decoded).not.toBeNull();
+    expect(decoded?.errorName).toBe("Error");
+    expect(decoded?.args).toEqual(["insufficient balance"]);
+  });
+
+  it("returns null on unknown selector or invalid hex", () => {
+    expect(decodeContractRevertData("0x123456780000000000")).toBeNull();
+    expect(decodeContractRevertData("not-hex")).toBeNull();
+    expect(decodeContractRevertData("")).toBeNull();
+    expect(decodeContractRevertData(null)).toBeNull();
   });
 });

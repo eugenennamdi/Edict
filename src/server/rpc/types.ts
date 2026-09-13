@@ -87,6 +87,7 @@ export interface NormalizedRpcBlock {
   readonly hash: string;
   readonly parentHash: string;
   readonly baseFeePerGas: string | null;
+  readonly timestamp: string | null;
 }
 
 export type ReceiptStatus = "NOT_FOUND" | "SUCCESS" | "REVERTED";
@@ -130,7 +131,10 @@ export type FreshnessOutcome =
   | "INSUFFICIENT_BALANCE"
   | "FEE_CAP_EXCEEDED_BY_BASE_FEE"
   | "RPC_UNAVAILABLE"
-  | "INVALID_ATTEMPT";
+  | "INVALID_ATTEMPT"
+  | "PRICE_REPORT_EXPIRED"
+  | "PRICE_REPORT_TOO_CLOSE_TO_EXPIRY"
+  | "MALFORMED_PRICE_REPORT_CALLDATA";
 
 export interface FreshnessEvaluation {
   readonly outcome: FreshnessOutcome;
@@ -143,6 +147,10 @@ export interface FreshnessEvaluation {
   readonly feeFreshnessStatus: "FRESH" | "FEE_CAP_EXCEEDED_BY_BASE_FEE" | "UNAVAILABLE";
   readonly observedBaseFeeWei: string | null;
   readonly authorizedMaxFeeWei: string | null;
+  readonly priceReportStatus?: "FRESH" | "EXPIRED" | "TOO_CLOSE_TO_EXPIRY" | "MALFORMED" | "NOT_APPLICABLE";
+  readonly priceReportDeadlineSeconds?: number | null;
+  readonly latestBlockTimestampSeconds?: number | null;
+  readonly remainingLifetimeSeconds?: number | null;
 }
 
 export interface TrustedSepoliaRpcClient {

@@ -17,7 +17,12 @@ import {
   rpcQuantitySchema,
 } from "./contracts";
 import { evaluateReceiptAndFinality } from "./finality";
-import { applyPreparedStaleTransition, evaluatePreparedFreshness } from "./freshness";
+import {
+  applyPreparedStaleTransition,
+  evaluatePreparedFreshness,
+  extractPriceReportDeadlineFromTokenizeCalldata,
+} from "./freshness";
+import { REVIEWED_TOKENIZE_SELECTOR } from "../orchestration/tokenize-receipt-binding";
 import type { NormalizedRpcTransaction, RpcTransport } from "./types";
 import fs from "node:fs";
 import path from "node:path";
@@ -47,13 +52,30 @@ const BLOCK_HASH = `0x${"cd".repeat(32)}`;
 const FINALIZED_BLOCK_HASH = `0x${"ef".repeat(32)}`;
 const NOW = "2026-09-11T12:00:00.000Z";
 
+import { encodeFunctionData, parseAbi } from "viem";
+import { REVIEWED_TOKENIZE_FUNCTION_SIGNATURE } from "../orchestration/tokenize-receipt-binding";
+
+const TOKENIZE_ABI = parseAbi([`function ${REVIEWED_TOKENIZE_FUNCTION_SIGNATURE} external`]);
+
+export function createValidTokenizeCalldata(deadline: bigint = 2000000000n): string {
+  return encodeFunctionData({
+    abi: TOKENIZE_ABI,
+    functionName: "newTokenization",
+    args: [
+      ["Token", "TKN", "ipfs://meta", 1000000n, TOKENIZER_ADDRESS, TO, false, [], []],
+      [TO, 100n, TO, TOKENIZER_ADDRESS, deadline, 1n, "0x1234"],
+      [100n, TO, TO, 10n, 0, `0x${"00".repeat(32)}`, `0x${"00".repeat(32)}`],
+    ],
+  });
+}
+
 const UNSIGNED_TOKENIZE_TX = {
   from: TOKENIZER_ADDRESS,
   to: TO,
   value: "0x0",
   nonce: "0x5",
   chainId: "0xaa36a7",
-  data: "0x12345678aabb",
+  data: createValidTokenizeCalldata(),
   type: "0x2",
   maxPriorityFeePerGas: "0x4",
   maxFeePerGas: "0x20",
@@ -122,6 +144,7 @@ describe("Trusted Sepolia RPC client & contracts", () => {
         hash: BLOCK_HASH,
         parentHash: `0x${"00".repeat(32)}`,
         baseFeePerGas: "0x10", // 0x10 <= maxFeePerGas 0x20
+        timestamp: "0x66e44000",
       }));
     const client = createTrustedSepoliaRpcClient(transport);
 
@@ -153,6 +176,7 @@ describe("Trusted Sepolia RPC client & contracts", () => {
         hash: BLOCK_HASH,
         parentHash: `0x${"00".repeat(32)}`,
         baseFeePerGas: "0x10",
+        timestamp: "0x66e44000",
       }));
     const client = createTrustedSepoliaRpcClient(transport);
 
@@ -221,6 +245,7 @@ describe("Trusted Sepolia RPC client & contracts", () => {
         hash: BLOCK_HASH,
         parentHash: `0x${"00".repeat(32)}`,
         baseFeePerGas: "0x10",
+        timestamp: "0x66e44000",
       }));
     const client = createTrustedSepoliaRpcClient(transport);
 
@@ -250,6 +275,7 @@ describe("Trusted Sepolia RPC client & contracts", () => {
         hash: BLOCK_HASH,
         parentHash: `0x${"00".repeat(32)}`,
         baseFeePerGas: "0x30", // Exceeds maxFeePerGas 0x20
+        timestamp: "0x66e44000",
       }));
     const client = createTrustedSepoliaRpcClient(transport);
 
@@ -317,6 +343,7 @@ describe("Trusted Sepolia RPC client & contracts", () => {
         hash: BLOCK_HASH,
         parentHash: `0x${"00".repeat(32)}`,
         baseFeePerGas: "0x10", // 16 wei <= 64 wei
+        timestamp: "0x66e44000",
       }));
     const clientA = createTrustedSepoliaRpcClient(transportA);
 
@@ -345,6 +372,7 @@ describe("Trusted Sepolia RPC client & contracts", () => {
         hash: BLOCK_HASH,
         parentHash: `0x${"00".repeat(32)}`,
         baseFeePerGas: "0x30", // 48 wei: > 32 wei (default) but <= 64 wei (cap)
+        timestamp: "0x66e44000",
       }));
     const clientB = createTrustedSepoliaRpcClient(transportB);
 
@@ -1196,6 +1224,7 @@ describe("Trusted Sepolia RPC client & contracts", () => {
           hash: BLOCK_HASH,
           parentHash: `0x${"00".repeat(32)}`,
           baseFeePerGas: "0x10",
+          timestamp: "0x66e44000",
         }));
       const clientLower = createTrustedSepoliaRpcClient(transportLower);
       const resLower = await evaluatePreparedFreshness({
@@ -1219,6 +1248,7 @@ describe("Trusted Sepolia RPC client & contracts", () => {
           hash: BLOCK_HASH,
           parentHash: `0x${"00".repeat(32)}`,
           baseFeePerGas: "0x10",
+          timestamp: "0x66e44000",
         }));
       const clientHigher = createTrustedSepoliaRpcClient(transportHigher);
       const resHigher = await evaluatePreparedFreshness({
@@ -1242,6 +1272,7 @@ describe("Trusted Sepolia RPC client & contracts", () => {
           hash: BLOCK_HASH,
           parentHash: `0x${"00".repeat(32)}`,
           baseFeePerGas: "0x10",
+          timestamp: "0x66e44000",
         }));
       const clientEqual = createTrustedSepoliaRpcClient(transportEqual);
       const resEqual = await evaluatePreparedFreshness({
@@ -1308,6 +1339,274 @@ describe("Trusted Sepolia RPC client & contracts", () => {
       expect(result.finality).toBe("INCLUDED"); // Must NOT be FINALIZED
       expect(result.evidence?.finalityStatus).toBe("INCLUDED");
       expect(result.evidence?.finalizedBlockHash).toBeNull();
+    });
+  });
+
+  describe("20. Pre-execution price report expiry guard", () => {
+    it("extractPriceReportDeadlineFromTokenizeCalldata accurately extracts deadline from 0xf3d02cfd and rejects malformed calldata and unrelated selectors including 0xb36f7881", () => {
+      const deadline = 1789307640n;
+      const validCalldata = createValidTokenizeCalldata(deadline);
+
+      // Verify canonical selector is 0xf3d02cfd
+      expect(validCalldata.slice(0, 10).toLowerCase()).toBe("0xf3d02cfd");
+      expect(validCalldata.slice(0, 10).toLowerCase()).toBe(REVIEWED_TOKENIZE_SELECTOR);
+
+      // Successfully extracts deadline from args[1]
+      expect(extractPriceReportDeadlineFromTokenizeCalldata(validCalldata)).toBe(deadline);
+
+      // Explicitly reject unrelated selectors including 0xb36f7881
+      const wrongSelectorB36f = "0xb36f7881" + validCalldata.slice(10);
+      expect(extractPriceReportDeadlineFromTokenizeCalldata(wrongSelectorB36f)).toBeNull();
+
+      const wrongSelector1234 = "0x12345678" + validCalldata.slice(10);
+      expect(extractPriceReportDeadlineFromTokenizeCalldata(wrongSelector1234)).toBeNull();
+
+      // Truncated calldata
+      expect(extractPriceReportDeadlineFromTokenizeCalldata(validCalldata.slice(0, 100))).toBeNull();
+
+      // Non-hex / empty
+      expect(extractPriceReportDeadlineFromTokenizeCalldata("")).toBeNull();
+      expect(extractPriceReportDeadlineFromTokenizeCalldata("not-a-hex")).toBeNull();
+    });
+
+    it("evaluates already expired price report (block timestamp > deadline)", async () => {
+      const deadline = 1000n;
+      const calldata = createValidTokenizeCalldata(deadline);
+      const run = await createPreparedTestRun();
+      run.operations[0].preparationAttempts[0].immutableIdentity!.data = calldata;
+
+      // Block timestamp = 1001 (already expired)
+      const transport = new FakeRpcTransport()
+        .on("eth_chainId", () => "0xaa36a7")
+        .on("eth_getTransactionCount", () => "0x5")
+        .on("eth_getBalance", () => "0x1000000000000000")
+        .on("eth_getBlockByNumber", () => ({
+          number: "0x10",
+          hash: BLOCK_HASH,
+          parentHash: `0x${"00".repeat(32)}`,
+          baseFeePerGas: "0x10",
+          timestamp: `0x${(1001n).toString(16)}`,
+        }));
+      const client = createTrustedSepoliaRpcClient(transport);
+
+      const freshness = await evaluatePreparedFreshness({
+        client,
+        run,
+        kind: "TOKENIZE",
+        policyVersion: "policy-v1",
+        observedAt: NOW,
+        safetyBufferSeconds: 300,
+      });
+
+      expect(freshness.outcome).toBe("PRICE_REPORT_EXPIRED");
+      expect(freshness.eligible).toBe(false);
+      expect(freshness.priceReportStatus).toBe("EXPIRED");
+      expect(freshness.priceReportDeadlineSeconds).toBe(1000);
+      expect(freshness.latestBlockTimestampSeconds).toBe(1001);
+      expect(freshness.remainingLifetimeSeconds).toBe(-1);
+
+      // Supports applyPreparedStaleTransition
+      const staleRun = await applyPreparedStaleTransition({
+        run,
+        kind: "TOKENIZE",
+        foundation: { attemptId: "attempt-1", freshnessPolicyVersion: "policy-v1" },
+        freshness,
+        id: "event-stale-1",
+        at: NOW,
+      });
+      expect(staleRun.operations[0].stage).toBe("PREPARED_STALE");
+      expect(staleRun.operations[0].preparationAttempts[0].state).toBe("STALE");
+      expect(staleRun.operations[0].preparationAttempts[0].staleReason).toBe("PRICE_REPORT_EXPIRED");
+    });
+
+    it("evaluates price report exactly at deadline (block timestamp === deadline)", async () => {
+      const deadline = 1000n;
+      const calldata = createValidTokenizeCalldata(deadline);
+      const run = await createPreparedTestRun();
+      run.operations[0].preparationAttempts[0].immutableIdentity!.data = calldata;
+
+      // Block timestamp = 1000 (at deadline)
+      const transport = new FakeRpcTransport()
+        .on("eth_chainId", () => "0xaa36a7")
+        .on("eth_getTransactionCount", () => "0x5")
+        .on("eth_getBalance", () => "0x1000000000000000")
+        .on("eth_getBlockByNumber", () => ({
+          number: "0x10",
+          hash: BLOCK_HASH,
+          parentHash: `0x${"00".repeat(32)}`,
+          baseFeePerGas: "0x10",
+          timestamp: `0x${(1000n).toString(16)}`,
+        }));
+      const client = createTrustedSepoliaRpcClient(transport);
+
+      const freshness = await evaluatePreparedFreshness({
+        client,
+        run,
+        kind: "TOKENIZE",
+        policyVersion: "policy-v1",
+        observedAt: NOW,
+        safetyBufferSeconds: 300,
+      });
+
+      expect(freshness.outcome).toBe("PRICE_REPORT_EXPIRED");
+      expect(freshness.eligible).toBe(false);
+      expect(freshness.priceReportStatus).toBe("EXPIRED");
+      expect(freshness.remainingLifetimeSeconds).toBe(0);
+    });
+
+    it("evaluates price report inside safety buffer (deadline - block timestamp <= 300)", async () => {
+      const deadline = 1000n;
+      const calldata = createValidTokenizeCalldata(deadline);
+      const run = await createPreparedTestRun();
+      run.operations[0].preparationAttempts[0].immutableIdentity!.data = calldata;
+
+      // Block timestamp = 701 (remaining lifetime = 299s <= 300s buffer)
+      const transport = new FakeRpcTransport()
+        .on("eth_chainId", () => "0xaa36a7")
+        .on("eth_getTransactionCount", () => "0x5")
+        .on("eth_getBalance", () => "0x1000000000000000")
+        .on("eth_getBlockByNumber", () => ({
+          number: "0x10",
+          hash: BLOCK_HASH,
+          parentHash: `0x${"00".repeat(32)}`,
+          baseFeePerGas: "0x10",
+          timestamp: `0x${(701n).toString(16)}`,
+        }));
+      const client = createTrustedSepoliaRpcClient(transport);
+
+      const freshness = await evaluatePreparedFreshness({
+        client,
+        run,
+        kind: "TOKENIZE",
+        policyVersion: "policy-v1",
+        observedAt: NOW,
+        safetyBufferSeconds: 300,
+      });
+
+      expect(freshness.outcome).toBe("PRICE_REPORT_TOO_CLOSE_TO_EXPIRY");
+      expect(freshness.eligible).toBe(false);
+      expect(freshness.priceReportStatus).toBe("TOO_CLOSE_TO_EXPIRY");
+      expect(freshness.remainingLifetimeSeconds).toBe(299);
+    });
+
+    it("evaluates price report safely outside safety buffer (remaining lifetime > 300s)", async () => {
+      const deadline = 2000n;
+      const calldata = createValidTokenizeCalldata(deadline);
+      const run = await createPreparedTestRun();
+      run.operations[0].preparationAttempts[0].immutableIdentity!.data = calldata;
+
+      // Block timestamp = 1000 (remaining lifetime = 1000s > 300s buffer)
+      const transport = new FakeRpcTransport()
+        .on("eth_chainId", () => "0xaa36a7")
+        .on("eth_getTransactionCount", () => "0x5")
+        .on("eth_getBalance", () => "0x1000000000000000")
+        .on("eth_getBlockByNumber", () => ({
+          number: "0x10",
+          hash: BLOCK_HASH,
+          parentHash: `0x${"00".repeat(32)}`,
+          baseFeePerGas: "0x10",
+          timestamp: `0x${(1000n).toString(16)}`,
+        }));
+      const client = createTrustedSepoliaRpcClient(transport);
+
+      const freshness = await evaluatePreparedFreshness({
+        client,
+        run,
+        kind: "TOKENIZE",
+        policyVersion: "policy-v1",
+        observedAt: NOW,
+        safetyBufferSeconds: 300,
+      });
+
+      expect(freshness.outcome).toBe("ELIGIBLE");
+      expect(freshness.eligible).toBe(true);
+      expect(freshness.priceReportStatus).toBe("FRESH");
+      expect(freshness.remainingLifetimeSeconds).toBe(1000);
+    });
+
+    it("rejects malformed calldata with MALFORMED_PRICE_REPORT_CALLDATA", async () => {
+      const run = await createPreparedTestRun();
+      run.operations[0].preparationAttempts[0].immutableIdentity!.data = "0xdeadbeef1234";
+
+      const transport = new FakeRpcTransport()
+        .on("eth_chainId", () => "0xaa36a7")
+        .on("eth_getTransactionCount", () => "0x5")
+        .on("eth_getBalance", () => "0x1000000000000000")
+        .on("eth_getBlockByNumber", () => ({
+          number: "0x10",
+          hash: BLOCK_HASH,
+          parentHash: `0x${"00".repeat(32)}`,
+          baseFeePerGas: "0x10",
+          timestamp: "0x66e44000",
+        }));
+      const client = createTrustedSepoliaRpcClient(transport);
+
+      const freshness = await evaluatePreparedFreshness({
+        client,
+        run,
+        kind: "TOKENIZE",
+        policyVersion: "policy-v1",
+        observedAt: NOW,
+      });
+
+      expect(freshness.outcome).toBe("MALFORMED_PRICE_REPORT_CALLDATA");
+      expect(freshness.eligible).toBe(false);
+      expect(freshness.priceReportStatus).toBe("MALFORMED");
+    });
+
+    it("rejects calldata with unrelated selector 0xb36f7881 with MALFORMED_PRICE_REPORT_CALLDATA", async () => {
+      const run = await createPreparedTestRun();
+      const validCalldata = createValidTokenizeCalldata(2000000000n);
+      const wrongSelectorCalldata = "0xb36f7881" + validCalldata.slice(10);
+      run.operations[0].preparationAttempts[0].immutableIdentity!.data = wrongSelectorCalldata;
+
+      const transport = new FakeRpcTransport()
+        .on("eth_chainId", () => "0xaa36a7")
+        .on("eth_getTransactionCount", () => "0x5")
+        .on("eth_getBalance", () => "0x1000000000000000")
+        .on("eth_getBlockByNumber", () => ({
+          number: "0x10",
+          hash: BLOCK_HASH,
+          parentHash: `0x${"00".repeat(32)}`,
+          baseFeePerGas: "0x10",
+          timestamp: "0x66e44000",
+        }));
+      const client = createTrustedSepoliaRpcClient(transport);
+
+      const freshness = await evaluatePreparedFreshness({
+        client,
+        run,
+        kind: "TOKENIZE",
+        policyVersion: "policy-v1",
+        observedAt: NOW,
+      });
+
+      expect(freshness.outcome).toBe("MALFORMED_PRICE_REPORT_CALLDATA");
+      expect(freshness.eligible).toBe(false);
+      expect(freshness.priceReportStatus).toBe("MALFORMED");
+    });
+
+    it("fails closed with RPC_UNAVAILABLE when block timestamp is missing or RPC fails", async () => {
+      const run = await createPreparedTestRun();
+      const transport = new FakeRpcTransport()
+        .on("eth_chainId", () => "0xaa36a7")
+        .on("eth_getTransactionCount", () => "0x5")
+        .on("eth_getBalance", () => "0x1000000000000000")
+        .on("eth_getBlockByNumber", () => {
+          throw new Error("RPC network failure");
+        });
+      const client = createTrustedSepoliaRpcClient(transport);
+
+      const freshness = await evaluatePreparedFreshness({
+        client,
+        run,
+        kind: "TOKENIZE",
+        policyVersion: "policy-v1",
+        observedAt: NOW,
+      });
+
+      expect(freshness.outcome).toBe("RPC_UNAVAILABLE");
+      expect(freshness.eligible).toBe(false);
     });
   });
 

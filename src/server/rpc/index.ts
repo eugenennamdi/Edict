@@ -48,6 +48,9 @@ export {
 export {
   applyPreparedStaleTransition,
   evaluatePreparedFreshness,
+  extractPriceReportDeadlineFromTokenizeCalldata,
+  DEFAULT_PRICE_REPORT_SAFETY_BUFFER_SECONDS,
+  getPriceReportSafetyBufferSeconds,
   type EvaluatePreparedFreshnessInput,
 } from "./freshness";
 
@@ -73,6 +76,9 @@ export {
   createProductionSepoliaRpcTransport,
   RpcTransportError,
   RpcJsonRpcError,
+  decodeContractRevertData,
+  KNOWN_REVERT_ERRORS_ABI,
+  type DecodedContractRevert,
   type RpcTransportErrorCode,
   type HttpRpcTransportOptions,
   MAX_RPC_RESPONSE_BYTES,

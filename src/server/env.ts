@@ -21,6 +21,7 @@ export interface ServerEnv {
   readonly EDICT_TOKENIZE_FUNCTION_SIGNATURE?: string;
   readonly EDICT_TOKENIZE_CALLDATA_COMMITMENT?: string;
   readonly EDICT_SEPOLIA_RPC_URL?: string;
+  readonly EDICT_PRICE_REPORT_SAFETY_BUFFER_SECONDS?: string;
 }
 
 export function getServerEnv(): ServerEnv {
@@ -62,5 +63,7 @@ export function getServerEnv(): ServerEnv {
     EDICT_TOKENIZE_CALLDATA_COMMITMENT:
       process.env.EDICT_TOKENIZE_CALLDATA_COMMITMENT || undefined,
     EDICT_SEPOLIA_RPC_URL: process.env.EDICT_SEPOLIA_RPC_URL || undefined,
+    EDICT_PRICE_REPORT_SAFETY_BUFFER_SECONDS:
+      process.env.EDICT_PRICE_REPORT_SAFETY_BUFFER_SECONDS || undefined,
   };
 }

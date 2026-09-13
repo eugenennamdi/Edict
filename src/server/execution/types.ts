@@ -176,7 +176,7 @@ export interface PreparationAttemptV1 {
   readonly freshnessEvaluatedAt: IsoUtcTimestamp | null;
   readonly nonceFreshnessEvidence: NonceFreshnessEvidenceV1 | null;
   readonly staleAt: IsoUtcTimestamp | null;
-  readonly staleReason: "NONCE_MISMATCH" | null;
+  readonly staleReason: "NONCE_MISMATCH" | "PRICE_REPORT_EXPIRED" | null;
 }
 
 export interface NonceFreshnessEvidenceV1 {

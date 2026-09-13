@@ -183,7 +183,7 @@ export const rawRpcBlockSchema = z.object({
   size: z.string().optional(),
   gasLimit: z.string().optional(),
   gasUsed: z.string().optional(),
-  timestamp: z.string().optional(),
+  timestamp: rpcQuantitySchema.optional(),
   transactions: z.array(z.unknown()).optional(),
   uncles: z.array(z.unknown()).optional(),
   mixHash: z.string().optional(),
@@ -280,6 +280,7 @@ export function normalizeRpcBlock(raw: unknown): NormalizedRpcBlock {
     hash: parsed.hash,
     parentHash: parsed.parentHash,
     baseFeePerGas: parsed.baseFeePerGas ?? null,
+    timestamp: parsed.timestamp ?? null,
   });
 }
 

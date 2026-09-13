@@ -248,7 +248,19 @@ export function WalletExecutionSection({
             ))}
           </div>
         )}
-        {selectedId && <p className="text-xs text-muted-foreground">Explicit provider selected: {selectedId}</p>}
+        {selectedId && (
+          <div className="space-y-1.5 rounded-lg border border-border/60 bg-muted/30 p-2.5 text-xs">
+            <p className="font-medium text-foreground">
+              Selected provider: {providers.find((p) => p.selectionId === selectedId)?.displayName ?? selectedId}
+              {providers.find((p) => p.selectionId === selectedId)?.rdns && (
+                <span className="ml-1 text-muted-foreground font-normal">({providers.find((p) => p.selectionId === selectedId)?.rdns})</span>
+              )}
+            </p>
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              <strong>EIP-1559 Type 0x2 Requirement:</strong> Edict prepares and authorizes exact EIP-1559 transactions. Standard EIP-1193 providers expose no pre-send capability check guaranteeing the wallet will preserve Type 0x2 without downscaling to legacy Type 0x0. Edict post-broadcast verification detects and rejects fee-model mutations.
+            </p>
+          </div>
+        )}
         {state === "ACCOUNT_ACCESS_REQUIRED" && <Button size="sm" onClick={() => void connect()}>Grant account access</Button>}
         {state === "WRONG_CHAIN" && <Button size="sm" onClick={() => void switchNetwork()}>Switch to Ethereum Sepolia</Button>}
         {state === "READY" && (
