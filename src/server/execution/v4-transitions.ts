@@ -37,6 +37,10 @@ import {
   observedImmutableExecutionIdentityV1Schema,
   tokenIdentityV1Schema,
 } from "./v4-contracts";
+import {
+  tokenizationEventEvidenceV1Schema,
+  type TokenizationEventEvidenceV1,
+} from "../orchestration/tokenize-receipt-binding";
 
 const HASH = /^sha256:[0-9a-f]{64}$/;
 const TX_HASH = /^0x[0-9a-f]{64}$/;
@@ -1002,11 +1006,13 @@ const tokenReadBackSchema = tokenIdentityV1Schema.omit({ identityVersion: true }
 export function recordTokenIdentityFromReadBackV4(input: {
   readonly run: ExecutionRunV4;
   readonly readBack: unknown;
+  readonly eventEvidence: TokenizationEventEvidenceV1;
   readonly id: string;
 }): ExecutionRunV4 {
   const run = clone(input.run);
   const operation = run.operations[0];
   const readBack = tokenReadBackSchema.parse(input.readBack);
+  const eventEvidence = tokenizationEventEvidenceV1Schema.parse(input.eventEvidence);
   if (
     operation.stage !== "BRICKKEN_CORRELATED" || operation.brickkenCorrelation?.lifecycle !== "CORRELATED" ||
     operation.transactionReceiptEvidence?.executionStatus !== "SUCCESS" ||
@@ -1016,6 +1022,12 @@ export function recordTokenIdentityFromReadBackV4(input: {
     readBack.chainId !== run.chainId || readBack.tokenSymbol !== run.manifest.asset.symbol ||
     readBack.tokenizerWalletAddress !== run.requiredSigner.walletAddress ||
     readBack.tokenizationTxHash !== operation.blockchainTxHash ||
+    eventEvidence.transactionHash !== operation.blockchainTxHash ||
+    eventEvidence.blockHash !== operation.transactionReceiptEvidence.blockHash ||
+    eventEvidence.blockNumber !== operation.transactionReceiptEvidence.blockNumber ||
+    eventEvidence.transactionIndex !== operation.transactionReceiptEvidence.transactionIndex ||
+    eventEvidence.factoryAddress !== operation.transactionReceiptEvidence.to ||
+    eventEvidence.tokenAddress !== readBack.tokenAddress ||
     readBack.manifestHash !== run.manifestHash || readBack.planHash !== run.planHash
   ) throw new IllegalStateTransitionError();
   const tokenIdentity: TokenIdentityV1 = tokenIdentityV1Schema.parse({

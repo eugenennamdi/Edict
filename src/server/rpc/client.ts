@@ -104,6 +104,19 @@ export class TrustedSepoliaRpcClientImpl implements TrustedSepoliaRpcClient {
     return normalizeRpcReceipt(raw);
   }
 
+  async getStorageAt(address: string, slot: string, blockNumber: string): Promise<string> {
+    await this.verifyChain();
+    const normalizedAddress = rpcAddressSchema.parse(address);
+    const normalizedSlot = rpcHash32Schema.parse(slot);
+    const normalizedBlockNumber = rpcQuantitySchema.parse(blockNumber);
+    const raw = await this.#transport.request("eth_getStorageAt", [
+      normalizedAddress,
+      normalizedSlot,
+      normalizedBlockNumber,
+    ]);
+    return rpcHash32Schema.parse(raw);
+  }
+
   async getBlockByNumber(blockNumber: string): Promise<NormalizedRpcBlock | null> {
     await this.verifyChain();
     const normalizedNumber = rpcQuantitySchema.parse(blockNumber);

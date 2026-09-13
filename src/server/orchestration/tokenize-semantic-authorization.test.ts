@@ -1,6 +1,5 @@
 import { sha256Utf8, validateAssetManifestV1 } from "@/core";
 import { TOKENIZER_ADDRESS, createValidRawManifest } from "@/core/test-fixtures";
-import { toFunctionSelector } from "viem";
 import { describe, expect, it } from "vitest";
 import { ExecutionRunService } from "../execution/run-service";
 import { createApprovalProofFixture } from "../execution/test-fixtures";
@@ -20,14 +19,20 @@ import {
   TokenizeOnlySemanticAuthorizationEvaluator,
   TokenizePolicyConfigurationError,
   createProductionSemanticAuthorizationEvaluator,
+  deriveTokenizeSelectorFromCanonicalSignature,
   readTokenizeSemanticAuthorizationPolicy,
   type TokenizeSemanticAuthorizationPolicy,
 } from "./tokenize-semantic-authorization";
+import {
+  REVIEWED_SEPOLIA_FACTORY,
+  REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
+  REVIEWED_TOKENIZE_SELECTOR,
+} from "./tokenize-receipt-binding";
 
-const DESTINATION = "0x4444444444444444444444444444444444444444";
+const DESTINATION = REVIEWED_SEPOLIA_FACTORY;
 const OTHER = "0x5555555555555555555555555555555555555555";
-const SIGNATURE = "function createTokenization(bytes)";
-const SELECTOR = toFunctionSelector(SIGNATURE).toLowerCase() as `0x${string}`;
+const SIGNATURE = REVIEWED_TOKENIZE_FUNCTION_SIGNATURE;
+const SELECTOR = REVIEWED_TOKENIZE_SELECTOR;
 const DATA = `${SELECTOR}${"00".repeat(32)}`;
 
 const unsignedTransaction = Object.freeze({
@@ -145,6 +150,15 @@ async function decision(
 }
 
 describe("TOKENIZE semantic activation config", () => {
+  it("accepts only the reviewed bare canonical signature and derives 0xf3d02cfd", () => {
+    expect(
+      deriveTokenizeSelectorFromCanonicalSignature(REVIEWED_TOKENIZE_FUNCTION_SIGNATURE),
+    ).toBe(REVIEWED_TOKENIZE_SELECTOR);
+    expect(() => deriveTokenizeSelectorFromCanonicalSignature(
+      `function ${REVIEWED_TOKENIZE_FUNCTION_SIGNATURE}`,
+    )).toThrow(TokenizePolicyConfigurationError);
+  });
+
   it.each([undefined, "0", "true", "random"])("keeps gate value %s deny-all", async (value) => {
     const evaluator = createProductionSemanticAuthorizationEvaluator({
       [TOKENIZE_EXECUTION_GATE]: value,
@@ -160,7 +174,7 @@ describe("TOKENIZE semantic activation config", () => {
     const { policy } = await fixture();
     const config = readTokenizeSemanticAuthorizationPolicy({
       [TOKENIZE_EXECUTION_GATE]: "1",
-      [TOKENIZE_ALLOWED_DESTINATION]: policy.allowedDestination.toUpperCase().replace("0X", "0x"),
+      [TOKENIZE_ALLOWED_DESTINATION]: policy.allowedDestination,
       [TOKENIZE_FUNCTION_SIGNATURE]: policy.reviewedFunctionSignature,
       [TOKENIZE_CALLDATA_COMMITMENT]: policy.allowedCalldataCommitment,
     });
@@ -185,6 +199,20 @@ describe("TOKENIZE semantic activation config", () => {
     expect(() => readTokenizeSemanticAuthorizationPolicy({
       NEXT_PUBLIC_EDICT_TOKENIZE_EXECUTION_ENABLED: "1",
     })).toThrow(TokenizePolicyConfigurationError);
+
+    const { policy } = await fixture();
+    expect(readTokenizeSemanticAuthorizationPolicy({
+      [TOKENIZE_EXECUTION_GATE]: "1",
+      [TOKENIZE_ALLOWED_DESTINATION]: OTHER,
+      [TOKENIZE_FUNCTION_SIGNATURE]: REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
+      [TOKENIZE_CALLDATA_COMMITMENT]: policy.allowedCalldataCommitment,
+    })).toEqual({ enabled: false, reason: "POLICY_CONFIG_INVALID" });
+    expect(readTokenizeSemanticAuthorizationPolicy({
+      [TOKENIZE_EXECUTION_GATE]: "1",
+      [TOKENIZE_ALLOWED_DESTINATION]: REVIEWED_SEPOLIA_FACTORY,
+      [TOKENIZE_FUNCTION_SIGNATURE]: "other(bytes)",
+      [TOKENIZE_CALLDATA_COMMITMENT]: policy.allowedCalldataCommitment,
+    })).toEqual({ enabled: false, reason: "POLICY_CONFIG_INVALID" });
   });
 });
 
@@ -313,21 +341,22 @@ describe("TOKENIZE-only semantic authorization", () => {
   });
 
   it("returns bounded destination, selector, calldata, and fee denials", async () => {
-    const { run, policy } = await fixture();
-    const wrongDestination = new TokenizeOnlySemanticAuthorizationEvaluator({
-      ...policy,
-      allowedDestination: OTHER,
-    });
-    await expect(decision(wrongDestination, run)).resolves.toEqual({
+    const { run, policy, evaluator } = await fixture();
+    const attempt = active(run);
+    const destinationRun = await withAttempt(run, {
+      unsignedTransaction: { ...attempt.unsignedTransaction!, to: OTHER },
+      immutableIdentity: { ...attempt.immutableIdentity!, to: OTHER },
+    }, true);
+    await expect(decision(evaluator, destinationRun)).resolves.toEqual({
       authorized: false,
       reason: "DESTINATION_NOT_ALLOWED",
     });
-    const wrongSelector = new TokenizeOnlySemanticAuthorizationEvaluator({
-      ...policy,
-      reviewedFunctionSignature: "function other(bytes)",
-      allowedSelector: toFunctionSelector("function other(bytes)"),
-    });
-    await expect(decision(wrongSelector, run)).resolves.toEqual({
+    const otherData = `0x12345678${"00".repeat(32)}`;
+    const selectorRun = await withAttempt(run, {
+      unsignedTransaction: { ...attempt.unsignedTransaction!, data: otherData },
+      immutableIdentity: { ...attempt.immutableIdentity!, data: otherData },
+    }, true);
+    await expect(decision(evaluator, selectorRun)).resolves.toEqual({
       authorized: false,
       reason: "SELECTOR_NOT_ALLOWED",
     });
@@ -340,7 +369,6 @@ describe("TOKENIZE-only semantic authorization", () => {
       reason: "CALLDATA_COMMITMENT_MISMATCH",
     });
 
-    const attempt = active(run);
     const invalidFees = {
       ...attempt.feeAuthorization!,
       authorizedCaps: { ...attempt.feeAuthorization!.authorizedCaps, maxFeePerGas: "0x21" },

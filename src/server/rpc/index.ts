@@ -9,6 +9,7 @@ export {
   type FreshnessEvaluation,
   type FreshnessOutcome,
   type NormalizedRpcBlock,
+  type NormalizedRpcLog,
   type NormalizedRpcReceipt,
   type NormalizedRpcTransaction,
   type ReceiptFinalityEvaluation,

@@ -4,6 +4,11 @@ import type { SemanticAuthorizationV1 } from "@/shared/wallet/execution-authoriz
 import { describe, expect, it } from "vitest";
 import { decodeExecutionRunV1, encodeExecutionRunV1 } from "../persistence/codec";
 import { IllegalStateTransitionError } from "./errors";
+import {
+  NEW_TOKENIZATION_EVENT_TOPIC,
+  REVIEWED_SEPOLIA_FACTORY,
+  REVIEWED_SEPOLIA_IMPLEMENTATION,
+} from "../orchestration/tokenize-receipt-binding";
 import type { Clock, IdGenerator } from "./infrastructure";
 import {
   compareWalletRequestToRpcTransaction,
@@ -35,7 +40,7 @@ import {
   upgradePreparedRunToV4,
 } from "./v4-transitions";
 
-const TO = "0x4444444444444444444444444444444444444444";
+const TO = REVIEWED_SEPOLIA_FACTORY;
 const TX_HASH = `0x${"ab".repeat(32)}`;
 const UNSIGNED = {
   from: TOKENIZER_ADDRESS,
@@ -50,6 +55,24 @@ const UNSIGNED = {
   gasLimit: "0x100",
 };
 const FOUNDATION = { attemptId: "attempt-1", freshnessPolicyVersion: "nonce-policy-1" };
+
+function eventEvidence(run: ExecutionRunV4, tokenAddress: string) {
+  const receipt = run.operations[0].transactionReceiptEvidence!;
+  return {
+    evidenceVersion: "1.0" as const,
+    transactionHash: receipt.transactionHash,
+    blockHash: receipt.blockHash,
+    blockNumber: receipt.blockNumber,
+    transactionIndex: receipt.transactionIndex,
+    logIndex: "0x4",
+    factoryAddress: REVIEWED_SEPOLIA_FACTORY,
+    implementationAddress: REVIEWED_SEPOLIA_IMPLEMENTATION,
+    eventTopic: NEW_TOKENIZATION_EVENT_TOPIC,
+    tokenizationId: "1",
+    tokenAddress,
+    escrowAddress: "0x7777777777777777777777777777777777777777",
+  };
+}
 
 function harness() {
   let tick = 0;
@@ -557,6 +580,10 @@ describe("wallet ambiguity and correlation authority", () => {
     expect(run.phase).toBe("TOKENIZATION");
     expect(() => recordTokenIdentityFromReadBackV4({
       run,
+      eventEvidence: eventEvidence(
+        run,
+        "0x6666666666666666666666666666666666666666",
+      ),
       readBack: {
         chainId: "11155111",
         tokenAddress: "0x6666666666666666666666666666666666666666",
@@ -732,10 +759,16 @@ describe("wallet ambiguity and correlation authority", () => {
     };
     expect(() => recordTokenIdentityFromReadBackV4({
       run,
+      eventEvidence: eventEvidence(run, readBack.tokenAddress),
       readBack: { ...readBack, frontendTokenAddress: "0x7777777777777777777777777777777777777777" },
       id: "read-back",
     })).toThrow();
-    const verified = recordTokenIdentityFromReadBackV4({ run, readBack, id: "read-back" });
+    const verified = recordTokenIdentityFromReadBackV4({
+      run,
+      eventEvidence: eventEvidence(run, readBack.tokenAddress),
+      readBack,
+      id: "read-back",
+    });
     expect(verified.tokenIdentity?.tokenAddress).toBe(readBack.tokenAddress);
     expect(verified.operations[0].stage).toBe("READ_BACK_VERIFIED");
   });

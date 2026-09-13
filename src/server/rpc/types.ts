@@ -65,8 +65,21 @@ export interface NormalizedRpcReceipt {
   readonly gasUsed: string;
   readonly effectiveGasPrice: string;
   readonly contractAddress: string | null;
+  readonly logs: readonly NormalizedRpcLog[];
   readonly type: "0x0" | "0x1" | "0x2";
   readonly status: "0x0" | "0x1";
+}
+
+export interface NormalizedRpcLog {
+  readonly address: string;
+  readonly topics: readonly string[];
+  readonly data: string;
+  readonly blockNumber: string;
+  readonly transactionHash: string;
+  readonly transactionIndex: string;
+  readonly blockHash: string;
+  readonly logIndex: string;
+  readonly removed: false;
 }
 
 export interface NormalizedRpcBlock {
@@ -141,6 +154,7 @@ export interface TrustedSepoliaRpcClient {
   getFinalizedBlock(): Promise<NormalizedRpcBlock | null>;
   getTransaction(txHash: string): Promise<NormalizedRpcTransaction | null>;
   getTransactionReceipt(txHash: string): Promise<NormalizedRpcReceipt | null>;
+  getStorageAt(address: string, slot: string, blockNumber: string): Promise<string>;
   getBlockByNumber(blockNumber: string): Promise<NormalizedRpcBlock | null>;
   getBlockByHash(blockHash: string): Promise<NormalizedRpcBlock | null>;
 }

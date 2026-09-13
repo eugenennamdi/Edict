@@ -8,6 +8,8 @@ import {
   TOKENIZE_CALLDATA_COMMITMENT,
   TOKENIZE_EXECUTION_GATE,
   TOKENIZE_FUNCTION_SIGNATURE,
+  REVIEWED_SEPOLIA_FACTORY,
+  REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
   TokenizeOnlySemanticAuthorizationEvaluator,
 } from "../orchestration";
 
@@ -63,8 +65,8 @@ describe("Production RunApiRuntime composition", () => {
   it("composes the TOKENIZE-only evaluator only for exact private activation and policy", () => {
     const evaluator = createRuntimeSemanticAuthorization({
       [TOKENIZE_EXECUTION_GATE]: "1",
-      [TOKENIZE_ALLOWED_DESTINATION]: "0x4444444444444444444444444444444444444444",
-      [TOKENIZE_FUNCTION_SIGNATURE]: "function createTokenization(bytes)",
+      [TOKENIZE_ALLOWED_DESTINATION]: REVIEWED_SEPOLIA_FACTORY,
+      [TOKENIZE_FUNCTION_SIGNATURE]: REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
       [TOKENIZE_CALLDATA_COMMITMENT]: `sha256:${"1".repeat(64)}`,
     });
     expect(evaluator).toBeInstanceOf(TokenizeOnlySemanticAuthorizationEvaluator);

@@ -200,13 +200,17 @@ const NODE_PROCESS_BOUNDARY: Phase8AuditProcessBoundary = {
     return revision;
   },
   trackedFiles(projectRoot) {
-    const result = spawnSync("git", ["ls-files", "-z", "--cached"], {
-      cwd: projectRoot,
-      env: { PATH: "/usr/bin:/bin" },
-      encoding: "buffer",
-      maxBuffer: 8 * 1_024 * 1_024,
-      timeout: BUILD_TIMEOUT_MS,
-    });
+    const result = spawnSync(
+      "git",
+      ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+      {
+        cwd: projectRoot,
+        env: { PATH: "/usr/bin:/bin" },
+        encoding: "buffer",
+        maxBuffer: 8 * 1_024 * 1_024,
+        timeout: BUILD_TIMEOUT_MS,
+      },
+    );
     if (result.status !== 0 || !(result.stdout instanceof Buffer)) {
       throw new Error("PHASE8_CLIENT_BUNDLE_AUDIT_FAILED");
     }

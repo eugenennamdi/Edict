@@ -121,13 +121,47 @@ export const rawRpcReceiptSchema = z.strictObject({
   gasUsed: rpcQuantitySchema,
   effectiveGasPrice: rpcQuantitySchema,
   contractAddress: rpcNullableAddressSchema,
-  logs: z.array(z.unknown()).max(4_096),
+  logs: z.array(z.strictObject({
+    address: rpcAddressSchema,
+    topics: z.array(rpcHash32Schema).max(4),
+    data: rpcCalldataSchema,
+    blockNumber: rpcQuantitySchema,
+    transactionHash: rpcHash32Schema,
+    transactionIndex: rpcQuantitySchema,
+    blockHash: rpcHash32Schema,
+    logIndex: rpcQuantitySchema,
+    removed: z.literal(false).optional(),
+  })).max(4_096),
   logsBloom: z.string().optional(),
   type: z.enum(["0x0", "0x1", "0x2"]),
   status: z.enum(["0x0", "0x1"]),
   root: rpcHash32Schema.optional(),
   blobGasUsed: rpcQuantitySchema.optional(),
   blobGasPrice: rpcQuantitySchema.optional(),
+}).superRefine((receipt, context) => {
+  const seenLogIndexes = new Set<string>();
+  for (const [index, log] of receipt.logs.entries()) {
+    if (
+      log.transactionHash !== receipt.transactionHash ||
+      log.transactionIndex !== receipt.transactionIndex ||
+      log.blockHash !== receipt.blockHash ||
+      log.blockNumber !== receipt.blockNumber
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["logs", index],
+        message: "receipt log identity does not match its containing receipt",
+      });
+    }
+    if (seenLogIndexes.has(log.logIndex)) {
+      context.addIssue({
+        code: "custom",
+        path: ["logs", index, "logIndex"],
+        message: "duplicate receipt log index",
+      });
+    }
+    seenLogIndexes.add(log.logIndex);
+  }
 });
 
 export const rawRpcBlockSchema = z.strictObject({
@@ -214,6 +248,17 @@ export function normalizeRpcReceipt(raw: unknown): NormalizedRpcReceipt {
     gasUsed: parsed.gasUsed,
     effectiveGasPrice: parsed.effectiveGasPrice,
     contractAddress: parsed.contractAddress,
+    logs: Object.freeze(parsed.logs.map((log) => Object.freeze({
+      address: log.address,
+      topics: Object.freeze([...log.topics]),
+      data: log.data,
+      blockNumber: log.blockNumber,
+      transactionHash: log.transactionHash,
+      transactionIndex: log.transactionIndex,
+      blockHash: log.blockHash,
+      logIndex: log.logIndex,
+      removed: false as const,
+    }))),
     type: parsed.type,
     status: parsed.status,
   });

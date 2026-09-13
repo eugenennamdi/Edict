@@ -22,6 +22,11 @@ import {
   DenyAllSemanticAuthorizationEvaluator,
   type SemanticAuthorizationEvaluator,
 } from "./v4-service";
+import {
+  REVIEWED_SEPOLIA_FACTORY,
+  REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
+  REVIEWED_TOKENIZE_SELECTOR,
+} from "./tokenize-receipt-binding";
 
 export const TOKENIZE_EXECUTION_GATE = "EDICT_TOKENIZE_EXECUTION_ENABLED" as const;
 export const TOKENIZE_ALLOWED_DESTINATION = "EDICT_TOKENIZE_ALLOWED_DESTINATION" as const;
@@ -72,10 +77,10 @@ export function deriveTokenizeSelectorFromCanonicalSignature(
   signature: string,
 ): `0x${string}` {
   try {
-    const item = parseAbiItem(signature);
+    const item = parseAbiItem(`function ${signature}`);
     if (
       item.type !== "function" ||
-      `function ${formatAbiItem(item)}` !== signature ||
+      formatAbiItem(item) !== signature ||
       signature.length > 512
     ) {
       throw new TokenizePolicyConfigurationError();
@@ -99,10 +104,16 @@ function readPolicy(environment: Readonly<Record<string, string | undefined>>): 
     return null;
   }
   try {
+    const allowedDestination = getAddress(destination).toLowerCase() as `0x${string}`;
     const allowedSelector = deriveTokenizeSelectorFromCanonicalSignature(signature);
+    if (
+      allowedDestination !== REVIEWED_SEPOLIA_FACTORY ||
+      signature !== REVIEWED_TOKENIZE_FUNCTION_SIGNATURE ||
+      allowedSelector !== REVIEWED_TOKENIZE_SELECTOR
+    ) return null;
     return Object.freeze({
       policyVersion: TOKENIZE_POLICY_VERSION,
-      allowedDestination: getAddress(destination).toLowerCase() as `0x${string}`,
+      allowedDestination,
       reviewedFunctionSignature: signature,
       allowedSelector,
       allowedCalldataCommitment: calldataCommitment as `sha256:${string}`,

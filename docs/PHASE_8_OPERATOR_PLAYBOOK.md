@@ -90,7 +90,7 @@ Each row is a separate process and fresh human decision. A successful action con
 | 6 | `BRICKKEN_CONFIRM` | V3 transaction evidence is `MATCH/CLEAR`; submit only persisted `{txId, txHash}` once | Ambiguous response blocks; do not poll automatically. |
 | 7 | `BRICKKEN_POLL` | Persisted identical IDs; one explicitly bounded poll action | Retain bounded status text as opaque evidence only; no text value is terminal or authorizes advancement; no automatic loop or resend. |
 | 8 | `RPC_FINALITY` | Matching receipt and block identity from trusted RPC; successful execution; separately observed finalized head | Persist included/finalized evidence; reorg or disagreement blocks. |
-| 9 | `BRICKKEN_READ_BACK` | Exact durable correlation, trusted-RPC six-field match, compliant fees, successful canonical receipt and finalized head | Persist identity only from a transaction-bound authoritative read. Current symbol-scoped reads cannot establish that binding and must stop with `READ_BACK_BINDING_UNRESOLVED`. |
+| 9 | `BRICKKEN_READ_BACK` | Exact durable correlation, trusted-RPC six-field match, compliant fees, successful canonical finalized receipt, receipt-block implementation match and unique reviewed-factory `NewTokenization` event | Derive the token from the event; Brickken reads only confirm it. Never select an address by symbol. |
 
 For later tokenization, whitelist and mint testing, repeat the complete stop sequence in order. Standalone whitelist must be durably read-back verified before mint preparation with the documented `needWhitelist: false` assumption. No current live evidence validates that assumption.
 

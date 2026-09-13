@@ -8,20 +8,25 @@ import {
 import { getServerEnv } from "@/server/env";
 import {
   deriveTokenizeSelectorFromCanonicalSignature,
+  ERC1967_IMPLEMENTATION_SLOT,
+  REVIEWED_SEPOLIA_FACTORY,
+  REVIEWED_SEPOLIA_IMPLEMENTATION,
+  REVIEWED_TOKENIZE_SELECTOR,
   TOKENIZE_FUNCTION_SIGNATURE,
 } from "@/server/orchestration";
+import { implementationAddressFromErc1967Slot } from "@/server/orchestration/tokenize-receipt-binding";
 import {
   createProductionSepoliaRpcTransport,
   type RpcTransport,
 } from "@/server/rpc";
 
-export const REVIEWED_SEPOLIA_FACTORY =
-  "0x23b04b6410d72fa66a77a9e0146df6634ad4c462" as const;
-export const REVIEWED_SEPOLIA_IMPLEMENTATION =
-  "0x2c24f3fe7665ea83b2280bb5a7e66072c869ad89" as const;
-export const REVIEWED_TOKENIZE_SELECTOR = "0xf3d02cfd" as const;
-export const ERC1967_IMPLEMENTATION_SLOT =
-  "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc" as const;
+export {
+  ERC1967_IMPLEMENTATION_SLOT,
+  REVIEWED_SEPOLIA_FACTORY,
+  REVIEWED_SEPOLIA_IMPLEMENTATION,
+  REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
+  REVIEWED_TOKENIZE_SELECTOR,
+} from "@/server/orchestration/tokenize-receipt-binding";
 
 export type TokenizeFactoryPreflightResult = Readonly<{
   ok: boolean;
@@ -58,13 +63,6 @@ function result(input: Omit<TokenizeFactoryPreflightResult, "ok">): TokenizeFact
     ...input,
     checks: Object.freeze({ ...input.checks }),
   });
-}
-
-function implementationFromSlot(raw: unknown): string | null {
-  if (typeof raw !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(raw)) return null;
-  if (!/^0{24}$/i.test(raw.slice(2, 26))) return null;
-  const address = `0x${raw.slice(26).toLowerCase()}`;
-  return address === "0x0000000000000000000000000000000000000000" ? null : address;
 }
 
 export async function runTokenizeFactoryPreflight(
@@ -139,7 +137,7 @@ export async function runTokenizeFactoryPreflight(
       reason: "RPC_CHAIN_MISMATCH",
     });
   }
-  const implementationAddress = implementationFromSlot(storage);
+  const implementationAddress = implementationAddressFromErc1967Slot(storage);
   if (implementationAddress === null) {
     return result({
       factoryAddress,

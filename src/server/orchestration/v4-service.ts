@@ -1,6 +1,6 @@
 import "server-only";
 
-import { canonicalizeJson } from "@/core";
+import { canonicalizeJson, hashCanonicalJson } from "@/core";
 import {
   type SemanticAuthorizationV1,
   type WalletExecutionIntentHash,
@@ -54,6 +54,7 @@ import {
   recordRepreparedV4,
   recordRpcReceiptEvidenceV4,
   recordRpcTransactionV4,
+  recordTokenIdentityFromReadBackV4,
   recordWalletPromptAuthorizationV4,
   recordWalletRejectedV4,
   upgradePreparedRunToV4,
@@ -71,6 +72,15 @@ import {
 } from "../rpc";
 import { z } from "zod";
 import { OrchestrationError } from "./errors";
+import {
+  deriveTokenizationEventEvidence,
+  ERC1967_IMPLEMENTATION_SLOT,
+  implementationAddressFromErc1967Slot,
+  REVIEWED_SEPOLIA_FACTORY,
+  REVIEWED_SEPOLIA_IMPLEMENTATION,
+  TokenizeReceiptBindingError,
+  type TokenizationEventEvidenceV1,
+} from "./tokenize-receipt-binding";
 export { OrchestrationError } from "./errors";
 
 export type BroadcastUnknownReason =
@@ -995,6 +1005,9 @@ export class ExecutionV4Orchestrator {
     if (rpcEvidence === null || rpcEvidence.immutableIdentityStatus !== "MATCH") {
       throw new IllegalStateTransitionError();
     }
+    if (op.transactionReceiptEvidence?.executionStatus === "REVERTED") {
+      throw new IllegalStateTransitionError();
+    }
 
     if (current.events.some((e) => e.type === "RECORD_BRICKKEN_CORRELATION_REFUSED")) {
       return {
@@ -1600,6 +1613,8 @@ export class ExecutionV4Orchestrator {
         "POLICY_VIOLATION_ONCHAIN",
         "BRICKKEN_CORRELATION_PENDING",
       ].includes(currentOp.stage) &&
+      current.status !== "FAILED" &&
+      currentOp.transactionReceiptEvidence?.executionStatus !== "REVERTED" &&
       currentOp.rpcTransactionEvidence?.immutableIdentityStatus === "MATCH"
     ) {
       const corrRes = await this.correlateWithBrickken(runId, current.revision);
@@ -1697,6 +1712,67 @@ export class ExecutionV4Orchestrator {
       throw new IllegalStateTransitionError();
     }
 
+    let receiptEvaluation: ReceiptFinalityEvaluation;
+    try {
+      receiptEvaluation = await evaluateReceiptAndFinality({
+        client: this.#deps.rpc,
+        txHash: operation.blockchainTxHash,
+        expectedFrom: operation.rpcTransactionEvidence.immutableIdentity.from,
+        expectedTo: operation.rpcTransactionEvidence.immutableIdentity.to,
+        expectedType: "0x2",
+        gasLimit: activeAttempt.feeAuthorization?.authorizedCaps.gasLimit,
+        observedAt: this.#deps.clock.nowIso(),
+      });
+    } catch {
+      throw new OrchestrationError("READ_BACK_FAILED");
+    }
+    const receipt = receiptEvaluation.receipt;
+    const observedReceiptEvidence = receiptEvaluation.evidence;
+    const durableReceiptEvidence = operation.transactionReceiptEvidence;
+    if (
+      receiptEvaluation.receiptStatus !== "SUCCESS" ||
+      receiptEvaluation.canonicality !== "CANONICAL" ||
+      receiptEvaluation.finality !== "FINALIZED" ||
+      receiptEvaluation.reconciliationRequired ||
+      receipt === null ||
+      observedReceiptEvidence === null ||
+      observedReceiptEvidence.transactionHash !== durableReceiptEvidence.transactionHash ||
+      observedReceiptEvidence.blockHash !== durableReceiptEvidence.blockHash ||
+      observedReceiptEvidence.blockNumber !== durableReceiptEvidence.blockNumber ||
+      observedReceiptEvidence.transactionIndex !== durableReceiptEvidence.transactionIndex
+    ) {
+      throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+    }
+
+    let implementationAddress: string | null;
+    try {
+      const implementationSlot = await this.#deps.rpc.getStorageAt(
+        REVIEWED_SEPOLIA_FACTORY,
+        ERC1967_IMPLEMENTATION_SLOT,
+        receipt.blockNumber,
+      );
+      implementationAddress = implementationAddressFromErc1967Slot(implementationSlot);
+    } catch {
+      throw new OrchestrationError("READ_BACK_FAILED");
+    }
+    if (implementationAddress !== REVIEWED_SEPOLIA_IMPLEMENTATION) {
+      throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+    }
+
+    let eventEvidence: TokenizationEventEvidenceV1;
+    try {
+      eventEvidence = deriveTokenizationEventEvidence({
+        receipt,
+        expectedTransactionHash: operation.blockchainTxHash,
+        implementationAddress,
+      });
+    } catch (error) {
+      if (error instanceof TokenizeReceiptBindingError) {
+        throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+      }
+      throw error;
+    }
+
     const tokenSymbol = current.manifest.asset.symbol;
     const [tokenResult, tokenizerResult] = await Promise.all([
       this.#readBack.getTokenInfo({ tokenSymbol }),
@@ -1714,6 +1790,7 @@ export class ExecutionV4Orchestrator {
     if (
       token.tokenSymbol !== tokenSymbol ||
       tokenizer.chainId !== current.chainId ||
+      tokenizer.tokenAddress.toLowerCase() !== eventEvidence.tokenAddress ||
       observedWallet !== expectedWallet ||
       tokenizer.email?.toLowerCase() !== current.manifest.tokenizer.email ||
       (tokenWallet !== null && tokenWallet !== expectedWallet) ||
@@ -1732,11 +1809,35 @@ export class ExecutionV4Orchestrator {
       throw new OrchestrationError("READ_BACK_FAILED");
     }
 
-    // These symbol-scoped reads can validate a candidate's metadata, but they
-    // expose no transaction hash, deployment log proof, or creation identifier
-    // that binds tokenAddress to this finalized TOKENIZE. Persisting the
-    // candidate would permit an older or unrelated matching token to become the
-    // run identity, so production remains fail-closed.
-    throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+    const verifiedAt = this.#deps.clock.nowIso();
+    const readBackEvidenceHash = (await hashCanonicalJson({
+      domain: "edict.token-identity-read-back.v1",
+      eventEvidence,
+      secondaryBrickkenConfirmation: {
+        token,
+        tokenizer,
+      },
+    })).hash;
+    const nextRun = recordTokenIdentityFromReadBackV4({
+      run: current,
+      eventEvidence,
+      readBack: {
+        chainId: current.chainId,
+        tokenAddress: eventEvidence.tokenAddress,
+        tokenSymbol,
+        tokenizerWalletAddress: expectedWallet,
+        tokenizationTxHash: operation.blockchainTxHash,
+        manifestHash: current.manifestHash,
+        planHash: current.planHash,
+        verifiedAt,
+        readBackEvidenceHash,
+      },
+      id: this.#deps.ids.eventId(),
+    });
+    return (await this.#deps.repository.update(
+      runId,
+      expectedRevision,
+      nextRun,
+    )) as ExecutionRunV4;
   }
 }

@@ -3,11 +3,12 @@ import {
   ERC1967_IMPLEMENTATION_SLOT,
   REVIEWED_SEPOLIA_FACTORY,
   REVIEWED_SEPOLIA_IMPLEMENTATION,
+  REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
   REVIEWED_TOKENIZE_SELECTOR,
   runTokenizeFactoryPreflight,
 } from "./tokenize-factory-preflight";
 
-const SIGNATURE = "function createTokenization(bytes)";
+const SIGNATURE = REVIEWED_TOKENIZE_FUNCTION_SIGNATURE;
 
 function dependencies(input: {
   readonly factoryAddress?: string | null;
@@ -54,17 +55,17 @@ describe("TOKENIZE factory preflight", () => {
     );
 
     expect(result).toEqual({
-      ok: false,
+      ok: true,
       factoryAddress: REVIEWED_SEPOLIA_FACTORY,
       implementationAddress: REVIEWED_SEPOLIA_IMPLEMENTATION,
-      selector: "0x3404e0ee",
+      selector: REVIEWED_TOKENIZE_SELECTOR,
       checks: {
         sandboxFactory: true,
         sepoliaRpc: true,
         erc1967Implementation: true,
-        configuredSelector: false,
+        configuredSelector: true,
       },
-      reason: "SELECTOR_MISMATCH",
+      reason: null,
     });
     expect(deps.calls).toEqual([
       { method: "eth_chainId", params: undefined },

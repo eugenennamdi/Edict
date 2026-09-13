@@ -36,6 +36,12 @@ import {
   type BrickkenServerAdapter,
   type BrickkenTransactionLocator,
 } from "../brickken";
+import {
+  ERC1967_IMPLEMENTATION_SLOT,
+  NEW_TOKENIZATION_EVENT_TOPIC,
+  REVIEWED_SEPOLIA_FACTORY,
+  REVIEWED_SEPOLIA_IMPLEMENTATION,
+} from "./tokenize-receipt-binding";
 
 class FakeRpcTransport implements RpcTransport {
   #handlers: Map<string, (params?: readonly unknown[]) => unknown> = new Map();
@@ -114,10 +120,16 @@ class FakeSemanticAuthorizationEvaluator
   }
 }
 
-const TO = "0x4444444444444444444444444444444444444444";
+const TO = REVIEWED_SEPOLIA_FACTORY;
 const TX_HASH = `0x${"ab".repeat(32)}`;
 const BLOCK_HASH = `0x${"cd".repeat(32)}`;
 const FINALIZED_BLOCK_HASH = `0x${"ef".repeat(32)}`;
+const TOKEN_ADDRESS = "0x3333333333333333333333333333333333333333";
+const ESCROW_ADDRESS = "0x5555555555555555555555555555555555555555";
+
+function indexedAddress(address: string): string {
+  return `0x${"0".repeat(24)}${address.slice(2).toLowerCase()}`;
+}
 
 const UNSIGNED_TOKENIZE_TX = {
   from: TOKENIZER_ADDRESS,
@@ -188,7 +200,7 @@ class FakeBrickkenStatusFetcher implements BrickkenStatusFetcher {
 class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo" | "getTokenizerInfo"> {
   tokenCalls = 0;
   tokenizerCalls = 0;
-  tokenAddress = "0x3333333333333333333333333333333333333333";
+  tokenAddress = TOKEN_ADDRESS;
   walletAddress = TOKENIZER_ADDRESS;
 
   async getTokenInfo(query: { tokenSymbol: string }) {
@@ -2503,6 +2515,13 @@ describe("ExecutionV4Orchestrator", () => {
     async function setupFinalizedCorrelatedRun(
       h: ReturnType<typeof createHarness>,
       rawStatus: "pending" | "success" | "rejected" = "success",
+      options: Readonly<{
+        receiptStatus?: "0x0" | "0x1";
+        finalizedBlockNumber?: string;
+        observedMaxFeePerGas?: string;
+        correlationHash?: string;
+        implementationAddress?: string;
+      }> = {},
     ) {
       const runV2 = await createPreparedV2Run(h);
       const v4Run = await h.v4.promotePreparedRunToV4(
@@ -2535,7 +2554,7 @@ describe("ExecutionV4Orchestrator", () => {
         type: "0x2",
         gas: "0x100",
         gasPrice: null,
-        maxFeePerGas: "0x20",
+        maxFeePerGas: options.observedMaxFeePerGas ?? "0x20",
         maxPriorityFeePerGas: "0x4",
         accessList: [],
         blockHash: FINALIZED_BLOCK_HASH,
@@ -2545,7 +2564,15 @@ describe("ExecutionV4Orchestrator", () => {
 
       h.fakeRpcTransport.on("eth_getBlockByNumber", (params) => {
         const tag = params?.[0];
-        if (tag === "finalized" || tag === "0x20") {
+        if (tag === "finalized") {
+          return {
+            number: options.finalizedBlockNumber ?? "0x20",
+            hash: options.finalizedBlockNumber === "0x1f" ? BLOCK_HASH : FINALIZED_BLOCK_HASH,
+            parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+            baseFeePerGas: "0x10",
+          };
+        }
+        if (tag === "0x20") {
           return {
             number: "0x20",
             hash: FINALIZED_BLOCK_HASH,
@@ -2573,13 +2600,49 @@ describe("ExecutionV4Orchestrator", () => {
         effectiveGasPrice: "0x15",
         contractAddress: null,
         type: "0x2",
-        status: "0x1",
-        logs: [],
+        status: options.receiptStatus ?? "0x1",
+        logs: [{
+          address: REVIEWED_SEPOLIA_FACTORY,
+          topics: [
+            NEW_TOKENIZATION_EVENT_TOPIC,
+            `0x${"0".repeat(63)}1`,
+            indexedAddress(TOKEN_ADDRESS),
+            indexedAddress(ESCROW_ADDRESS),
+          ],
+          data: "0x",
+          blockNumber: "0x20",
+          transactionHash: TX_HASH,
+          transactionIndex: "0x0",
+          blockHash: FINALIZED_BLOCK_HASH,
+          logIndex: "0x4",
+          removed: false,
+        }],
       }));
+
+      h.fakeRpcTransport.on("eth_getStorageAt", (params) => {
+        expect(params).toEqual([
+          REVIEWED_SEPOLIA_FACTORY,
+          ERC1967_IMPLEMENTATION_SLOT,
+          "0x20",
+        ]);
+        return `0x${"0".repeat(24)}${(
+          options.implementationAddress ?? REVIEWED_SEPOLIA_IMPLEMENTATION
+        ).slice(2)}`;
+      });
 
       h.correlationSender.response = {
         status: 202,
-        data: CORRELATION_SUCCESS_DATA,
+        data: options.correlationHash === undefined
+          ? CORRELATION_SUCCESS_DATA
+          : {
+              results: [{
+                result: {
+                  transactionHash: options.correlationHash,
+                  status: "pending",
+                  executionMode: "client-broadcast",
+                },
+              }],
+            },
       };
 
       h.statusFetcher.response = {
@@ -2627,19 +2690,83 @@ describe("ExecutionV4Orchestrator", () => {
       expect(current.operations[2].stage).toBe("NOT_STARTED");
     });
 
-    it("refuses candidate token identity when read-back cannot bind it to this finalized transaction", async () => {
+    it("persists only the exact receipt-derived token after every authority gate", async () => {
       const h = createHarness({ readBack: true });
-      await expect(setupFinalizedCorrelatedRun(h, "rejected")).rejects.toMatchObject({
-        code: "READ_BACK_BINDING_UNRESOLVED",
+      const run = await setupFinalizedCorrelatedRun(h, "rejected");
+      expect(run.phase).toBe("WHITELIST");
+      expect(run.operations[0].stage).toBe("READ_BACK_VERIFIED");
+      expect(run.tokenIdentity).toMatchObject({
+        tokenAddress: TOKEN_ADDRESS,
+        tokenizationTxHash: TX_HASH,
+        tokenizerWalletAddress: TOKENIZER_ADDRESS,
+      });
+      expect(run.tokenIdentity?.readBackEvidenceHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+      expect(h.readBack.tokenCalls).toBe(1);
+      expect(h.readBack.tokenizerCalls).toBe(1);
+    });
+
+    it("cannot replace the receipt-derived token with an older same-symbol Brickken result", async () => {
+      const h = createHarness({ readBack: true });
+      h.readBack.tokenAddress = "0x7777777777777777777777777777777777777777";
+      await expect(setupFinalizedCorrelatedRun(h)).rejects.toMatchObject({
+        code: "READ_BACK_FAILED",
       });
       const run = (await h.repository.getById(
         "11111111-1111-4111-8111-111111111111",
       )) as ExecutionRunV4;
       expect(run.phase).toBe("TOKENIZATION");
-      expect(run.operations[0].stage).toBe("BRICKKEN_CORRELATED");
       expect(run.tokenIdentity).toBeNull();
-      expect(h.readBack.tokenCalls).toBe(1);
-      expect(h.readBack.tokenizerCalls).toBe(1);
+    });
+
+    it("does not derive identity from an unfinalized receipt", async () => {
+      const h = createHarness({ readBack: true });
+      const run = await setupFinalizedCorrelatedRun(h, "success", {
+        finalizedBlockNumber: "0x1f",
+      });
+      expect(run.phase).toBe("TOKENIZATION");
+      expect(run.tokenIdentity).toBeNull();
+      expect(h.readBack.tokenCalls).toBe(0);
+    });
+
+    it("does not derive identity from a reverted receipt", async () => {
+      const h = createHarness({ readBack: true });
+      const run = await setupFinalizedCorrelatedRun(h, "success", {
+        receiptStatus: "0x0",
+      });
+      expect(run.status).toBe("FAILED");
+      expect(run.tokenIdentity).toBeNull();
+      expect(h.readBack.tokenCalls).toBe(0);
+    });
+
+    it("does not derive identity after an on-chain fee-policy violation", async () => {
+      const h = createHarness({ readBack: true });
+      const run = await setupFinalizedCorrelatedRun(h, "success", {
+        observedMaxFeePerGas: "0x21",
+      });
+      expect(run.status).toBe("RECONCILIATION_REQUIRED");
+      expect(run.tokenIdentity).toBeNull();
+      expect(h.readBack.tokenCalls).toBe(0);
+    });
+
+    it("does not derive identity when Brickken correlation returns another hash", async () => {
+      const h = createHarness({ readBack: true });
+      const run = await setupFinalizedCorrelatedRun(h, "success", {
+        correlationHash: `0x${"99".repeat(32)}`,
+      });
+      expect(run.status).toBe("RECONCILIATION_REQUIRED");
+      expect(run.tokenIdentity).toBeNull();
+      expect(h.readBack.tokenCalls).toBe(0);
+    });
+
+    it("rejects an implementation mismatch at the exact receipt block", async () => {
+      const h = createHarness({ readBack: true });
+      await expect(setupFinalizedCorrelatedRun(h, "success", {
+        implementationAddress: "0x8888888888888888888888888888888888888888",
+      })).rejects.toMatchObject({ code: "READ_BACK_BINDING_UNRESOLVED" });
+      const run = (await h.repository.getById(
+        "11111111-1111-4111-8111-111111111111",
+      )) as ExecutionRunV4;
+      expect(run.tokenIdentity).toBeNull();
     });
 
     it("fails closed when authoritative tokenizer identity mismatches the approved signer", async () => {

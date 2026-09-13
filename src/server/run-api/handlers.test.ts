@@ -22,6 +22,8 @@ import {
   TOKENIZE_CALLDATA_COMMITMENT,
   TOKENIZE_EXECUTION_GATE,
   TOKENIZE_FUNCTION_SIGNATURE,
+  REVIEWED_SEPOLIA_FACTORY,
+  REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
   createProductionSemanticAuthorizationEvaluator,
 } from "../orchestration";
 import { createTrustedSepoliaRpcClient } from "../rpc";
@@ -437,13 +439,13 @@ describe("V4 browser wallet run routes", () => {
       proof: createApprovalProofFixture(created, "2026-09-12T12:00:01.000Z"),
     });
     const preparing = await api.runs.beginPrepare(approved.id, approved.revision, "TOKENIZE");
-    const signature = "function createTokenization(bytes)";
+    const signature = REVIEWED_TOKENIZE_FUNCTION_SIGNATURE;
     const data = `${toFunctionSelector(signature)}${"00".repeat(32)}`;
     const prepared = await api.runs.recordPrepared(preparing.id, preparing.revision, "TOKENIZE", {
       txId: "brickken-tx-route-1",
       unsignedTransaction: {
         from: TOKENIZER_ADDRESS,
-        to: "0x4444444444444444444444444444444444444444",
+        to: REVIEWED_SEPOLIA_FACTORY,
         data,
         value: "0x0",
         nonce: "0x5",
@@ -466,7 +468,7 @@ describe("V4 browser wallet run routes", () => {
       },
       semanticAuthorization: createProductionSemanticAuthorizationEvaluator({
         [TOKENIZE_EXECUTION_GATE]: "1",
-        [TOKENIZE_ALLOWED_DESTINATION]: "0x4444444444444444444444444444444444444444",
+        [TOKENIZE_ALLOWED_DESTINATION]: REVIEWED_SEPOLIA_FACTORY,
         [TOKENIZE_FUNCTION_SIGNATURE]: signature,
         [TOKENIZE_CALLDATA_COMMITMENT]: await sha256Utf8(data),
       }),
