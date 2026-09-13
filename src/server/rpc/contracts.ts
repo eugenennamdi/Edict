@@ -76,7 +76,7 @@ export const rawRpcChainIdSchema = z
   });
 
 export const rawRpcTransactionSchema = z
-  .strictObject({
+  .object({
     hash: rpcHash32Schema,
     chainId: z.union([rpcQuantitySchema, rawRpcChainIdSchema.transform((c) => c.hex)]),
     from: rpcAddressSchema,
@@ -93,6 +93,7 @@ export const rawRpcTransactionSchema = z
     blockHash: rpcHash32Schema.nullable(),
     blockNumber: rpcQuantitySchema.nullable(),
     transactionIndex: rpcQuantitySchema.nullable(),
+    blockTimestamp: z.string().optional(),
     v: z.string().optional(),
     r: z.string().optional(),
     s: z.string().optional(),
@@ -110,7 +111,7 @@ export const rawRpcTransactionSchema = z
     }
   });
 
-export const rawRpcReceiptSchema = z.strictObject({
+export const rawRpcReceiptSchema = z.object({
   transactionHash: rpcHash32Schema,
   transactionIndex: rpcQuantitySchema,
   blockHash: rpcHash32Schema,
@@ -121,7 +122,7 @@ export const rawRpcReceiptSchema = z.strictObject({
   gasUsed: rpcQuantitySchema,
   effectiveGasPrice: rpcQuantitySchema,
   contractAddress: rpcNullableAddressSchema,
-  logs: z.array(z.strictObject({
+  logs: z.array(z.object({
     address: rpcAddressSchema,
     topics: z.array(rpcHash32Schema).max(4),
     data: rpcCalldataSchema,

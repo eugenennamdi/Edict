@@ -530,6 +530,78 @@ describe("Trusted Sepolia RPC client & contracts", () => {
     expect(() => rawRpcBlockSchema.parse(withoutParentHash)).toThrow();
   });
 
+  it("8d. parses modern post-Merge/Cancun Sepolia transactions with blockTimestamp via getTransaction and rejects malformed fields", async () => {
+    const modernSepoliaTx = {
+      hash: TX_HASH,
+      chainId: "0xaa36a7",
+      from: TOKENIZER_ADDRESS,
+      to: TO,
+      input: "0x12345678",
+      value: "0x0",
+      nonce: "0x0",
+      type: "0x2",
+      gas: "0x5208",
+      maxFeePerGas: "0x20",
+      maxPriorityFeePerGas: "0x2",
+      blockHash: BLOCK_HASH,
+      blockNumber: "0x762f01",
+      transactionIndex: "0x0",
+      // Modern / node-specific fields
+      blockTimestamp: "0x66e44000",
+      r: `0x${"11".repeat(32)}`,
+      s: `0x${"22".repeat(32)}`,
+      v: "0x0",
+      yParity: "0x0",
+      networkId: "11155111",
+      extraNodeField: "0xabcdef",
+    };
+
+    const transport = new FakeRpcTransport()
+      .on("eth_chainId", () => "0xaa36a7")
+      .on("eth_getTransactionByHash", (params) => {
+        if (params?.[0] === TX_HASH) return modernSepoliaTx;
+        return null;
+      });
+
+    const client = createTrustedSepoliaRpcClient(transport);
+    const tx = await client.getTransaction(TX_HASH);
+
+    expect(tx).not.toBeNull();
+    expect(tx?.hash).toBe(TX_HASH);
+    expect(tx?.from).toBe(TOKENIZER_ADDRESS);
+    expect(tx?.to).toBe(TO);
+    expect(tx?.nonce).toBe("0x0");
+    expect(tx?.presence).toBe("MINED");
+    expect(tx?.blockNumber).toBe("0x762f01");
+
+    // Required fields fail closed when missing or malformed:
+    expect(() =>
+      rawRpcTransactionSchema.parse({
+        ...modernSepoliaTx,
+        from: "not-an-address",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      rawRpcTransactionSchema.parse({
+        ...modernSepoliaTx,
+        hash: "0xshort",
+      }),
+    ).toThrow();
+
+    const withoutHash = { ...modernSepoliaTx };
+    delete (withoutHash as Record<string, unknown>).hash;
+    expect(() => rawRpcTransactionSchema.parse(withoutHash)).toThrow();
+
+    // Inconsistent mined fields fail closed:
+    expect(() =>
+      rawRpcTransactionSchema.parse({
+        ...modernSepoliaTx,
+        blockHash: null,
+      }),
+    ).toThrow();
+  });
+
   it("9. rejects oversized calldata (> 131,072 bytes)", () => {
     const validCalldata = `0x${"ab".repeat(131_072)}`;
     expect(rpcCalldataSchema.parse(validCalldata)).toBe(validCalldata);
