@@ -77,6 +77,7 @@ const executionPreparationSchema = z.strictObject({
     "PREPARATION_PENDING",
     "PREPARED_FOR_REVIEW",
     "PREPARATION_UNCONFIRMED",
+    "PREPARATION_FAILED",
   ]),
   transactionReview: preparedTransactionReviewV1Schema.nullable(),
 });
@@ -93,7 +94,8 @@ export type PublicExecutionPreparation = Readonly<{
     | "READY_FOR_PREPARATION"
     | "PREPARATION_PENDING"
     | "PREPARED_FOR_REVIEW"
-    | "PREPARATION_UNCONFIRMED";
+    | "PREPARATION_UNCONFIRMED"
+    | "PREPARATION_FAILED";
   transactionReview: PreparedTransactionReviewV1 | null;
 }>;
 
@@ -178,11 +180,15 @@ function assertExecutionProjection(run: PublicRunProjection): void {
           ? "PREPARED_FOR_REVIEW"
           : tokenization.stage === "PREPARE_UNKNOWN" && run.status === "RECONCILIATION_REQUIRED"
             ? "PREPARATION_UNCONFIRMED"
+            : (tokenization.stage === "REJECTED" || tokenization.stage === "PREPARE_UNKNOWN") &&
+                run.status === "FAILED" && run.terminalOutcome === "FAILED" &&
+                tokenization.preparedTxId === null
+              ? "PREPARATION_FAILED"
             : null;
   if (
     (execution !== null && (
       !run.approved ||
-      run.terminalOutcome !== null ||
+      (run.terminalOutcome !== null && execution.preparationStatus !== "PREPARATION_FAILED") ||
       run.phase !== "TOKENIZATION" ||
       expectedPreparationStatus === null ||
       execution.nextOperation.id !== tokenization.id ||

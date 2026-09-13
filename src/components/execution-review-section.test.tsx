@@ -38,6 +38,29 @@ describe("execution preparation review UI", () => {
     expect(html).not.toContain("Prepare transaction for review");
   });
 
+  it("renders a terminal preparation failure without offering prepare or promotion", () => {
+    const unresolved = view("PREPARATION_UNCONFIRMED");
+    const failed = { ...unresolved, run: {
+      ...unresolved.run,
+      status: "FAILED" as const,
+      terminalOutcome: "FAILED" as const,
+      execution: {
+        ...unresolved.run.execution!,
+        preparationStatus: "PREPARATION_FAILED" as const,
+      },
+    } };
+    const html = renderToStaticMarkup(createElement(ExecutionReviewSection, {
+      view: failed,
+      pending: false,
+      preparationUnconfirmed: false,
+      onPrepare: vi.fn(),
+    }));
+    expect(html).toContain("Preparation failed");
+    expect(html).toContain("No prepared transaction or wallet action was recorded");
+    expect(html).toContain("do not retry preparation or promote it");
+    expect(html).not.toContain("Prepare transaction for review");
+  });
+
   it("renders the exact durable prepared transaction as review-only", async () => {
     const ready = view("READY_FOR_PREPARATION");
     const review = await createPreparedTransactionReviewV1({

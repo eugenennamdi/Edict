@@ -68,6 +68,33 @@ describe("server-derived preparation review", () => {
     await expect(deriveExecutionPreparationProjection(malformed)).rejects.toMatchObject({ code: "EXECUTION_INVARIANT_FAILED" });
   });
 
+  it("projects definite preparation failure, including legacy terminal PREPARE_UNKNOWN", async () => {
+    const { runs, approved } = await setup();
+    const intent = await runs.beginPrepare(approved.id, approved.revision, "TOKENIZE");
+    const failed = await runs.recordPrepareFailure(intent.id, intent.revision, "TOKENIZE");
+    expect(failed).toMatchObject({
+      revision: 4,
+      status: "FAILED",
+      terminalOutcome: "FAILED",
+    });
+    expect(failed.operations[0].stage).toBe("REJECTED");
+    await expect(deriveExecutionPreparationProjection(failed)).resolves.toMatchObject({
+      preparationStatus: "PREPARATION_FAILED",
+      transactionReview: null,
+    });
+    const legacy = {
+      ...failed,
+      operations: [
+        { ...failed.operations[0], stage: "PREPARE_UNKNOWN" },
+        failed.operations[1],
+        failed.operations[2],
+      ],
+    } as ExecutionRun;
+    await expect(deriveExecutionPreparationProjection(legacy)).resolves.toMatchObject({
+      preparationStatus: "PREPARATION_FAILED",
+    });
+  });
+
   it("rejects wrong phase and approval bindings before selecting an operation", async () => {
     const { approved } = await setup();
     expect(() => nextPreparationOperation({ ...approved, phase: "WHITELIST" })).toThrow(OrchestrationError);

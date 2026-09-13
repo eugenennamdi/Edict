@@ -266,14 +266,22 @@ export function createPlanningWorkspace(
               );
               const recoveredPrepared =
                 durable.run.execution?.preparationStatus === "PREPARED_FOR_REVIEW";
+              const durablePreparationFailed =
+                durable.run.execution?.preparationStatus === "PREPARATION_FAILED";
               update({
                 view: durable,
                 notice: recoveredPrepared
                   ? "Transaction preparation was recovered from the durable record. Wallet confirmation has not been requested."
-                  : "The durable preparation state is now shown. Review it before taking another action.",
-                error: recoveredPrepared ? null : messages.PREPARATION_UNCONFIRMED,
-                errorCode: recoveredPrepared ? null : "PREPARATION_UNCONFIRMED",
-                preparationUnconfirmed: !recoveredPrepared,
+                  : durablePreparationFailed
+                    ? "Preparation failed durably. No prepared transaction or wallet action exists for this run."
+                    : "The durable preparation state is now shown. Review it before taking another action.",
+                error: recoveredPrepared || durablePreparationFailed
+                  ? null
+                  : messages.PREPARATION_UNCONFIRMED,
+                errorCode: recoveredPrepared || durablePreparationFailed
+                  ? null
+                  : "PREPARATION_UNCONFIRMED",
+                preparationUnconfirmed: !recoveredPrepared && !durablePreparationFailed,
               });
             } catch {
               update({

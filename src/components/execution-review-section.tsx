@@ -31,6 +31,7 @@ export function ExecutionReviewSection({
   if (execution === null) return null;
   const review = execution.transactionReview;
   const ready = execution.preparationStatus === "READY_FOR_PREPARATION" && !preparationUnconfirmed;
+  const failed = execution.preparationStatus === "PREPARATION_FAILED";
   const blocked = preparationUnconfirmed || [
     "PREPARATION_PENDING",
     "PREPARATION_UNCONFIRMED",
@@ -41,20 +42,28 @@ export function ExecutionReviewSection({
       <CardHeader className="pb-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <Badge variant="outline" className="w-fit font-mono text-[10px] uppercase tracking-wider">
-            Next operation
+            {failed ? "Operation outcome" : "Next operation"}
           </Badge>
           <Badge
-            variant={review ? "success" : blocked ? "destructive" : "secondary"}
+            variant={review ? "success" : blocked || failed ? "destructive" : "secondary"}
             className="w-fit text-[10px] uppercase"
           >
-            {review ? "Prepared for review" : blocked ? "Preparation unresolved" : "Ready for preparation"}
+            {review
+              ? "Prepared for review"
+              : failed
+                ? "Preparation failed"
+                : blocked
+                  ? "Preparation unresolved"
+                  : "Ready for preparation"}
           </Badge>
         </div>
         <CardTitle className="text-xl font-bold tracking-tight">
           01 · {execution.nextOperation.name}
         </CardTitle>
         <CardDescription className="text-xs leading-relaxed max-w-2xl">
-          The durable run—not the browser—identified TOKENIZE as the next legal operation.
+          {failed
+            ? "The durable run records a terminal TOKENIZE preparation refusal."
+            : "The durable run—not the browser—identified TOKENIZE as the next legal operation."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -94,6 +103,17 @@ export function ExecutionReviewSection({
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
               <span>
                 The preparation outcome is not safely known. Refresh the durable record; Edict will not automatically repeat the preparation request.
+              </span>
+            </span>
+          </div>
+        )}
+
+        {failed && (
+          <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-foreground">
+            <span className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+              <span>
+                Brickken refused preparation. No prepared transaction or wallet action was recorded. This run is terminal; do not retry preparation or promote it.
               </span>
             </span>
           </div>

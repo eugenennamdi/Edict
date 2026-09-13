@@ -18,7 +18,6 @@ function exactApprovedTokenization(run: ExecutionRun): WriteOperation | null {
     run.environment !== "sandbox" ||
     run.chainId !== "11155111" ||
     run.phase !== "TOKENIZATION" ||
-    run.terminalOutcome !== null ||
     operation.kind !== "TOKENIZE"
   ) return null;
   return operation;
@@ -28,6 +27,7 @@ export function nextPreparationOperation(run: ExecutionRun): WriteOperation {
   const operation = exactApprovedTokenization(run);
   if (
     operation === null ||
+    run.terminalOutcome !== null ||
     run.status !== "PREPARING" ||
     operation.stage !== "NOT_STARTED" ||
     operation.preparedTxId !== null ||
@@ -112,6 +112,16 @@ export async function deriveExecutionPreparationProjection(
     operation.stage === "PREPARE_UNKNOWN"
   ) {
     preparationStatus = "PREPARATION_UNCONFIRMED";
+  } else if (
+    run.status === "FAILED" &&
+    run.terminalOutcome === "FAILED" &&
+    (operation.stage === "REJECTED" || operation.stage === "PREPARE_UNKNOWN") &&
+    operation.preparedTxId === null &&
+    operation.unsignedTransaction === null
+  ) {
+    // PREPARE_UNKNOWN supports immutable V1–V3 records written before
+    // definite preparation refusals were represented by REJECTED.
+    preparationStatus = "PREPARATION_FAILED";
   } else {
     return null;
   }

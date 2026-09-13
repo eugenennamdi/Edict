@@ -207,7 +207,7 @@ export function WalletExecutionSection({
       <CardContent className="space-y-4">
         {needsPromotion && (
           <Button size="sm" disabled={activationAction !== null} onClick={() => void mutateActivation("promote")}>
-            {activationAction === "promote" ? "Promoting durable run…" : "Promote prepared run to V4"}
+            {activationAction === "promote" ? "Promoting durable run…" : "Promote to execution state"}
           </Button>
         )}
         {canCheckReadiness && serverReadyRevision !== run.revision && (

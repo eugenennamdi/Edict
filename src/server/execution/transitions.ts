@@ -295,7 +295,7 @@ function recordPrepareFailure(
     replaceOperation(
       { ...run, status: "FAILED", terminalOutcome: "FAILED" },
       kind,
-      { stage: "PREPARE_UNKNOWN" },
+      { stage: "REJECTED" },
     ),
     event,
     kind,

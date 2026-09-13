@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import type { PublicRunProjection } from "@/shared/run";
+import { WalletExecutionSection } from "./wallet-execution-section";
 import {
   classifyWalletExecutionFailure,
   initialWalletExecutionUiModel,
@@ -22,7 +26,7 @@ describe("wallet execution UI composition", () => {
       "Transaction hash recorded",
       "Broadcast outcome uncertain",
       "Reconciliation required",
-      "Promote prepared run to V4",
+      "Promote to execution state",
       "Check server readiness",
       "Track transaction status",
     ]) expect(source).toContain(text);
@@ -30,6 +34,40 @@ describe("wallet execution UI composition", () => {
       source.indexOf('mutateActivation("readiness")'),
     );
     expect(source).not.toMatch(/BRICKKEN_API_KEY|DATABASE_URL|privateKey|seed phrase|eth_sendRawTransaction/u);
+  });
+
+  it("renders explicit promotion for a V2 PREPARED run before wallet readiness", () => {
+    const run = {
+      id: "11111111-1111-4111-8111-111111111111",
+      schemaVersion: "2.0",
+      manifestHash: `sha256:${"1".repeat(64)}`,
+      planHash: `sha256:${"2".repeat(64)}`,
+      environment: "sandbox",
+      chainId: "11155111",
+      requiredSigner: { role: "tokenizer", walletAddress: "0x1111111111111111111111111111111111111111" },
+      phase: "TOKENIZATION",
+      status: "AWAITING_WALLET",
+      terminalOutcome: null,
+      approved: true,
+      execution: null,
+      operations: [
+        { id: "op-1", kind: "TOKENIZE", stage: "PREPARED", preparedTxId: "tx-1", blockchainTxHash: null, brickkenStatus: null, timeout: false },
+        { id: "op-2", kind: "WHITELIST", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
+        { id: "op-3", kind: "MINT", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
+      ],
+      receiptEligible: false,
+      createdAt: "2026-09-13T12:00:00.000Z",
+      updatedAt: "2026-09-13T12:00:02.000Z",
+      revision: 4,
+      canCancel: true,
+    } as PublicRunProjection;
+    const html = renderToStaticMarkup(createElement(WalletExecutionSection, {
+      run,
+      onRefresh: async () => undefined,
+    }));
+    expect(html).toContain("Promote to execution state");
+    expect(html).not.toContain("Check server readiness");
+    expect(html).not.toContain("Request server authorization and open wallet");
   });
 
   it("serializes rapid starts and ignores rerender/provider readiness while execution is pending", () => {

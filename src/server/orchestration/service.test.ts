@@ -152,7 +152,7 @@ describe("durable execution orchestration", () => {
     const durable = await setup.repository.getById(setup.run.id);
     expect(durable.status).toBe("FAILED");
     expect(durable.terminalOutcome).toBe("FAILED");
-    expect(durable.operations[0].stage).toBe("PREPARE_UNKNOWN");
+    expect(durable.operations[0].stage).toBe("REJECTED");
     expect(brickken.prepares()).toBe(1);
   });
 

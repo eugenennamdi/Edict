@@ -92,6 +92,24 @@ async function preparedProjection() {
     revision: 4,
   } };
 }
+
+async function failedPreparationProjection() {
+  const body = await approvedProjection();
+  return { ...body, run: {
+    ...body.run,
+    status: "FAILED" as const,
+    terminalOutcome: "FAILED" as const,
+    execution: {
+      ...body.run.execution,
+      preparationStatus: "PREPARATION_FAILED" as const,
+      transactionReview: null,
+    },
+    operations: body.run.operations.map((operation, index) => index === 0
+      ? { ...operation, stage: "PREPARE_UNKNOWN" as const }
+      : operation) as typeof body.run.operations,
+    revision: 4,
+  } };
+}
 function harness(
   transport = vi.fn<(path: string, options: RequestInit) => Promise<Response>>(),
   onCreated?: (runId: string) => void,
@@ -229,6 +247,32 @@ describe("run planning workspace", () => {
     await h.workspace.prepareNextOperation();
     expect(h.state().preparationUnconfirmed).toBe(true);
     expect(h.state().errorCode).toBe("PREPARATION_UNCONFIRMED");
+    await h.workspace.prepareNextOperation();
+    expect(h.transport).toHaveBeenCalledTimes(3);
+  });
+
+  it("recovers a terminal preparation failure without a stale generic error or retry", async () => {
+    const approved = await approvedProjection();
+    const failed = await failedPreparationProjection();
+    const h = harness();
+    h.transport
+      .mockResolvedValueOnce(Response.json(approved))
+      .mockResolvedValueOnce(Response.json({
+        ok: false,
+        error: { code: "PREPARATION_UNCONFIRMED" },
+      }, { status: 503 }))
+      .mockResolvedValueOnce(Response.json(failed));
+    await h.workspace.recover(id);
+    await h.workspace.prepareNextOperation();
+    expect(h.state().view?.run).toMatchObject({
+      revision: 4,
+      status: "FAILED",
+      terminalOutcome: "FAILED",
+      execution: { preparationStatus: "PREPARATION_FAILED" },
+    });
+    expect(h.state().notice).toContain("Preparation failed durably");
+    expect(h.state().error).toBeNull();
+    expect(h.state().preparationUnconfirmed).toBe(false);
     await h.workspace.prepareNextOperation();
     expect(h.transport).toHaveBeenCalledTimes(3);
   });
