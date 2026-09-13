@@ -107,7 +107,10 @@ export async function deriveExecutionPreparationProjection(
 
   if (run.status === "PREPARING" && operation.stage === "NOT_STARTED") {
     preparationStatus = "READY_FOR_PREPARATION";
-  } else if (run.status === "PREPARING" && operation.stage === "PREPARE_INTENT") {
+  } else if (
+    run.status === "PREPARING" &&
+    (operation.stage === "PREPARE_INTENT" || operation.stage === "REPREPARE_INTENT")
+  ) {
     preparationStatus = "PREPARATION_PENDING";
   } else if (run.status === "AWAITING_WALLET" && operation.stage === "PREPARED") {
     preparationStatus = "PREPARED_FOR_REVIEW";

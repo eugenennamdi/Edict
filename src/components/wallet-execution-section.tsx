@@ -62,7 +62,7 @@ export function WalletExecutionSection({
   const [providers, setProviders] = useState<readonly DiscoveredWallet[]>([]);
   const [model, setModel] = useState<WalletExecutionUiModel>(initialWalletExecutionUiModel);
   const [serverReadyRevision, setServerReadyRevision] = useState<number | null>(null);
-  const [activationAction, setActivationAction] = useState<"promote" | "readiness" | "track" | null>(null);
+  const [activationAction, setActivationAction] = useState<"promote" | "readiness" | "track" | "reprepare" | null>(null);
   const [activationError, setActivationError] = useState<Readonly<{
     revision: number;
     message: string;
@@ -101,7 +101,7 @@ export function WalletExecutionSection({
 
   if (!visible) return null;
 
-  async function mutateActivation(action: "promote" | "readiness" | "track") {
+  async function mutateActivation(action: "promote" | "readiness" | "track" | "reprepare") {
     if (busy.current || activationAction !== null) return;
     busy.current = true;
     setActivationAction(action);
@@ -112,7 +112,9 @@ export function WalletExecutionSection({
         ? await gateway.promote(run.id, run.revision)
         : action === "readiness"
           ? await gateway.readiness(run.id, run.revision)
-          : await gateway.track(run.id, run.revision);
+          : action === "reprepare"
+            ? await gateway.reprepare(run.id, run.revision)
+            : await gateway.track(run.id, run.revision);
       if (action === "readiness" && result.schemaVersion === "4.0" &&
         result.operations[0].stage === "PREPARED" && result.revision === run.revision) {
         setServerReadyRevision(run.revision);
@@ -125,6 +127,7 @@ export function WalletExecutionSection({
         revision: run.revision,
         message: "The server did not confirm this action. Refresh the durable record before trying again.",
       });
+      if (action === "reprepare") await onRefresh().catch(() => undefined);
     } finally {
       busy.current = false;
       setActivationAction(null);
@@ -236,8 +239,14 @@ export function WalletExecutionSection({
                 <p className="leading-relaxed text-muted-foreground">
                   This run is pre-authorization and has never broadcast to the network. An operator can explicitly refresh / reprepare the transaction to obtain a fresh price report from Brickken.
                 </p>
-                <Button size="sm" onClick={() => void onRefresh()}>
-                  Refresh prepared transaction
+                <Button
+                  size="sm"
+                  disabled={activationAction !== null}
+                  onClick={() => void mutateActivation("reprepare")}
+                >
+                  {activationAction === "reprepare"
+                    ? "Refreshing prepared transaction…"
+                    : "Refresh prepared transaction"}
                 </Button>
                 <p className="text-[11px] text-muted-foreground">
                   Notice: A fresh preparation will produce a new Brickken transaction ID, new calldata, and require an updated calldata commitment before execution.

@@ -37,6 +37,8 @@ describe("wallet execution UI composition", () => {
     expect(source.indexOf('mutateActivation("promote")')).toBeLessThan(
       source.indexOf('mutateActivation("readiness")'),
     );
+    expect(source).toContain('gateway.reprepare(run.id, run.revision)');
+    expect(source).toContain('if (action === "reprepare") await onRefresh().catch(() => undefined)');
     expect(source).not.toMatch(/BRICKKEN_API_KEY|DATABASE_URL|privateKey|seed phrase|eth_sendRawTransaction/u);
   });
 

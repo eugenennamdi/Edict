@@ -59,6 +59,7 @@ export type BrowserBroadcastUnknownReason =
 export interface WalletExecutionHttpGateway {
   promote(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
   readiness(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
+  reprepare(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
   authorize(runId: string, expectedRevision: number): Promise<SendAuthorizedEnvelopeV1>;
   ingestHash(runId: string, input: {
     readonly expectedRevision: number;
@@ -204,6 +205,9 @@ export function createWalletExecutionHttpGateway(
     async readiness(runId: string, expectedRevision: number) {
       return mutateRevision(transport, runId, expectedRevision, "readiness");
     },
+    async reprepare(runId: string, expectedRevision: number) {
+      return mutateRevision(transport, runId, expectedRevision, "prepare");
+    },
     async authorize(runId: string, expectedRevision: number) {
       const parsedRunId = publicRunIdSchema.safeParse(runId);
       const revision = revisionSchema.safeParse(expectedRevision);
@@ -251,7 +255,7 @@ async function mutateRevision(
   transport: WalletExecutionHttpTransport,
   runId: string,
   expectedRevision: number,
-  action: "promote" | "readiness" | "track",
+  action: "promote" | "readiness" | "track" | "prepare",
 ): Promise<PublicRunProjection> {
   const parsedRunId = publicRunIdSchema.safeParse(runId);
   const revision = revisionSchema.safeParse(expectedRevision);

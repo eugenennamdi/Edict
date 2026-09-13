@@ -40,7 +40,7 @@ function errorCode(error: unknown): unknown {
 }
 
 describe("wallet execution HTTP gateway", () => {
-  it.each(["promote", "readiness", "track"] as const)(
+  it.each(["promote", "readiness", "track", "reprepare"] as const)(
     "posts one explicit %s action with only the durable revision",
     async (action) => {
       const run = {
@@ -56,7 +56,7 @@ describe("wallet execution HTTP gateway", () => {
       });
       expect(transport).toHaveBeenCalledOnce();
       expect(transport).toHaveBeenCalledWith(
-        `/api/runs/${RUN_ID}/${action}`,
+        `/api/runs/${RUN_ID}/${action === "reprepare" ? "prepare" : action}`,
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({ expectedRevision: 8 }),

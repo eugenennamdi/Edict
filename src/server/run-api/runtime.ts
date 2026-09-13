@@ -40,6 +40,7 @@ export interface RunApiRuntime {
     | "promotePreparedRunToV4"
     | "evaluateAndApplyPreparedFreshness"
     | "trackExecution"
+    | "reprepareOperation"
   >;
   readonly nowIso: () => string;
 }
@@ -117,6 +118,8 @@ export function createRunApiRuntime(): RunApiRuntime {
       },
       brickkenReadBack: brickken,
       brickkenTokenizerEmail: brickkenConfig.tokenizerEmail,
+      brickkenPrepare: brickken,
+      writeGate: createPreparationOnlyBrickkenWriteGate(preparationEnabled),
     }),
     nowIso: () => new Date().toISOString(),
   });

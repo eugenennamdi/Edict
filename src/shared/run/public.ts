@@ -202,7 +202,8 @@ function assertExecutionProjection(run: PublicRunProjection): void {
   const expectedPreparationStatus =
     tokenization.stage === "NOT_STARTED" && run.status === "PREPARING"
       ? "READY_FOR_PREPARATION"
-      : tokenization.stage === "PREPARE_INTENT" && run.status === "PREPARING"
+      : (tokenization.stage === "PREPARE_INTENT" || tokenization.stage === "REPREPARE_INTENT") &&
+          run.status === "PREPARING"
         ? "PREPARATION_PENDING"
         : tokenization.stage === "PREPARED" && run.status === "AWAITING_WALLET"
           ? "PREPARED_FOR_REVIEW"

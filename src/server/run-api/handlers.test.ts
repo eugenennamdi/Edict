@@ -353,6 +353,7 @@ describe("V4 browser wallet run routes", () => {
         run: durable as never,
       })),
       trackExecution: vi.fn(async () => ({ run: durable as never })),
+      reprepareOperation: vi.fn(async () => durable as never),
     };
     const runtime: RunApiRuntime = { ...api, walletExecution };
     const options = { config, runtime: () => runtime };
@@ -649,6 +650,43 @@ describe("V4 browser wallet run routes", () => {
       ok: false,
       error: { code: "READ_BACK_BINDING_UNRESOLVED" },
     });
+  });
+
+  it("reprepares stale run accepting strictly expectedRevision and returning strict public DTO", async () => {
+    const value = await setup();
+    vi.spyOn(value.runtime.runs, "getRun").mockResolvedValueOnce({
+      ...value.durable,
+      schemaVersion: "4.0",
+      operations: [
+        { ...value.durable.operations[0], stage: "PREPARED_STALE" },
+        value.durable.operations[1],
+        value.durable.operations[2],
+      ],
+    } as never);
+    const response = await value.call(prepareNextOperationHandler, "prepare", { expectedRevision: 2 });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.ok).toBe(true);
+    expect(body.run.id).toBe(runId);
+    expect(body.run).not.toHaveProperty("rpcTransactionEvidence");
+    expect(body.run).not.toHaveProperty("preparationAttempts");
+    expect(value.walletExecution.reprepareOperation).toHaveBeenCalledWith(runId, 2);
+
+    // Rejects extra caller-supplied fields
+    expect((await value.call(prepareNextOperationHandler, "prepare", { expectedRevision: 2, phase: "TOKENIZATION" })).status).toBe(400);
+
+    // Handles CAS conflict
+    vi.mocked(value.walletExecution.reprepareOperation).mockRejectedValueOnce(new RepositoryRevisionConflictError());
+    vi.spyOn(value.runtime.runs, "getRun").mockResolvedValueOnce({
+      ...value.durable,
+      schemaVersion: "4.0",
+      operations: [
+        { ...value.durable.operations[0], stage: "PREPARED_STALE" },
+        value.durable.operations[1],
+        value.durable.operations[2],
+      ],
+    } as never);
+    expect((await value.call(prepareNextOperationHandler, "prepare", { expectedRevision: 1 })).status).toBe(409);
   });
 });
 

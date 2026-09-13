@@ -308,6 +308,15 @@ export async function prepareNextOperationHandler(
       runAccessCookieOptions(guard.trustedOrigin, options?.nodeEnv).name,
     );
     const body = revisionBodySchema.parse(await readJson(request, 1024));
+    const currentRun = await api.runs.getRun(runId);
+    if (
+      currentRun.schemaVersion === "4.0" &&
+      currentRun.operations[0]?.stage === "PREPARED_STALE"
+    ) {
+      if (!api.walletExecution?.reprepareOperation) throw new BrickkenWritesDisabledError();
+      const prepared = await api.walletExecution.reprepareOperation(runId, body.expectedRevision);
+      return response(200, { ok: true, run: await projectPublicRun(prepared) });
+    }
     if (!api.execution) throw new BrickkenWritesDisabledError();
     const prepared = await api.execution.prepareNextOperation(runId, body.expectedRevision);
     return response(200, { ok: true, run: await projectPublicRun(prepared) });

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { canonicalizeJson, hashCanonicalJson } from "@/core";
+import { buildExecutionPlanV1, canonicalizeJson, hashCanonicalJson, validateAssetManifestV1 } from "@/core";
 import {
   type SemanticAuthorizationV1,
   type WalletExecutionIntentHash,
@@ -26,6 +26,7 @@ import {
   evaluateCorrelationRetry,
   parseTransactionStatusResponse,
 } from "../brickken";
+import type { AdapterResult, PreparedOperation } from "../brickken/types";
 import {
   IllegalStateTransitionError,
   RepositoryRevisionConflictError,
@@ -51,6 +52,7 @@ import {
   recordBroadcastHashV4,
   recordBroadcastUnknownV4,
   recordCorrelationUncertainV4,
+  recordReprepareOutcomeV4,
   recordRepreparedV4,
   recordRpcReceiptEvidenceV4,
   recordRpcTransactionV4,
@@ -60,6 +62,7 @@ import {
   upgradePreparedRunToV4,
   type V4PreparationFoundationInput,
 } from "../execution/v4-transitions";
+import type { BrickkenWriteGate } from "./write-gate";
 import {
   compareOnchainTransaction,
   evaluatePreparedFreshness,
@@ -175,6 +178,11 @@ export interface ExecutionV4OrchestratorDependencies {
     "getTokenInfo" | "getTokenizerInfo"
   >;
   readonly brickkenTokenizerEmail?: string;
+  readonly brickkenPrepare?: Pick<
+    BrickkenServerAdapter,
+    "prepareTokenization" | "prepareWhitelist" | "prepareMint"
+  >;
+  readonly writeGate?: BrickkenWriteGate;
 }
 
 export type PreflightWalletAuthorizationResult =
@@ -272,6 +280,43 @@ function getActiveAttempt(operation: WriteOperationV4): PreparationAttemptV1 {
   );
   if (!attempt) throw new IllegalStateTransitionError();
   return attempt;
+}
+
+async function validatedRunPlan(run: ExecutionRun) {
+  const manifest = validateAssetManifestV1(run.manifest);
+  if (!manifest.ok) throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+  const plan = await buildExecutionPlanV1(manifest.value);
+  if (plan.manifestHash !== run.manifestHash || plan.planHash !== run.planHash) {
+    throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+  }
+  return { manifest: manifest.value, plan };
+}
+
+function assertPreparedMatchesRun(run: ExecutionRun, prepared: PreparedOperation): void {
+  const transaction = prepared.transaction;
+  if (
+    transaction.normalizedChainId !== run.chainId ||
+    transaction.from?.toLowerCase() !== run.requiredSigner.walletAddress ||
+    transaction.to === null ||
+    transaction.data === null
+  ) {
+    throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+  }
+}
+
+function definitePrepareRefusal<T>(result: AdapterResult<T>): boolean {
+  return (
+    !result.ok &&
+    [
+      "AUTHENTICATION_REJECTED",
+      "CREDITS_EXHAUSTED",
+      "ENTITLEMENT_REJECTED",
+      "INVALID_REQUEST",
+      "SIGNER_NOT_APPROVED",
+      "UPSTREAM_RATE_LIMITED",
+      "MINT_POLICY_VIOLATION",
+    ].includes(result.error.code)
+  );
 }
 
 export class ExecutionV4Orchestrator {
@@ -441,6 +486,125 @@ export class ExecutionV4Orchestrator {
       expectedRevision,
       nextRun,
     )) as ExecutionRunV4;
+  }
+
+  async recordReprepareOutcome(
+    runId: string,
+    expectedRevision: number,
+    outcome: "PREPARE_UNKNOWN" | "REFUSED",
+  ): Promise<ExecutionRunV4> {
+    const current = await this.#deps.repository.getById(runId);
+    assertRevision(current, expectedRevision);
+    assertV4(current);
+    const { kind } = deriveActiveOperation(current);
+    const nextRun = recordReprepareOutcomeV4({
+      run: current,
+      kind,
+      outcome,
+      id: this.#deps.ids.eventId(),
+      at: this.#deps.clock.nowIso(),
+    });
+    return (await this.#deps.repository.update(
+      runId,
+      expectedRevision,
+      nextRun,
+    )) as ExecutionRunV4;
+  }
+
+  async reprepareOperation(
+    runId: string,
+    expectedRevision: number,
+  ): Promise<ExecutionRunV4> {
+    this.#deps.writeGate?.assertEnabled("PREPARE");
+
+    const current = await this.#deps.repository.getById(runId);
+    assertRevision(current, expectedRevision);
+    assertV4(current);
+
+    const { kind, operation: op } = deriveActiveOperation(current);
+    if (
+      current.status !== "AWAITING_WALLET" ||
+      op.stage !== "PREPARED_STALE" ||
+      op.walletPromptAuthorization !== null ||
+      op.blockchainTxHash !== null
+    ) {
+      throw new IllegalStateTransitionError();
+    }
+
+    const { manifest } = await validatedRunPlan(current);
+
+    // CAS 1: transition to REPREPARE_INTENT
+    const intentRun = await this.beginReprepare(runId, expectedRevision);
+
+    // External call: exactly ONE Brickken prepare request (no auto-retries)
+    if (!this.#deps.brickkenPrepare) {
+      await this.recordReprepareOutcome(runId, intentRun.revision, "PREPARE_UNKNOWN");
+      throw new OrchestrationError("BRICKKEN_OPERATION_FAILED");
+    }
+
+    let result: AdapterResult<PreparedOperation>;
+    try {
+      if (kind === "TOKENIZE") {
+        result = await this.#deps.brickkenPrepare.prepareTokenization({
+          signerAddress: current.requiredSigner.walletAddress,
+          name: manifest.asset.name,
+          tokenSymbol: manifest.asset.symbol,
+          supplyCap: manifest.asset.supplyCap,
+          documentationUrl: manifest.asset.documentationUrl,
+        });
+      } else {
+        await this.recordReprepareOutcome(runId, intentRun.revision, "REFUSED");
+        throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+      }
+    } catch (error) {
+      if (error instanceof OrchestrationError) throw error;
+      try {
+        await this.recordReprepareOutcome(runId, intentRun.revision, "PREPARE_UNKNOWN");
+      } catch {
+        // Intent remains durable
+      }
+      throw new OrchestrationError("PREPARATION_UNCONFIRMED");
+    }
+
+    if (!result.ok) {
+      const outcome = definitePrepareRefusal(result) ? "REFUSED" : "PREPARE_UNKNOWN";
+      try {
+        await this.recordReprepareOutcome(runId, intentRun.revision, outcome);
+      } catch {
+        // Intent remains durable
+      }
+      if (outcome !== "REFUSED") throw new OrchestrationError("PREPARATION_UNCONFIRMED");
+      switch (result.error.code) {
+        case "AUTHENTICATION_REJECTED":
+        case "CREDITS_EXHAUSTED":
+        case "ENTITLEMENT_REJECTED":
+        case "INVALID_REQUEST":
+        case "SIGNER_NOT_APPROVED":
+        case "UPSTREAM_RATE_LIMITED":
+          throw new OrchestrationError(result.error.code);
+        default:
+          throw new OrchestrationError("PREPARATION_REFUSED");
+      }
+    }
+
+    // CAS 2: transition to PREPARED with fresh txId + unsigned transaction
+    try {
+      assertPreparedMatchesRun(current, result.value);
+      return await this.recordReprepared(
+        runId,
+        intentRun.revision,
+        result.value.txId,
+        result.value.transaction.rawUnsigned,
+      );
+    } catch (error) {
+      try {
+        await this.recordReprepareOutcome(runId, intentRun.revision, "PREPARE_UNKNOWN");
+      } catch {
+        // Intent remains durable
+      }
+      if (error instanceof OrchestrationError) throw error;
+      throw new OrchestrationError("PREPARATION_UNCONFIRMED");
+    }
   }
 
   async preflightWalletAuthorization(

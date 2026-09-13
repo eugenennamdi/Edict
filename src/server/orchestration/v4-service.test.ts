@@ -4,7 +4,7 @@ import {
   type SemanticAuthorizationV1,
   hashWalletExecutionIntentV1,
 } from "@/shared/wallet/execution-authorization";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   IllegalStateTransitionError,
   RepositoryRevisionConflictError,
@@ -45,6 +45,12 @@ import {
   REVIEWED_SEPOLIA_IMPLEMENTATION,
   REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
 } from "./tokenize-receipt-binding";
+import {
+  type BrickkenWriteGate,
+  createPreparationOnlyBrickkenWriteGate,
+  BrickkenWritesDisabledError,
+} from "./write-gate";
+import { projectTokenizeCalldataReview } from "../../../tools/tokenize-calldata-review";
 
 class FakeRpcTransport implements RpcTransport {
   #handlers: Map<string, (params?: readonly unknown[]) => unknown> = new Map();
@@ -256,7 +262,14 @@ class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo"
 
 let globalAttemptCounter = 0;
 
-function createHarness(options: { readonly readBack?: boolean } = {}) {
+function createHarness(options: {
+  readonly readBack?: boolean;
+  readonly brickkenPrepare?: Pick<
+    BrickkenServerAdapter,
+    "prepareTokenization" | "prepareWhitelist" | "prepareMint"
+  >;
+  readonly writeGate?: BrickkenWriteGate;
+} = {}) {
   let tick = 0;
   let id = 0;
   const clock: Clock = {
@@ -313,6 +326,8 @@ function createHarness(options: { readonly readBack?: boolean } = {}) {
     ...(options.readBack
       ? { brickkenReadBack: readBack, brickkenTokenizerEmail: "licensed-account@example.com" }
       : {}),
+    ...(options.brickkenPrepare ? { brickkenPrepare: options.brickkenPrepare } : {}),
+    ...(options.writeGate ? { writeGate: options.writeGate } : {}),
   });
 
   return {
@@ -733,6 +748,183 @@ describe("ExecutionV4Orchestrator", () => {
       );
       expect(freshFreshness.evaluation.outcome).toBe("ELIGIBLE");
       expect(freshFreshness.evaluation.priceReportStatus).toBe("FRESH");
+    });
+
+    it("orchestrates reprepareOperation: PREPARED_STALE -> REPREPARE_INTENT -> PREPARED with fresh txId, calldata, and review succeeds", async () => {
+      const freshCalldata = createValidTokenizeCalldata(2000000000n);
+      const mockPrepareTokenization = vi.fn().mockResolvedValue({
+        ok: true,
+        value: {
+          txId: "brickken-fresh-tx-id-42",
+          transaction: {
+            chainId: "11155111",
+            normalizedChainId: "11155111",
+            from: TOKENIZER_ADDRESS,
+            to: REVIEWED_SEPOLIA_FACTORY,
+            data: freshCalldata,
+            rawUnsigned: {
+              ...UNSIGNED_TOKENIZE_TX,
+              data: freshCalldata,
+            },
+          },
+        },
+      });
+
+      const h = createHarness({
+        brickkenPrepare: {
+          prepareTokenization: mockPrepareTokenization,
+          prepareWhitelist: vi.fn(),
+          prepareMint: vi.fn(),
+        },
+        writeGate: createPreparationOnlyBrickkenWriteGate(true),
+      });
+
+      const expiredCalldata = createValidTokenizeCalldata(1000000000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+
+      // Make stale via freshness check
+      const staleRes = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      const staleRun = staleRes.run as ExecutionRunV4;
+      expect(staleRun.operations[0].stage).toBe("PREPARED_STALE");
+      const revisionBefore = staleRun.revision;
+
+      // Operator triggers reprepareOperation
+      const reprepared = await h.v4.reprepareOperation(staleRun.id, staleRun.revision);
+
+      // 1. Exactly one Brickken prepare request was made (no retries)
+      expect(mockPrepareTokenization).toHaveBeenCalledTimes(1);
+
+      // 2. Revision advanced by 2 (CAS 1 REPREPARE_INTENT + CAS 2 PREPARED)
+      expect(reprepared.revision).toBe(revisionBefore + 2);
+
+      // 3. Stage is PREPARED, status is AWAITING_WALLET
+      expect(reprepared.operations[0].stage).toBe("PREPARED");
+      expect(reprepared.status).toBe("AWAITING_WALLET");
+
+      // 4. Fresh txId, fingerprint, and calldata
+      expect(reprepared.operations[0].preparedTxId).toBe("brickken-fresh-tx-id-42");
+      const active = reprepared.operations[0].preparationAttempts[1];
+      expect(active.state).toBe("PREPARED");
+      expect(active.txId).toBe("brickken-fresh-tx-id-42");
+      expect(active.immutableIdentity?.data).toBe(freshCalldata);
+
+      // 5. No wallet authority release
+      expect(reprepared.operations[0].walletPromptAuthorization).toBeNull();
+
+      // 6. Calldata review succeeds afterward and returns fresh commitment
+      const review = await projectTokenizeCalldataReview(reprepared);
+      expect(review.txId).toBe("brickken-fresh-tx-id-42");
+      expect(review.calldataCommitment).toBe(await sha256Utf8(freshCalldata));
+    });
+
+    it("reprepareOperation handles definite Brickken refusal by transitioning to REJECTED/FAILED", async () => {
+      const mockPrepareTokenization = vi.fn().mockResolvedValue({
+        ok: false,
+        error: {
+          code: "AUTHENTICATION_REJECTED",
+          message: "API key unauthorized",
+        },
+      });
+
+      const h = createHarness({
+        brickkenPrepare: {
+          prepareTokenization: mockPrepareTokenization,
+          prepareWhitelist: vi.fn(),
+          prepareMint: vi.fn(),
+        },
+        writeGate: createPreparationOnlyBrickkenWriteGate(true),
+      });
+
+      const expiredCalldata = createValidTokenizeCalldata(1000000000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      const staleRes = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      const staleRun = staleRes.run as ExecutionRunV4;
+
+      await expect(
+        h.v4.reprepareOperation(staleRun.id, staleRun.revision),
+      ).rejects.toThrow(OrchestrationError);
+
+      // Verify run is FAILED/REJECTED, never left in REPREPARE_INTENT
+      const updated = (await h.repository.getById(staleRun.id)) as ExecutionRunV4;
+      expect(updated.status).toBe("FAILED");
+      expect(updated.terminalOutcome).toBe("FAILED");
+      expect(updated.operations[0].stage).toBe("REJECTED");
+      expect(updated.operations[0].preparationAttempts[1].state).toBe("REFUSED");
+    });
+
+    it("reprepareOperation handles ambiguous Brickken error by transitioning to PREPARE_UNKNOWN/RECONCILIATION_REQUIRED", async () => {
+      const mockPrepareTokenization = vi.fn().mockResolvedValue({
+        ok: false,
+        error: {
+          code: "UPSTREAM_SERVER_ERROR",
+          message: "Brickken 502 Bad Gateway",
+        },
+      });
+
+      const h = createHarness({
+        brickkenPrepare: {
+          prepareTokenization: mockPrepareTokenization,
+          prepareWhitelist: vi.fn(),
+          prepareMint: vi.fn(),
+        },
+        writeGate: createPreparationOnlyBrickkenWriteGate(true),
+      });
+
+      const expiredCalldata = createValidTokenizeCalldata(1000000000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      const staleRes = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      const staleRun = staleRes.run as ExecutionRunV4;
+
+      await expect(
+        h.v4.reprepareOperation(staleRun.id, staleRun.revision),
+      ).rejects.toThrow(OrchestrationError);
+
+      // Verify run is RECONCILIATION_REQUIRED/PREPARE_UNKNOWN, never left in REPREPARE_INTENT
+      const updated = (await h.repository.getById(staleRun.id)) as ExecutionRunV4;
+      expect(updated.status).toBe("RECONCILIATION_REQUIRED");
+      expect(updated.operations[0].stage).toBe("PREPARE_UNKNOWN");
+      expect(updated.operations[0].preparationAttempts[1].state).toBe("PREPARE_UNKNOWN");
+    });
+
+    it("reprepareOperation rejects CAS conflict when revision does not match", async () => {
+      const h = createHarness();
+      const expiredCalldata = createValidTokenizeCalldata(1000000000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      const staleRes = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      const staleRun = staleRes.run as ExecutionRunV4;
+
+      await expect(
+        h.v4.reprepareOperation(staleRun.id, staleRun.revision - 1),
+      ).rejects.toThrow(RepositoryRevisionConflictError);
+    });
+
+    it("reprepareOperation blocks repreparation if write gate is disabled", async () => {
+      const h = createHarness({
+        writeGate: createPreparationOnlyBrickkenWriteGate(false),
+      });
+      const expiredCalldata = createValidTokenizeCalldata(1000000000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      const staleRes = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      const staleRun = staleRes.run as ExecutionRunV4;
+
+      await expect(
+        h.v4.reprepareOperation(staleRun.id, staleRun.revision),
+      ).rejects.toThrow(BrickkenWritesDisabledError);
     });
   });
 
