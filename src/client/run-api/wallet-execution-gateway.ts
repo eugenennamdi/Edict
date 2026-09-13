@@ -36,6 +36,7 @@ const unknownInputSchema = bindingSchema.extend({
 export type WalletExecutionGatewayErrorCode =
   | "EXECUTION_AUTHORIZATION_UNAVAILABLE"
   | "AUTHORIZATION_POLICY_REFUSED"
+  | "FRESHNESS_CHECK_FAILED"
   | "REVISION_CONFLICT"
   | "AUTHORIZATION_RESPONSE_UNKNOWN"
   | "MALFORMED_RESPONSE"
@@ -147,6 +148,11 @@ async function post(
       response.status === 403 &&
       isErrorCode(raw, "AUTHORIZATION_POLICY_REFUSED")
     ) throw new WalletExecutionGatewayError("AUTHORIZATION_POLICY_REFUSED");
+    if (
+      authorizationRequest &&
+      response.status === 503 &&
+      isErrorCode(raw, "FRESHNESS_CHECK_FAILED")
+    ) throw new WalletExecutionGatewayError("FRESHNESS_CHECK_FAILED");
     if (response.status === 409 && isErrorCode(raw, "REVISION_CONFLICT")) {
       throw new WalletExecutionGatewayError("REVISION_CONFLICT");
     }

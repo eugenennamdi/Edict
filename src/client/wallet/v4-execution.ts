@@ -96,13 +96,15 @@ export async function executeSendAuthorizedEnvelopeFromUserAction(input: {
       ? "EXECUTION_AUTHORIZATION_UNAVAILABLE"
       : error.code === "AUTHORIZATION_POLICY_REFUSED"
         ? "SEMANTIC_POLICY_REFUSED"
-        : error.code === "REVISION_CONFLICT"
-          ? "AUTHORIZATION_STATE_CHANGED"
-          : error.code === "AUTHORIZATION_RESPONSE_UNKNOWN"
-            ? "AUTHORIZATION_RESPONSE_UNKNOWN"
-            : error.code === "MALFORMED_RESPONSE"
-              ? "AUTHORIZATION_RESPONSE_MALFORMED"
-              : "AUTHORIZATION_REQUEST_REFUSED";
+        : error.code === "FRESHNESS_CHECK_FAILED"
+          ? "FRESHNESS_CHECK_FAILED"
+          : error.code === "REVISION_CONFLICT"
+            ? "AUTHORIZATION_STATE_CHANGED"
+            : error.code === "AUTHORIZATION_RESPONSE_UNKNOWN"
+              ? "AUTHORIZATION_RESPONSE_UNKNOWN"
+              : error.code === "MALFORMED_RESPONSE"
+                ? "AUTHORIZATION_RESPONSE_MALFORMED"
+                : "AUTHORIZATION_REQUEST_REFUSED";
     throw new WalletBoundaryError(code);
   }
 

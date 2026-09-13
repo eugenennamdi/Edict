@@ -7,6 +7,7 @@ export type WalletExecutionViewState =
   | "READY"
   | "AUTHORIZATION_UNAVAILABLE"
   | "AUTHORIZATION_POLICY_REFUSED"
+  | "FRESHNESS_CHECK_FAILED"
   | "DURABLE_REFRESH_REQUIRED"
   | "PROMPT_IN_PROGRESS"
   | "HASH_RECORDED"
@@ -24,6 +25,7 @@ export type WalletExecutionUiEvent =
   | Readonly<{ type: "START" }>
   | Readonly<{ type: "AUTHORIZATION_UNAVAILABLE" }>
   | Readonly<{ type: "AUTHORIZATION_POLICY_REFUSED" }>
+  | Readonly<{ type: "FRESHNESS_CHECK_FAILED" }>
   | Readonly<{ type: "REFRESH_REQUIRED" }>
   | Readonly<{ type: "AMBIGUOUS" }>
   | Readonly<{ type: "HASH_RECORDED" }>
@@ -45,6 +47,12 @@ export function classifyWalletExecutionFailure(code: string): Readonly<{
   if (code === "SEMANTIC_POLICY_REFUSED") {
     return Object.freeze({
       event: Object.freeze({ type: "AUTHORIZATION_POLICY_REFUSED" }),
+      refresh: false,
+    });
+  }
+  if (code === "FRESHNESS_CHECK_FAILED") {
+    return Object.freeze({
+      event: Object.freeze({ type: "FRESHNESS_CHECK_FAILED" }),
       refresh: false,
     });
   }
@@ -87,6 +95,9 @@ export function reduceWalletExecutionUi(
   }
   if (event.type === "AUTHORIZATION_POLICY_REFUSED") {
     return Object.freeze({ state: "AUTHORIZATION_POLICY_REFUSED", locked: true, inProgress: false });
+  }
+  if (event.type === "FRESHNESS_CHECK_FAILED") {
+    return Object.freeze({ state: "FRESHNESS_CHECK_FAILED", locked: true, inProgress: false });
   }
   if (event.type === "REFRESH_REQUIRED") {
     return Object.freeze({ state: "DURABLE_REFRESH_REQUIRED", locked: true, inProgress: false });

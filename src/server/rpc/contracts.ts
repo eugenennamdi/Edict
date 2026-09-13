@@ -164,7 +164,7 @@ export const rawRpcReceiptSchema = z.strictObject({
   }
 });
 
-export const rawRpcBlockSchema = z.strictObject({
+export const rawRpcBlockSchema = z.object({
   number: rpcQuantitySchema,
   hash: rpcHash32Schema,
   parentHash: rpcHash32Schema,
@@ -185,6 +185,13 @@ export const rawRpcBlockSchema = z.strictObject({
   timestamp: z.string().optional(),
   transactions: z.array(z.unknown()).optional(),
   uncles: z.array(z.unknown()).optional(),
+  mixHash: z.string().optional(),
+  withdrawalsRoot: rpcHash32Schema.optional(),
+  blobGasUsed: rpcQuantitySchema.optional(),
+  excessBlobGas: rpcQuantitySchema.optional(),
+  parentBeaconBlockRoot: rpcHash32Schema.optional(),
+  requestsHash: rpcHash32Schema.optional(),
+  withdrawals: z.array(z.unknown()).optional(),
 });
 
 /**

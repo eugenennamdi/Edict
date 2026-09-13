@@ -23,6 +23,8 @@ describe("wallet execution UI composition", () => {
       "Execution authorization unavailable",
       "TOKENIZE authorization refused",
       "This TOKENIZE run is not authorized for wallet submission",
+      "Freshness unconfirmed",
+      "Server freshness check could not be completed. No wallet transaction request was made.",
       "Ready for wallet prompt",
       "Wallet prompt in progress",
       "Transaction hash recorded",
@@ -134,6 +136,19 @@ describe("wallet execution UI composition", () => {
     expect(classifyWalletExecutionFailure("SEMANTIC_POLICY_REFUSED")).toEqual({
       event: { type: "AUTHORIZATION_POLICY_REFUSED" },
       refresh: false,
+    });
+    expect(classifyWalletExecutionFailure("FRESHNESS_CHECK_FAILED")).toEqual({
+      event: { type: "FRESHNESS_CHECK_FAILED" },
+      refresh: false,
+    });
+    const ready = reduceWalletExecutionUi(initialWalletExecutionUiModel, {
+      type: "LOCAL_STATE",
+      state: "READY",
+    });
+    expect(reduceWalletExecutionUi(ready, { type: "FRESHNESS_CHECK_FAILED" })).toEqual({
+      state: "FRESHNESS_CHECK_FAILED",
+      locked: true,
+      inProgress: false,
     });
   });
 });

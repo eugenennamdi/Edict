@@ -85,6 +85,7 @@ describe("wallet execution HTTP gateway", () => {
   it.each([
     [403, { ok: false, error: { code: "EXECUTION_AUTHORIZATION_UNAVAILABLE" } }, "EXECUTION_AUTHORIZATION_UNAVAILABLE"],
     [403, { ok: false, error: { code: "AUTHORIZATION_POLICY_REFUSED" } }, "AUTHORIZATION_POLICY_REFUSED"],
+    [503, { ok: false, error: { code: "FRESHNESS_CHECK_FAILED" } }, "FRESHNESS_CHECK_FAILED"],
     [409, { ok: false, error: { code: "REVISION_CONFLICT" } }, "REVISION_CONFLICT"],
     [418, { ok: false, error: { code: "TEAPOT" } }, "SERVER_REJECTION"],
     [403, { ok: false, error: { code: "EXECUTION_AUTHORIZATION_UNAVAILABLE", detail: "leak" } }, "SERVER_REJECTION"],

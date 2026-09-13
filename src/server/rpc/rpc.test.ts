@@ -445,6 +445,91 @@ describe("Trusted Sepolia RPC client & contracts", () => {
     expect(() => rpcAddressSchema.parse("4444444444444444444444444444444444444444")).toThrow();
   });
 
+  it("8c. parses modern post-Merge/Cancun/Prague Sepolia blocks via getLatestBlock and rejects malformed consensus fields", async () => {
+    const modernSepoliaBlock = {
+      number: "0x762f01",
+      hash: BLOCK_HASH,
+      parentHash: `0x${"11".repeat(32)}`,
+      baseFeePerGas: "0x3e8",
+      gasLimit: "0x1c9c380",
+      gasUsed: "0x5208",
+      miner: TO,
+      timestamp: "0x66e44000",
+      transactions: [],
+      uncles: [],
+      // Post-Merge / Cancun fields
+      mixHash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      withdrawalsRoot: `0x${"22".repeat(32)}`,
+      blobGasUsed: "0x0",
+      excessBlobGas: "0x0",
+      parentBeaconBlockRoot: `0x${"33".repeat(32)}`,
+      requestsHash: `0x${"44".repeat(32)}`,
+      withdrawals: [],
+      // Future unknown fields (e.g. Prague/Electra)
+      futurePragueField: "0xdeadbeef",
+      extraConsensusMeta: { unknown: true },
+    };
+
+    const transport = new FakeRpcTransport()
+      .on("eth_chainId", () => "0xaa36a7")
+      .on("eth_getBlockByNumber", (params) => {
+        if (params?.[0] === "latest" && params?.[1] === false) {
+          return modernSepoliaBlock;
+        }
+        return null;
+      });
+
+    const client = createTrustedSepoliaRpcClient(transport);
+    const parsedBlock = await client.getLatestBlock();
+
+    expect(parsedBlock.number).toBe("0x762f01");
+    expect(parsedBlock.hash).toBe(BLOCK_HASH);
+    expect(parsedBlock.parentHash).toBe(`0x${"11".repeat(32)}`);
+    expect(parsedBlock.baseFeePerGas).toBe("0x3e8");
+
+    // Required fields fail closed when missing or malformed:
+    expect(() =>
+      rawRpcBlockSchema.parse({
+        ...modernSepoliaBlock,
+        number: "not-a-hex",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      rawRpcBlockSchema.parse({
+        ...modernSepoliaBlock,
+        hash: "0xshort",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      rawRpcBlockSchema.parse({
+        ...modernSepoliaBlock,
+        parentHash: "invalid-hash",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      rawRpcBlockSchema.parse({
+        ...modernSepoliaBlock,
+        baseFeePerGas: "not-a-quantity",
+      }),
+    ).toThrow();
+
+    // Missing required fields fail closed:
+    const withoutNumber = { ...modernSepoliaBlock };
+    delete (withoutNumber as Record<string, unknown>).number;
+    expect(() => rawRpcBlockSchema.parse(withoutNumber)).toThrow();
+
+    const withoutHash = { ...modernSepoliaBlock };
+    delete (withoutHash as Record<string, unknown>).hash;
+    expect(() => rawRpcBlockSchema.parse(withoutHash)).toThrow();
+
+    const withoutParentHash = { ...modernSepoliaBlock };
+    delete (withoutParentHash as Record<string, unknown>).parentHash;
+    expect(() => rawRpcBlockSchema.parse(withoutParentHash)).toThrow();
+  });
+
   it("9. rejects oversized calldata (> 131,072 bytes)", () => {
     const validCalldata = `0x${"ab".repeat(131_072)}`;
     expect(rpcCalldataSchema.parse(validCalldata)).toBe(validCalldata);

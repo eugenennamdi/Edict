@@ -172,6 +172,15 @@ describe("V4 browser wallet execution coordinator", () => {
       code: "SEMANTIC_POLICY_REFUSED",
     });
     expect(sends(refused.provider)).toHaveLength(0);
+
+    const freshnessFailed = harness();
+    vi.mocked(freshnessFailed.gateway.authorize).mockRejectedValueOnce(
+      new WalletExecutionGatewayError("FRESHNESS_CHECK_FAILED"),
+    );
+    await expect(execute(freshnessFailed)).rejects.toMatchObject({
+      code: "FRESHNESS_CHECK_FAILED",
+    });
+    expect(sends(freshnessFailed.provider)).toHaveLength(0);
   });
 
   it("fails a missing required signer before authority release or provider invocation", async () => {

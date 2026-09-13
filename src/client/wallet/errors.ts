@@ -23,6 +23,7 @@ export type WalletErrorCode =
   | "MALFORMED_PROMPT_ENVELOPE"
   | "WALLET_INTENT_HASH_MISMATCH"
   | "SEMANTIC_POLICY_REFUSED"
+  | "FRESHNESS_CHECK_FAILED"
   | "EXECUTION_AUTHORIZATION_UNAVAILABLE"
   | "AUTHORIZATION_STATE_CHANGED"
   | "AUTHORIZATION_RESPONSE_UNKNOWN"
@@ -62,6 +63,7 @@ const messages: Readonly<Record<WalletErrorCode, string>> = Object.freeze({
   MALFORMED_PROMPT_ENVELOPE: "The durable wallet prompt is malformed.",
   WALLET_INTENT_HASH_MISMATCH: "The durable wallet prompt failed its integrity check.",
   SEMANTIC_POLICY_REFUSED: "The transaction is not authorized by the semantic policy.",
+  FRESHNESS_CHECK_FAILED: "Server freshness check could not be completed. No wallet transaction request was made.",
   EXECUTION_AUTHORIZATION_UNAVAILABLE: "Execution authorization is unavailable.",
   AUTHORIZATION_STATE_CHANGED: "The durable run changed before authorization completed.",
   AUTHORIZATION_RESPONSE_UNKNOWN: "The authorization response was not received safely.",

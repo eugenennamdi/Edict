@@ -421,6 +421,23 @@ describe("V4 browser wallet run routes", () => {
     });
   });
 
+  it("maps freshness failure to 503 FRESHNESS_CHECK_FAILED distinctly from policy refusal", async () => {
+    const value = await setup();
+    vi.mocked(value.walletExecution.releaseSendAuthority).mockRejectedValueOnce(
+      new OrchestrationError("FRESHNESS_CHECK_FAILED"),
+    );
+    const failure = await value.call(
+      walletAuthorizationHandler,
+      "wallet-authorization",
+      { expectedRevision: 8 },
+    );
+    expect(failure.status).toBe(503);
+    expect(await failure.json()).toEqual({
+      ok: false,
+      error: { code: "FRESHNESS_CHECK_FAILED" },
+    });
+  });
+
   it("accepts only expectedRevision and never accepts browser-selected authority fields", async () => {
     const value = await setup();
     const success = await value.call(walletAuthorizationHandler, "wallet-authorization", { expectedRevision: 8 });

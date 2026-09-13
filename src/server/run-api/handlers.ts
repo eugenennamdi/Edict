@@ -54,6 +54,7 @@ type ErrorCode =
   | "READ_BACK_BINDING_UNRESOLVED"
   | "EXECUTION_AUTHORIZATION_UNAVAILABLE"
   | "AUTHORIZATION_POLICY_REFUSED"
+  | "FRESHNESS_CHECK_FAILED"
   | "SERVICE_UNAVAILABLE";
 
 function response(status: number, body: unknown, extraHeaders?: HeadersInit): Response {
@@ -151,6 +152,9 @@ function mapError(error: unknown): Response {
     }
     if (error.code === "AUTHORIZATION_POLICY_REFUSED") {
       return failure(403, "AUTHORIZATION_POLICY_REFUSED");
+    }
+    if (error.code === "FRESHNESS_CHECK_FAILED") {
+      return failure(503, "FRESHNESS_CHECK_FAILED");
     }
     if (error.code === "EXECUTION_INVARIANT_FAILED") return failure(409, "STATE_CONFLICT");
     if (error.code === "READ_BACK_BINDING_UNRESOLVED") {

@@ -543,7 +543,13 @@ export class ExecutionV4Orchestrator {
         expectedRevision,
       );
       if (!preflight.authorized) {
-        throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
+        if (preflight.reason === "FRESHNESS_CHECK_FAILED") {
+          throw new OrchestrationError("FRESHNESS_CHECK_FAILED");
+        }
+        if (preflight.reason === "AUTHORIZATION_DENIED") {
+          throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
+        }
+        throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
       }
       nonceEvidence = preflight.freshness?.nonceEvidence;
       semantic = preflight.semanticAuthorization;
@@ -603,7 +609,29 @@ export class ExecutionV4Orchestrator {
         currentRevision,
       );
       if (!preflight.authorized) {
-        throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
+        if (preflight.reason === "FRESHNESS_CHECK_FAILED") {
+          if (preflight.detail === "STALE_NONCE" && preflight.freshness?.nonceEvidence) {
+            const foundation: V4PreparationFoundationInput = {
+              attemptId: active.attemptId,
+              freshnessPolicyVersion: active.freshnessPolicyVersion,
+            };
+            const staleRun = await markPreparedStaleV4({
+              run: current,
+              kind,
+              foundation,
+              nonceEvidence: preflight.freshness.nonceEvidence,
+              id: this.#deps.ids.eventId(),
+              at: preflight.freshness.nonceEvidence.observedAt,
+            });
+            await this.#deps.repository.update(runId, currentRevision, staleRun);
+            throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+          }
+          throw new OrchestrationError("FRESHNESS_CHECK_FAILED");
+        }
+        if (preflight.reason === "AUTHORIZATION_DENIED") {
+          throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
+        }
+        throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
       }
       const foundation: V4PreparationFoundationInput = {
         attemptId: active.attemptId,
