@@ -34,6 +34,14 @@ const messages = {
   STATE_CONFLICT: "The run no longer allows this action. Refresh its current state.",
   PREPARATION_DISABLED: "Transaction preparation is not enabled in this environment.",
   PREPARATION_UNCONFIRMED: "Transaction preparation could not be confirmed. Refresh the record before taking another action.",
+  AUTHENTICATION_REJECTED: "Brickken rejected the sandbox credential.",
+  ENTITLEMENT_REJECTED: "Brickken rejected the licensed account entitlement.",
+  CREDITS_EXHAUSTED: "The Brickken sandbox account has no remaining credits.",
+  SIGNER_NOT_APPROVED: "Brickken rejected the requested signer.",
+  UPSTREAM_RATE_LIMITED: "Brickken rate-limited the preparation request.",
+  UPSTREAM_SERVER_ERROR: "Brickken returned a server error during preparation.",
+  PREPARATION_REFUSED: "Brickken refused the preparation request.",
+  INVALID_REQUEST: "Brickken rejected the preparation request as invalid.",
   SERVICE_UNAVAILABLE: "Edict is temporarily unavailable. Your displayed run has not been updated.",
   INVALID_RESPONSE: "Edict could not read the response. No result has been confirmed.",
   NETWORK_ERROR: "Edict could not confirm the request. Check your connection. If a run is displayed, refresh it before trying again.",
@@ -183,6 +191,9 @@ async function request(transport: Transport, path: string, body?: unknown): Prom
     const parsed = z.object({ ok: z.literal(false), error: z.object({ code: z.enum([
       "API_DISABLED", "BAD_REQUEST", "FORBIDDEN", "NOT_FOUND", "REVISION_CONFLICT", "STATE_CONFLICT", "SERVICE_UNAVAILABLE",
       "PREPARATION_DISABLED", "PREPARATION_UNCONFIRMED",
+      "AUTHENTICATION_REJECTED", "ENTITLEMENT_REJECTED", "CREDITS_EXHAUSTED",
+      "INVALID_REQUEST", "SIGNER_NOT_APPROVED", "UPSTREAM_RATE_LIMITED", "UPSTREAM_SERVER_ERROR",
+      "PREPARATION_REFUSED",
     ]) }) }).safeParse(json);
     const issues = issuesSchema.safeParse((json as { error?: { issues?: unknown } })?.error?.issues);
     throw new PlanningError(parsed.success ? parsed.data.error.code : "INVALID_RESPONSE",

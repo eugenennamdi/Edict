@@ -7,6 +7,7 @@ import {
 } from "@/shared/wallet";
 import type { PublicExecutionPreparation } from "@/shared/run";
 import type { ExecutionRun, WriteOperation } from "../execution/types";
+import type { PreparationFailureCode } from "../execution/types";
 import { OrchestrationError } from "./errors";
 
 function exactApprovedTokenization(run: ExecutionRun): WriteOperation | null {
@@ -99,6 +100,7 @@ export async function deriveExecutionPreparationProjection(
   if (operation === null) return null;
 
   let preparationStatus: PublicExecutionPreparation["preparationStatus"];
+  let preparationFailureCode: PreparationFailureCode | null = null;
   let transactionReview: PreparedTransactionReviewV1 | null = null;
   if (run.status === "PREPARING" && operation.stage === "NOT_STARTED") {
     preparationStatus = "READY_FOR_PREPARATION";
@@ -112,6 +114,8 @@ export async function deriveExecutionPreparationProjection(
     operation.stage === "PREPARE_UNKNOWN"
   ) {
     preparationStatus = "PREPARATION_UNCONFIRMED";
+    preparationFailureCode = safePreparationFailureCode(operation.brickkenError) ??
+      "PREPARATION_UNCONFIRMED";
   } else if (
     run.status === "FAILED" &&
     run.terminalOutcome === "FAILED" &&
@@ -122,6 +126,8 @@ export async function deriveExecutionPreparationProjection(
     // PREPARE_UNKNOWN supports immutable V1–V3 records written before
     // definite preparation refusals were represented by REJECTED.
     preparationStatus = "PREPARATION_FAILED";
+    preparationFailureCode = safePreparationFailureCode(operation.brickkenError) ??
+      "PREPARATION_REFUSED";
   } else {
     return null;
   }
@@ -135,6 +141,25 @@ export async function deriveExecutionPreparationProjection(
       name: "Create tokenization",
     }),
     preparationStatus,
+    preparationFailureCode,
     transactionReview,
   });
+}
+
+const PREPARATION_FAILURE_CODES = new Set<PreparationFailureCode>([
+  "AUTHENTICATION_REJECTED",
+  "ENTITLEMENT_REJECTED",
+  "CREDITS_EXHAUSTED",
+  "INVALID_REQUEST",
+  "SIGNER_NOT_APPROVED",
+  "UPSTREAM_RATE_LIMITED",
+  "UPSTREAM_SERVER_ERROR",
+  "PREPARATION_REFUSED",
+  "PREPARATION_UNCONFIRMED",
+]);
+
+function safePreparationFailureCode(value: string | null): PreparationFailureCode | null {
+  return value !== null && PREPARATION_FAILURE_CODES.has(value as PreparationFailureCode)
+    ? value as PreparationFailureCode
+    : null;
 }

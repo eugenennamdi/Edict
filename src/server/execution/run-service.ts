@@ -20,6 +20,7 @@ import type {
   IsoUtcTimestamp,
   OperationKind,
   ApprovalProofV1,
+  PreparationFailureCode,
   WriteOperation,
 } from "./types";
 
@@ -191,21 +192,33 @@ export class ExecutionRunService {
     }));
   }
 
-  async recordPrepareUnknown(runId: string, expectedRevision: number, operationKind: OperationKind): Promise<ExecutionRunV1> {
+  async recordPrepareUnknown(
+    runId: string,
+    expectedRevision: number,
+    operationKind: OperationKind,
+    failureCode: PreparationFailureCode = "PREPARATION_UNCONFIRMED",
+  ): Promise<ExecutionRunV1> {
     return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_PREPARE_UNKNOWN",
       id,
       at,
       operationKind,
+      failureCode,
     }));
   }
 
-  async recordPrepareFailure(runId: string, expectedRevision: number, operationKind: OperationKind): Promise<ExecutionRunV1> {
+  async recordPrepareFailure(
+    runId: string,
+    expectedRevision: number,
+    operationKind: OperationKind,
+    failureCode: PreparationFailureCode = "PREPARATION_REFUSED",
+  ): Promise<ExecutionRunV1> {
     return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_PREPARE_FAILURE",
       id,
       at,
       operationKind,
+      failureCode,
     }));
   }
 

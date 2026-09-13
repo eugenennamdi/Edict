@@ -7,12 +7,14 @@ import type {
   ConfirmedWhitelistEvidence,
   PreparedOperation,
 } from "../brickken/types";
+import type { BrickkenAdapterErrorCode } from "../brickken/errors";
 import { normalizeSepoliaChainId } from "../brickken/prepared-transaction";
 import { IllegalStateTransitionError, RepositoryRevisionConflictError } from "../execution/errors";
 import type { ExecutionRunRepository } from "../execution/repository";
 import { ExecutionRunService } from "../execution/run-service";
 import { persistedConfirmationPair } from "../execution/transitions";
 import type { ExecutionRun, OperationKind } from "../execution/types";
+import type { PreparationFailureCode } from "../execution/types";
 import { OrchestrationError } from "./errors";
 import { nextPreparationOperation } from "./preparation-review";
 import type { BrickkenWriteGate } from "./write-gate";
@@ -22,6 +24,7 @@ export interface ExecutionOrchestratorDependencies {
   readonly runs: ExecutionRunService;
   readonly brickken: BrickkenServerAdapter;
   readonly writeGate: BrickkenWriteGate;
+  readonly brickkenTokenizerEmail: string;
 }
 
 export type WalletResult =
@@ -92,9 +95,26 @@ function definitePrepareRefusal<T>(result: AdapterResult<T>): boolean {
       "CREDITS_EXHAUSTED",
       "ENTITLEMENT_REJECTED",
       "INVALID_REQUEST",
+      "SIGNER_NOT_APPROVED",
+      "UPSTREAM_RATE_LIMITED",
       "MINT_POLICY_VIOLATION",
     ].includes(result.error.code)
   );
+}
+
+function preparationFailureCode(errorCode: BrickkenAdapterErrorCode): PreparationFailureCode {
+  switch (errorCode) {
+    case "AUTHENTICATION_REJECTED":
+    case "ENTITLEMENT_REJECTED":
+    case "CREDITS_EXHAUSTED":
+    case "INVALID_REQUEST":
+    case "SIGNER_NOT_APPROVED":
+    case "UPSTREAM_RATE_LIMITED":
+    case "UPSTREAM_SERVER_ERROR":
+      return errorCode;
+    default:
+      return "PREPARATION_UNCONFIRMED";
+  }
 }
 
 function normalizeObservedChain(value: string | null): "11155111" | null {
@@ -142,7 +162,6 @@ export class ExecutionOrchestrator {
     if (kind === "TOKENIZE") {
       result = await this.#deps.brickken.prepareTokenization({
         signerAddress: current.requiredSigner.walletAddress,
-        tokenizerEmail: manifest.tokenizer.email,
         name: manifest.asset.name,
         tokenSymbol: manifest.asset.symbol,
         supplyCap: manifest.asset.supplyCap,
@@ -181,12 +200,13 @@ export class ExecutionOrchestrator {
     }
 
     if (!result.ok) {
+      const failureCode = preparationFailureCode(result.error.code);
       if (definitePrepareRefusal(result)) {
-        await this.#deps.runs.recordPrepareFailure(runId, intent.revision, kind);
+        await this.#deps.runs.recordPrepareFailure(runId, intent.revision, kind, failureCode);
       } else {
-        await this.#deps.runs.recordPrepareUnknown(runId, intent.revision, kind);
+        await this.#deps.runs.recordPrepareUnknown(runId, intent.revision, kind, failureCode);
       }
-      throw new OrchestrationError("BRICKKEN_OPERATION_FAILED");
+      throw new OrchestrationError(failureCode);
     }
 
     try {
@@ -197,12 +217,17 @@ export class ExecutionOrchestrator {
       });
     } catch (error) {
       try {
-        await this.#deps.runs.recordPrepareUnknown(runId, intent.revision, kind);
+        await this.#deps.runs.recordPrepareUnknown(
+          runId,
+          intent.revision,
+          kind,
+          "PREPARATION_UNCONFIRMED",
+        );
       } catch {
         // The intent remains durable. A later operator must reconcile it.
       }
       if (error instanceof OrchestrationError) throw error;
-      throw new OrchestrationError("BRICKKEN_OPERATION_FAILED");
+      throw new OrchestrationError("PREPARATION_UNCONFIRMED");
     }
   }
 
@@ -335,12 +360,12 @@ export class ExecutionOrchestrator {
         observedName === manifest.asset.name &&
         token.value.tokenSymbol === manifest.asset.symbol &&
         token.value.tokenType?.toUpperCase() === manifest.asset.tokenType &&
-        token.value.tokenizerEmail?.toLowerCase() === manifest.tokenizer.email &&
+        token.value.tokenizerEmail?.toLowerCase() === this.#deps.brickkenTokenizerEmail &&
         sameAddress(token.value.companyWalletAddress, manifest.tokenizer.walletAddress) &&
         token.value.maxTokenSupply === manifest.asset.supplyCap &&
         normalizeObservedChain(token.value.paymentChainId) === current.chainId &&
         sameAddress(tokenizer.value.companyWalletAddress, manifest.tokenizer.walletAddress) &&
-        tokenizer.value.email?.toLowerCase() === manifest.tokenizer.email &&
+        tokenizer.value.email?.toLowerCase() === this.#deps.brickkenTokenizerEmail &&
         normalizeObservedChain(tokenizer.value.chainId) === current.chainId;
       read = "TOKEN_INFO+TOKENIZER_INFO";
     } else if (kind === "WHITELIST") {

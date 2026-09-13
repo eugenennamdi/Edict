@@ -5,6 +5,7 @@ import {
   AuthError,
   Brickken,
   CreditsExhaustedError,
+  RateLimitError,
   UnauthorizedTokenSymbolError,
   ValidationError,
 } from "brickken-sdk";
@@ -70,17 +71,35 @@ function mapCaughtError(error: unknown, secret?: string): BrickkenAdapterError {
   if (error instanceof Error && error.message.includes("STATUS_CONTRADICTION")) {
     return safeErrorMessage("STATUS_CONTRADICTION", secret);
   }
-  if (error instanceof AuthError) return safeErrorMessage("AUTHENTICATION_REJECTED", secret);
+  if (error instanceof AuthError) {
+    if (/signer/i.test(error.message) && /approv|allow|authoriz/i.test(error.message)) {
+      return safeErrorMessage("SIGNER_NOT_APPROVED", secret);
+    }
+    return safeErrorMessage("AUTHENTICATION_REJECTED", secret);
+  }
   if (error instanceof CreditsExhaustedError) return safeErrorMessage("CREDITS_EXHAUSTED", secret);
   if (error instanceof UnauthorizedTokenSymbolError) {
     return safeErrorMessage("ENTITLEMENT_REJECTED", secret);
   }
   if (error instanceof ValidationError) return safeErrorMessage("INVALID_REQUEST", secret);
-  if (error instanceof ApiError && error.status === 400) {
+  if (error instanceof RateLimitError) return safeErrorMessage("UPSTREAM_RATE_LIMITED", secret);
+  if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+    if (/signer/i.test(error.message) && /approv|allow|authoriz/i.test(error.message)) {
+      return safeErrorMessage("SIGNER_NOT_APPROVED", secret);
+    }
+    return safeErrorMessage("AUTHENTICATION_REJECTED", secret);
+  }
+  if (error instanceof ApiError && (error.status === 400 || error.status === 422)) {
+    if (/signer/i.test(error.message) && /approv|allow|authoriz/i.test(error.message)) {
+      return safeErrorMessage("SIGNER_NOT_APPROVED", secret);
+    }
     if (/licen[cs]e|subscription|entitlement/i.test(error.message)) {
       return safeErrorMessage("ENTITLEMENT_REJECTED", secret);
     }
     return safeErrorMessage("INVALID_REQUEST", secret);
+  }
+  if (error instanceof ApiError && error.status !== undefined && error.status >= 500) {
+    return safeErrorMessage("UPSTREAM_SERVER_ERROR", secret);
   }
   return safeErrorMessage("INVALID_EXTERNAL_RESPONSE", secret);
 }
@@ -126,13 +145,17 @@ export function createBrickkenServerAdapter(
   };
 
   const withClient = async <T>(
-    operation: (client: Brickken, apiKey: string) => Promise<AdapterResult<T>>,
+    operation: (
+      client: Brickken,
+      apiKey: string,
+      config: BrickkenRuntimeConfig,
+    ) => Promise<AdapterResult<T>>,
   ): Promise<AdapterResult<T>> => {
     const config = runtimeConfig();
     const client = resolveClient(config);
     if (!client.ok) return client;
     try {
-      const result = await operation(client.value, config.apiKey ?? "");
+      const result = await operation(client.value, config.apiKey ?? "", config);
       assertNoSecret(result, config.apiKey);
       return result;
     } catch (error) {
@@ -148,11 +171,12 @@ export function createBrickkenServerAdapter(
 
   return {
     async prepareTokenization(input) {
-      return withClient(async (client, apiKey) => {
+      return withClient(async (client, apiKey, config) => {
+        if (!config.tokenizerEmail) return fail("CONFIGURATION_MISSING", apiKey);
         const result = await client.tokenization.create(
           {
             chainId: SEPOLIA_CHAIN_ID,
-            tokenizerEmail: input.tokenizerEmail,
+            tokenizerEmail: config.tokenizerEmail,
             name: input.name,
             tokenSymbol: input.tokenSymbol,
             tokenType: "RWA_TOKEN",
@@ -196,7 +220,11 @@ export function createBrickkenServerAdapter(
       ) {
         return fail("MINT_POLICY_VIOLATION");
       }
-      return withClient(async (client, apiKey) => {
+      return withClient(async (client, apiKey, config) => {
+        if (!config.tokenizerEmail) return fail("CONFIGURATION_MISSING", apiKey);
+        if (input.investorEmail.toLowerCase() === config.tokenizerEmail) {
+          return fail("INVALID_REQUEST", apiKey);
+        }
         const result = await client.tokenization.mint(
           {
             chainId: SEPOLIA_CHAIN_ID,

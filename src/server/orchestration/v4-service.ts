@@ -172,6 +172,7 @@ export interface ExecutionV4OrchestratorDependencies {
     BrickkenServerAdapter,
     "getTokenInfo" | "getTokenizerInfo"
   >;
+  readonly brickkenTokenizerEmail?: string;
 }
 
 export type PreflightWalletAuthorizationResult =
@@ -1784,6 +1785,10 @@ export class ExecutionV4Orchestrator {
 
     const token = tokenResult.value;
     const tokenizer = tokenizerResult.value;
+    const expectedTokenizerEmail = this.#deps.brickkenTokenizerEmail;
+    if (expectedTokenizerEmail === undefined) {
+      throw new OrchestrationError("READ_BACK_FAILED");
+    }
     const expectedWallet = current.requiredSigner.walletAddress.toLowerCase();
     const observedWallet = tokenizer.companyWalletAddress.toLowerCase();
     const tokenWallet = token.companyWalletAddress?.toLowerCase() ?? null;
@@ -1792,10 +1797,10 @@ export class ExecutionV4Orchestrator {
       tokenizer.chainId !== current.chainId ||
       tokenizer.tokenAddress.toLowerCase() !== eventEvidence.tokenAddress ||
       observedWallet !== expectedWallet ||
-      tokenizer.email?.toLowerCase() !== current.manifest.tokenizer.email ||
+      tokenizer.email?.toLowerCase() !== expectedTokenizerEmail ||
       (tokenWallet !== null && tokenWallet !== expectedWallet) ||
       (token.tokenizerEmail !== null &&
-        token.tokenizerEmail.toLowerCase() !== current.manifest.tokenizer.email) ||
+        token.tokenizerEmail.toLowerCase() !== expectedTokenizerEmail) ||
       (token.name !== null && token.name !== current.manifest.asset.name) ||
       (token.tokenName !== null && token.tokenName !== current.manifest.asset.name) ||
       (token.tokenType !== null && token.tokenType !== current.manifest.asset.tokenType) ||

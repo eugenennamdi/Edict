@@ -60,6 +60,17 @@ export type EventActor = "USER" | "SERVER" | "WALLET" | "BRICKKEN";
 
 export type BrickkenConfirmationStatus = "pending" | "success" | "rejected";
 
+export type PreparationFailureCode =
+  | "AUTHENTICATION_REJECTED"
+  | "ENTITLEMENT_REJECTED"
+  | "CREDITS_EXHAUSTED"
+  | "INVALID_REQUEST"
+  | "SIGNER_NOT_APPROVED"
+  | "UPSTREAM_RATE_LIMITED"
+  | "UPSTREAM_SERVER_ERROR"
+  | "PREPARATION_REFUSED"
+  | "PREPARATION_UNCONFIRMED";
+
 export interface ExecutionManifestSnapshot {
   readonly schemaVersion: "1.0";
   readonly environment: "sandbox";
@@ -362,12 +373,14 @@ export type ExecutionRunEvent =
       readonly id: string;
       readonly at: IsoUtcTimestamp;
       readonly operationKind: OperationKind;
+      readonly failureCode?: PreparationFailureCode;
     }
   | {
       readonly type: "RECORD_PREPARE_FAILURE";
       readonly id: string;
       readonly at: IsoUtcTimestamp;
       readonly operationKind: OperationKind;
+      readonly failureCode?: PreparationFailureCode;
     }
   | {
       readonly type: "RECORD_WALLET_PROMPT";

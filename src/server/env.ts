@@ -8,6 +8,7 @@ import "server-only";
 
 export interface ServerEnv {
   readonly BRICKKEN_API_KEY?: string;
+  readonly BRICKKEN_TOKENIZER_EMAIL?: string;
   readonly BRICKKEN_BASE_URL: string;
   readonly BRICKKEN_CHAIN_ID: string;
   readonly DATABASE_URL?: string;
@@ -36,10 +37,14 @@ export function getServerEnv(): ServerEnv {
     if (key.startsWith("NEXT_PUBLIC_EDICT_TOKENIZE_")) {
       throw new Error("Security violation: TOKENIZE execution policy must remain server-only.");
     }
+    if (key === "NEXT_PUBLIC_BRICKKEN_TOKENIZER_EMAIL") {
+      throw new Error("Security violation: Brickken account identity must remain server-only.");
+    }
   }
 
   return {
     BRICKKEN_API_KEY: process.env.BRICKKEN_API_KEY || undefined,
+    BRICKKEN_TOKENIZER_EMAIL: process.env.BRICKKEN_TOKENIZER_EMAIL || undefined,
     BRICKKEN_BASE_URL: process.env.BRICKKEN_BASE_URL || "https://api.sandbox.brickken.com",
     BRICKKEN_CHAIN_ID: process.env.BRICKKEN_CHAIN_ID || "11155111",
     DATABASE_URL: process.env.DATABASE_URL || undefined,

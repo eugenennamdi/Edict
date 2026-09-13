@@ -23,6 +23,7 @@ Phase 3 wire-contract audit: [`BRICKKEN_WIRE_CONTRACT_AUDIT.md`](BRICKKEN_WIRE_C
 | VERIFIED | The supported sandbox targets requested by Brickken's key-request workflow include Sepolia, Polygon Amoy, and Base Sepolia. [Request an API key](https://docs.brickken.com/get-started/request-api-key) |
 | DECISION | Use Ethereum Sepolia for the MVP: decimal chain ID `11155111`, accepted/recommended REST hex form `aa36a7`. Tokenization examples and prepared responses explicitly use this network. [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization) |
 | DECISION | The API key exists only in the Next.js server runtime or deployment secret store and is attached only inside server-only Brickken adapters. |
+| DECISION | `BRICKKEN_TOKENIZER_EMAIL` is the server-only licensed sandbox account identity used for `newTokenization` account resolution and token/tokenizer read-back. The manifest tokenizer email remains the project/issuer contact and cannot alter the Brickken account identity. Missing, invalid, non-lowercase, or whitespace-padded configuration blocks preparation before fetch. |
 | DECISION | Edict never uses x402, production endpoints, `brickken-relayed`, private-key adapters, or on-behalf endpoints in the MVP. |
 
 ## Safe public connectivity check
@@ -121,6 +122,8 @@ The sanitized adapter projection was:
 **VERIFIED** — Prepare with `POST /prepare-transactions` and `method: "newTokenization"`. Required fields on the current dedicated page are `method`, `chainId`, `signerAddress`, `tokenizerEmail`, `name`, and `tokenSymbol`. `tokenType`, `supplyCap`, `url`, `tokenizerAddress`, `paymentTokenAddress`, `preMints`, and `initialHolders` are optional. `name`, not `tokenName`, is accepted. [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization)
 
 **VERIFIED** — The current dedicated page says `tokenSymbol` must be 2–5 uppercase letters or numbers and unused; `tokenType` defaults to `EQUITY`; `tokenizerEmail` must identify an existing account with an active tokenization license. [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization)
+
+**DECISION — account identity boundary, 2026-09-13** — Because the documented field identifies the licensed Brickken account and the API key is scoped to tokenizations under that account, Edict supplies `tokenizerEmail` only from server-owned `BRICKKEN_TOKENIZER_EMAIL`. The separately approved manifest email is retained as project/issuer data, but never enters `/prepare-transactions` as account authority. The historical failed run used its manifest email directly; this boundary removes that coupling for future runs.
 
 **VERIFIED** — Current dedicated and unified prepare OpenAPI both say `tokenSymbol` must be 2–5 uppercase letters or numbers. The Hello World walkthrough also generates a 2–5 character symbol. The Phase 0 3–5 sentence is not present in the official pages inspected on 2026-09-03. [newTokenization](https://docs.brickken.com/api-reference/endpoint/prepare-newTokenization) [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create) [API Hello World](https://docs.brickken.com/get-started/build-programme/api-hello-world)
 

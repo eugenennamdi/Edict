@@ -53,14 +53,14 @@ The selected action receives only this credential allowlist:
 | Action | Allowed server-side variables |
 | --- | --- |
 | `BRICKKEN_READ` | `BRICKKEN_API_KEY` |
-| `BRICKKEN_PREPARE` | `DATABASE_URL`, `BRICKKEN_API_KEY` |
+| `BRICKKEN_PREPARE` | `DATABASE_URL`, `BRICKKEN_API_KEY`, `BRICKKEN_TOKENIZER_EMAIL` |
 | `WALLET_APPROVAL` | `DATABASE_URL` |
 | `WALLET_SEND` | `DATABASE_URL` |
 | `RPC_TRANSACTION_COMPARE` | `DATABASE_URL`, `EDICT_SEPOLIA_RPC_URL` |
 | `BRICKKEN_CONFIRM` | `DATABASE_URL`, `BRICKKEN_API_KEY` |
 | `BRICKKEN_POLL` | `DATABASE_URL`, `BRICKKEN_API_KEY` |
 | `RPC_FINALITY` | `DATABASE_URL`, `EDICT_SEPOLIA_RPC_URL` |
-| `BRICKKEN_READ_BACK` | `DATABASE_URL`, `BRICKKEN_API_KEY` |
+| `BRICKKEN_READ_BACK` | `DATABASE_URL`, `BRICKKEN_API_KEY`, `BRICKKEN_TOKENIZER_EMAIL` |
 
 There is no environment spread, environment dump, root environment-file loading or browser delivery. The `BRICKKEN_READ` runner copies only the listed non-secret harness settings and `BRICKKEN_API_KEY`, hard-codes its action and sandbox mode, and accepts no command arguments. It constructs neither the adapter nor its transport until the single-use Execute grant has passed and the executor has revalidated its narrowed configuration. API keys must be non-empty bounded visible ASCII without controls, CR/LF or surrounding whitespace. The static-output inventory is derived from the same CLI templates, HTML, response-body builders, header definitions and evidence builder used for emission. It includes raw values and serialized fixed fragments (including punctuation and adjacent fields); target-dependent fragments are checked again after configuration validation. Adding a response builder requires a preflight sample through a typed registry. The narrowed credential is checked against that inventory before bootstrap generation, runtime/page/server construction or server startup. A preflight collision is an internal terminal condition: stdout and stderr remain empty and startup exits nonzero with no fallback. The centralized writer rechecks every actual terminal write. Every application HTTP response, including unauthenticated HTML, merged default headers, cookies and server-level error fallbacks, uses the same final body/header collision guard. A late dynamic response collision stops the runtime and closes the connection without a fallback. Random tokens and observation timestamps cannot be preflighted before generation; they are checked before emission. Node/loader diagnostics and protocol framing are outside this application-output boundary.
 

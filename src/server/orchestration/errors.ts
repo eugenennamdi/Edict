@@ -7,7 +7,16 @@ export type OrchestrationErrorCode =
   | "READ_BACK_BINDING_UNRESOLVED"
   | "AUTHORIZATION_DENIED"
   | "CORRELATION_FAILED"
-  | "STATUS_CONTRADICTION";
+  | "STATUS_CONTRADICTION"
+  | "AUTHENTICATION_REJECTED"
+  | "ENTITLEMENT_REJECTED"
+  | "CREDITS_EXHAUSTED"
+  | "INVALID_REQUEST"
+  | "SIGNER_NOT_APPROVED"
+  | "UPSTREAM_RATE_LIMITED"
+  | "UPSTREAM_SERVER_ERROR"
+  | "PREPARATION_REFUSED"
+  | "PREPARATION_UNCONFIRMED";
 
 export class OrchestrationError extends Error {
   readonly code: OrchestrationErrorCode;
@@ -22,6 +31,15 @@ export class OrchestrationError extends Error {
       AUTHORIZATION_DENIED: "Semantic authorization denied execution of the requested operation.",
       CORRELATION_FAILED: "Brickken transaction correlation failed.",
       STATUS_CONTRADICTION: "Brickken status evidence contradicted durable execution identity.",
+      AUTHENTICATION_REJECTED: "Brickken rejected the sandbox credential.",
+      ENTITLEMENT_REJECTED: "Brickken rejected the licensed account entitlement.",
+      CREDITS_EXHAUSTED: "The Brickken sandbox account has no remaining credits.",
+      INVALID_REQUEST: "Brickken rejected the preparation request as invalid.",
+      SIGNER_NOT_APPROVED: "Brickken rejected the requested signer.",
+      UPSTREAM_RATE_LIMITED: "Brickken rate-limited the preparation request.",
+      UPSTREAM_SERVER_ERROR: "Brickken returned a server error during preparation.",
+      PREPARATION_REFUSED: "Brickken refused the preparation request.",
+      PREPARATION_UNCONFIRMED: "The preparation outcome could not be confirmed.",
     };
     super(messages[code]);
     this.name = "OrchestrationError";

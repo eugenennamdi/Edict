@@ -190,10 +190,12 @@ Brickken sandbox API ──► Ethereum Sepolia
 ## API-key handling
 
 - **DECISION** — Read `BRICKKEN_API_KEY` only in a module guarded by `server-only`; instantiate the SDK there and never serialize its configuration.
+- **DECISION** — Read the licensed sandbox account identity only from validated server-only `BRICKKEN_TOKENIZER_EMAIL`. The manifest tokenizer email is project/issuer data, cannot select Brickken account authority, and is not compared as the Brickken read-back account identity.
 - **DECISION** — Reject any base URL other than the exact sandbox allowlist at startup. Ignore client-supplied base URLs, headers, chain IDs, method names, and RPC URLs.
 - **DECISION** — Redact `x-api-key`, cookies, authorization-like headers, emails where unnecessary, and raw upstream bodies before structured logging. Store only fields required for audit and verification.
 - **DECISION** — Deployment configuration uses a secret manager. Local development uses an ignored `.env.local`; `.env.example` contains empty or visibly non-secret placeholders only.
 - **DECISION** — Add a build test that searches browser output and tracked files for the configured key value without printing that value.
+- **DECISION** — Preparation failures persist and publicly project only a bounded Edict category. Raw upstream bodies, prose, request payloads, credentials, and stack traces never enter the run; unclassifiable outcomes use `PREPARATION_UNCONFIRMED`.
 
 ## Explicit non-goals
 

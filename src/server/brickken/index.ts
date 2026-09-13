@@ -1,7 +1,13 @@
 import "server-only";
 
 export { createBrickkenServerAdapter } from "./adapter";
-export { getBrickkenServerConfig, SANDBOX_BASE_URL, SEPOLIA_CHAIN_ID } from "./config";
+export {
+  getBrickkenServerConfig,
+  parseBrickkenTokenizerEmail,
+  readBrickkenRuntimeConfig,
+  SANDBOX_BASE_URL,
+  SEPOLIA_CHAIN_ID,
+} from "./config";
 export { BrickkenAdapterError, type BrickkenAdapterErrorCode } from "./errors";
 export { parsePreparedOperation } from "./prepared-transaction";
 export {

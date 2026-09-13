@@ -102,6 +102,7 @@ async function failedPreparationProjection() {
     execution: {
       ...body.run.execution,
       preparationStatus: "PREPARATION_FAILED" as const,
+      preparationFailureCode: "ENTITLEMENT_REJECTED" as const,
       transactionReview: null,
     },
     operations: body.run.operations.map((operation, index) => index === 0

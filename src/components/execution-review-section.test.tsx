@@ -47,6 +47,7 @@ describe("execution preparation review UI", () => {
       execution: {
         ...unresolved.run.execution!,
         preparationStatus: "PREPARATION_FAILED" as const,
+        preparationFailureCode: "ENTITLEMENT_REJECTED" as const,
       },
     } };
     const html = renderToStaticMarkup(createElement(ExecutionReviewSection, {
@@ -58,6 +59,7 @@ describe("execution preparation review UI", () => {
     expect(html).toContain("Preparation failed");
     expect(html).toContain("No prepared transaction or wallet action was recorded");
     expect(html).toContain("do not retry preparation or promote it");
+    expect(html).toContain("ENTITLEMENT_REJECTED");
     expect(html).not.toContain("Prepare transaction for review");
   });
 

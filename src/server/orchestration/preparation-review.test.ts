@@ -80,18 +80,20 @@ describe("server-derived preparation review", () => {
     expect(failed.operations[0].stage).toBe("REJECTED");
     await expect(deriveExecutionPreparationProjection(failed)).resolves.toMatchObject({
       preparationStatus: "PREPARATION_FAILED",
+      preparationFailureCode: "PREPARATION_REFUSED",
       transactionReview: null,
     });
     const legacy = {
       ...failed,
       operations: [
-        { ...failed.operations[0], stage: "PREPARE_UNKNOWN" },
+        { ...failed.operations[0], stage: "PREPARE_UNKNOWN", brickkenError: null },
         failed.operations[1],
         failed.operations[2],
       ],
     } as ExecutionRun;
     await expect(deriveExecutionPreparationProjection(legacy)).resolves.toMatchObject({
       preparationStatus: "PREPARATION_FAILED",
+      preparationFailureCode: "PREPARATION_REFUSED",
     });
   });
 

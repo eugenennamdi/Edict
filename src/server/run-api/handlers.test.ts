@@ -689,6 +689,7 @@ describe("explicit next-operation preparation API", () => {
         runs: api.runs,
         brickken: brickken.value,
         writeGate: createPreparationOnlyBrickkenWriteGate(input.enabled ?? true),
+        brickkenTokenizerEmail: "tokenizer@example.com",
       }),
     };
     const options = { config, runtime: () => runtime };
@@ -753,10 +754,38 @@ describe("explicit next-operation preparation API", () => {
     const value = await setup({ adapter });
     const response = await value.prepare({ expectedRevision: value.approved.revision });
     expect(response.status).toBe(503);
-    expect(JSON.stringify(await response.json())).not.toContain(sensitive);
+    expect(await response.json()).toEqual({
+      ok: false,
+      error: { code: "PREPARATION_UNCONFIRMED" },
+    });
     const durable = await value.repository.getById(value.approved.id);
     expect(durable).toMatchObject({ status: "RECONCILIATION_REQUIRED" });
     expect(durable.operations[0].stage).toBe("PREPARE_UNKNOWN");
+    expect(durable.operations[0].brickkenError).toBe("PREPARATION_UNCONFIRMED");
+    expect(JSON.stringify(durable)).not.toContain(sensitive);
     expect(adapter.prepareTokenization).toHaveBeenCalledOnce();
+  });
+
+  it("returns and persists only a bounded definite refusal category", async () => {
+    const sensitive = "arbitrary Brickken prose that must never persist";
+    const adapter = preparingAdapter({
+      ok: false,
+      error: new BrickkenAdapterError("ENTITLEMENT_REJECTED", sensitive),
+    });
+    const value = await setup({ adapter });
+
+    const response = await value.prepare({ expectedRevision: value.approved.revision });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      ok: false,
+      error: { code: "ENTITLEMENT_REJECTED" },
+    });
+    const durable = await value.repository.getById(value.approved.id);
+    expect(durable.operations[0]).toMatchObject({
+      stage: "REJECTED",
+      brickkenError: "ENTITLEMENT_REJECTED",
+    });
+    expect(JSON.stringify(durable)).not.toContain(sensitive);
   });
 });

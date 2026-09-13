@@ -39,7 +39,6 @@ export type AdapterResult<T> =
 
 export interface PrepareTokenizationInput {
   readonly signerAddress: string;
-  readonly tokenizerEmail: string;
   readonly name: string;
   readonly tokenSymbol: string;
   readonly supplyCap: string;

@@ -212,7 +212,7 @@ class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo"
         tokenName: null,
         tokenSymbol: query.tokenSymbol,
         tokenType: "RWA_TOKEN",
-        tokenizerEmail: "tokenizer@example.com",
+        tokenizerEmail: "licensed-account@example.com",
         companyWalletAddress: TOKENIZER_ADDRESS,
         maxTokenSupply: "1000",
         paymentChainId: "11155111",
@@ -229,7 +229,7 @@ class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo"
         tokenAddress: this.tokenAddress,
         paymentTokenAddress: null,
         chainId: "11155111",
-        email: "tokenizer@example.com",
+        email: "licensed-account@example.com",
       },
     };
   }
@@ -289,7 +289,9 @@ function createHarness(options: { readonly readBack?: boolean } = {}) {
     semanticAuthorization: semanticAuth,
     brickkenCorrelationSender: correlationSender,
     brickkenStatusFetcher: statusFetcher,
-    ...(options.readBack ? { brickkenReadBack: readBack } : {}),
+    ...(options.readBack
+      ? { brickkenReadBack: readBack, brickkenTokenizerEmail: "licensed-account@example.com" }
+      : {}),
   });
 
   return {
@@ -2690,7 +2692,7 @@ describe("ExecutionV4Orchestrator", () => {
       expect(current.operations[2].stage).toBe("NOT_STARTED");
     });
 
-    it("persists only the exact receipt-derived token after every authority gate", async () => {
+    it("uses server-owned account email for read-back even when the manifest email differs", async () => {
       const h = createHarness({ readBack: true });
       const run = await setupFinalizedCorrelatedRun(h, "rejected");
       expect(run.phase).toBe("WHITELIST");
@@ -2700,6 +2702,7 @@ describe("ExecutionV4Orchestrator", () => {
         tokenizationTxHash: TX_HASH,
         tokenizerWalletAddress: TOKENIZER_ADDRESS,
       });
+      expect(run.manifest.tokenizer.email).toBe("tokenizer@example.com");
       expect(run.tokenIdentity?.readBackEvidenceHash).toMatch(/^sha256:[0-9a-f]{64}$/);
       expect(h.readBack.tokenCalls).toBe(1);
       expect(h.readBack.tokenizerCalls).toBe(1);

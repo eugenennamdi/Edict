@@ -275,7 +275,10 @@ function recordPrepareUnknown(
     replaceOperation(
       { ...run, status: "RECONCILIATION_REQUIRED" },
       kind,
-      { stage: "PREPARE_UNKNOWN" },
+      {
+        stage: "PREPARE_UNKNOWN",
+        brickkenError: event.failureCode ?? "PREPARATION_UNCONFIRMED",
+      },
     ),
     event,
     kind,
@@ -295,7 +298,7 @@ function recordPrepareFailure(
     replaceOperation(
       { ...run, status: "FAILED", terminalOutcome: "FAILED" },
       kind,
-      { stage: "REJECTED" },
+      { stage: "REJECTED", brickkenError: event.failureCode ?? "PREPARATION_REFUSED" },
     ),
     event,
     kind,

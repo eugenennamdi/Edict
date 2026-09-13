@@ -103,6 +103,9 @@ export function ExecutionReviewSection({
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
               <span>
                 The preparation outcome is not safely known. Refresh the durable record; Edict will not automatically repeat the preparation request.
+                {execution.preparationFailureCode && (
+                  <code className="mt-2 block font-semibold">{execution.preparationFailureCode}</code>
+                )}
               </span>
             </span>
           </div>
@@ -114,6 +117,9 @@ export function ExecutionReviewSection({
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
               <span>
                 Brickken refused preparation. No prepared transaction or wallet action was recorded. This run is terminal; do not retry preparation or promote it.
+                {execution.preparationFailureCode && (
+                  <code className="mt-2 block font-semibold">{execution.preparationFailureCode}</code>
+                )}
               </span>
             </span>
           </div>

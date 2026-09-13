@@ -14,6 +14,8 @@ export const PHASE8_CLIENT_AUDIT_SENTINEL =
   "phase8-synthetic-client-credential-sentinel-7f6c";
 const PHASE8_BOOTSTRAP_AUDIT_SENTINEL =
   "phase8-synthetic-bootstrap-verifier-sentinel-4d2a";
+const PHASE8_TOKENIZER_EMAIL_AUDIT_SENTINEL =
+  "phase8-synthetic-tokenizer-email-7d3c@example.com";
 
 const EXPECTED_API_ROUTES = Object.freeze([
   "/api/runs",
@@ -50,8 +52,11 @@ const REQUIRED_MANIFESTS = Object.freeze([
 const PROHIBITED_PUBLIC_TOKENS = Object.freeze([
   PHASE8_CLIENT_AUDIT_SENTINEL,
   PHASE8_BOOTSTRAP_AUDIT_SENTINEL,
+  PHASE8_TOKENIZER_EMAIL_AUDIT_SENTINEL,
   "BRICKKEN_API_KEY",
   "NEXT_PUBLIC_BRICKKEN_API_KEY",
+  "BRICKKEN_TOKENIZER_EMAIL",
+  "NEXT_PUBLIC_BRICKKEN_TOKENIZER_EMAIL",
   "DATABASE_URL",
   "EDICT_SEPOLIA_RPC_URL",
   "EDICT_RUN_SECURITY_SECRET",
@@ -239,6 +244,7 @@ const NODE_PROCESS_BOUNDARY: Phase8AuditProcessBoundary = {
         npm_config_offline: "true",
         npm_config_update_notifier: "false",
         BRICKKEN_API_KEY: PHASE8_CLIENT_AUDIT_SENTINEL,
+        BRICKKEN_TOKENIZER_EMAIL: PHASE8_TOKENIZER_EMAIL_AUDIT_SENTINEL,
       },
       maxBuffer: 16 * 1_024 * 1_024,
       timeout: BUILD_TIMEOUT_MS,

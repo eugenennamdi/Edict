@@ -21,6 +21,7 @@ import unauthorizedSymbol from "./test-vectors/errors/unauthorized-token-symbol.
 const TOKENIZER = "0x1111111111111111111111111111111111111111";
 const INVESTOR = "0x2222222222222222222222222222222222222222";
 const TEST_KEY = "test-key";
+const LICENSED_ACCOUNT_EMAIL = "licensed-account@example.com";
 
 // Sanitized structural fixture from the 2026-09-09 controlled Phase 10C response.
 // Only the observed top-level envelope and semantic category are retained;
@@ -51,16 +52,18 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function installKey() {
   process.env.BRICKKEN_API_KEY = TEST_KEY;
+  process.env.BRICKKEN_TOKENIZER_EMAIL = LICENSED_ACCOUNT_EMAIL;
   process.env.BRICKKEN_BASE_URL = "https://api.sandbox.brickken.com";
 }
 
 afterEach(() => {
   delete process.env.BRICKKEN_API_KEY;
+  delete process.env.BRICKKEN_TOKENIZER_EMAIL;
   delete process.env.BRICKKEN_BASE_URL;
 });
 
 describe("Brickken server adapter", () => {
-  it("prepares tokenization against the encoding A fixture", async () => {
+  it("uses only the configured licensed-account email for tokenization preparation", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
     const adapter = createBrickkenServerAdapter({
       fetch: async (input, init) => {
@@ -72,7 +75,6 @@ describe("Brickken server adapter", () => {
     installKey();
     const result = await adapter.prepareTokenization({
       signerAddress: TOKENIZER,
-      tokenizerEmail: "tokenizer@example.com",
       name: "Example Token",
       tokenSymbol: "EXMPL",
       supplyCap: "1000000",
@@ -85,7 +87,10 @@ describe("Brickken server adapter", () => {
       chainId: "11155111",
       executionMode: "client-broadcast",
       tokenType: "RWA_TOKEN",
+      tokenizerEmail: LICENSED_ACCOUNT_EMAIL,
+      signerAddress: TOKENIZER,
     });
+    expect(JSON.stringify(calls[0]?.body)).not.toContain("eugene@xecute.xyz");
     if (result.ok) {
       expect(result.value.txId).toBe(encodingA.txId);
       expect(result.value.executionMode).toBe("client-broadcast");
@@ -219,6 +224,7 @@ describe("Brickken server adapter", () => {
       fetch: async () => jsonResponse(unauthorized, 401),
     });
     process.env.BRICKKEN_API_KEY = TEST_KEY;
+    process.env.BRICKKEN_TOKENIZER_EMAIL = LICENSED_ACCOUNT_EMAIL;
     process.env.BRICKKEN_BASE_URL = "https://api.sandbox.brickken.com";
     const result = await adapter.getTokenInfo({ tokenSymbol: "EXMPL" });
     expect(result.ok).toBe(false);
@@ -233,7 +239,6 @@ describe("Brickken server adapter", () => {
     });
     const credit = await creditAdapter.prepareTokenization({
       signerAddress: TOKENIZER,
-      tokenizerEmail: "tokenizer@example.com",
       name: "Example Token",
       tokenSymbol: "EXMPL",
       supplyCap: "1000",
@@ -258,7 +263,6 @@ describe("Brickken server adapter", () => {
 
     const result = await adapter.prepareTokenization({
       signerAddress: TOKENIZER,
-      tokenizerEmail: "tokenizer@example.com",
       name: "Example Token",
       tokenSymbol: "EXMPL",
       supplyCap: "1000",
@@ -281,7 +285,6 @@ describe("Brickken server adapter", () => {
 
     const result = await adapter.prepareTokenization({
       signerAddress: TOKENIZER,
-      tokenizerEmail: "tokenizer@example.com",
       name: "Example Token",
       tokenSymbol: "EXMPL",
       supplyCap: "1000",
@@ -290,6 +293,46 @@ describe("Brickken server adapter", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("INVALID_REQUEST");
+  });
+
+  it("maps signer, rate-limit, and server refusals to bounded categories only", async () => {
+    installKey();
+    const input = {
+      signerAddress: TOKENIZER,
+      name: "Example Token",
+      tokenSymbol: "EXMPL",
+      supplyCap: "1000",
+      documentationUrl: "https://example.com/token-docs",
+    };
+    const cases = [
+      {
+        status: 403,
+        body: { errors: { messages: ["Signer is not approved"] } },
+        code: "SIGNER_NOT_APPROVED",
+      },
+      {
+        status: 429,
+        body: { errors: { messages: ["Slow down"] } },
+        code: "UPSTREAM_RATE_LIMITED",
+      },
+      {
+        status: 503,
+        body: { errors: { messages: ["Internal diagnostic prose"] } },
+        code: "UPSTREAM_SERVER_ERROR",
+      },
+    ] as const;
+
+    for (const item of cases) {
+      const adapter = createBrickkenServerAdapter({
+        fetch: async () => jsonResponse(item.body, item.status),
+      });
+      const result = await adapter.prepareTokenization(input);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe(item.code);
+        expect(JSON.stringify(result.error)).not.toContain(item.body.errors.messages[0]);
+      }
+    }
   });
 
   it("refuses upstream values containing the API key instead of returning them", async () => {
@@ -301,7 +344,6 @@ describe("Brickken server adapter", () => {
     installKey();
     const prepared = await prepareAdapter.prepareTokenization({
       signerAddress: TOKENIZER,
-      tokenizerEmail: "tokenizer@example.com",
       name: "Example Token",
       tokenSymbol: "EXMPL",
       supplyCap: "1000",
@@ -335,6 +377,27 @@ describe("Brickken server adapter", () => {
     const missing = await adapter.getTokenInfo({ tokenSymbol: "EXMPL" });
     expect(missing.ok).toBe(false);
     if (!missing.ok) expect(missing.error.code).toBe("CONFIGURATION_MISSING");
+  });
+
+  it("refuses preparation before fetch when the licensed-account email is absent or invalid", async () => {
+    const fetchSpy = async () => {
+      throw new Error("network should not be used");
+    };
+    process.env.BRICKKEN_API_KEY = TEST_KEY;
+    process.env.BRICKKEN_BASE_URL = "https://api.sandbox.brickken.com";
+    process.env.BRICKKEN_TOKENIZER_EMAIL = " Not-Normalized@example.com";
+    const adapter = createBrickkenServerAdapter({ fetch: fetchSpy });
+
+    const result = await adapter.prepareTokenization({
+      signerAddress: TOKENIZER,
+      name: "Example Token",
+      tokenSymbol: "EXMPL",
+      supplyCap: "1000",
+      documentationUrl: "https://example.com/token-docs",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("CONFIGURATION_MISSING");
   });
 
   it("uses an explicitly injected sandbox configuration without reading global environment", async () => {

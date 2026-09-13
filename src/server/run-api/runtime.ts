@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createBrickkenServerAdapter } from "../brickken";
+import { createBrickkenServerAdapter, readBrickkenRuntimeConfig } from "../brickken";
 import { ExecutionRunService, cryptoIdGenerator, systemClock } from "../execution";
 import { getServerEnv } from "../env";
 import {
@@ -49,6 +49,7 @@ export function createRuntimeSemanticAuthorization(
 /** Called only after the deny-by-default deployment gate has passed. */
 export function createRunApiRuntime(): RunApiRuntime {
   const repository = createNeonExecutionRunRepository();
+  const brickkenConfig = readBrickkenRuntimeConfig();
   const brickken = createBrickkenServerAdapter();
   const mac = createSecurityTokenMac();
   const runs = new ExecutionRunService({
@@ -68,6 +69,7 @@ export function createRunApiRuntime(): RunApiRuntime {
       runs,
       brickken,
       writeGate: createPreparationOnlyBrickkenWriteGate(preparationEnabled),
+      brickkenTokenizerEmail: brickkenConfig.tokenizerEmail ?? "",
     }),
     walletExecution: new ExecutionV4Orchestrator({
       repository,
@@ -98,6 +100,7 @@ export function createRunApiRuntime(): RunApiRuntime {
         },
       },
       brickkenReadBack: brickken,
+      brickkenTokenizerEmail: brickkenConfig.tokenizerEmail,
     }),
     nowIso: () => new Date().toISOString(),
   });

@@ -79,6 +79,17 @@ const executionPreparationSchema = z.strictObject({
     "PREPARATION_UNCONFIRMED",
     "PREPARATION_FAILED",
   ]),
+  preparationFailureCode: z.enum([
+    "AUTHENTICATION_REJECTED",
+    "ENTITLEMENT_REJECTED",
+    "CREDITS_EXHAUSTED",
+    "INVALID_REQUEST",
+    "SIGNER_NOT_APPROVED",
+    "UPSTREAM_RATE_LIMITED",
+    "UPSTREAM_SERVER_ERROR",
+    "PREPARATION_REFUSED",
+    "PREPARATION_UNCONFIRMED",
+  ]).nullable().optional(),
   transactionReview: preparedTransactionReviewV1Schema.nullable(),
 });
 
@@ -96,6 +107,17 @@ export type PublicExecutionPreparation = Readonly<{
     | "PREPARED_FOR_REVIEW"
     | "PREPARATION_UNCONFIRMED"
     | "PREPARATION_FAILED";
+  preparationFailureCode?:
+    | "AUTHENTICATION_REJECTED"
+    | "ENTITLEMENT_REJECTED"
+    | "CREDITS_EXHAUSTED"
+    | "INVALID_REQUEST"
+    | "SIGNER_NOT_APPROVED"
+    | "UPSTREAM_RATE_LIMITED"
+    | "UPSTREAM_SERVER_ERROR"
+    | "PREPARATION_REFUSED"
+    | "PREPARATION_UNCONFIRMED"
+    | null;
   transactionReview: PreparedTransactionReviewV1 | null;
 }>;
 
@@ -193,6 +215,10 @@ function assertExecutionProjection(run: PublicRunProjection): void {
       expectedPreparationStatus === null ||
       execution.nextOperation.id !== tokenization.id ||
       execution.preparationStatus !== expectedPreparationStatus ||
+      ((execution.preparationStatus === "PREPARATION_FAILED" ||
+        execution.preparationStatus === "PREPARATION_UNCONFIRMED") !==
+        (execution.preparationFailureCode !== null &&
+          execution.preparationFailureCode !== undefined)) ||
       ((execution.preparationStatus === "PREPARED_FOR_REVIEW") !==
         (execution.transactionReview !== null)) ||
       (execution.transactionReview !== null && (
