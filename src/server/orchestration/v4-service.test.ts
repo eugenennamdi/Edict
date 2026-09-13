@@ -397,7 +397,11 @@ describe("ExecutionV4Orchestrator", () => {
       expect(op.activePreparationAttemptId).toBe(op.preparationAttempts[0].attemptId);
       expect(op.preparationAttempts[0].immutableIdentity).not.toBeNull();
       expect(op.preparationAttempts[0].immutableIdentity?.nonce).toBe("0x5");
-      expect(op.preparationAttempts[0].feeAuthorization).not.toBeNull();
+      const feeAuthorization = op.preparationAttempts[0].feeAuthorization;
+      expect(feeAuthorization?.adjustmentPolicy).toBe("SERVER_BOUNDED_HEADROOM");
+      expect(BigInt(feeAuthorization!.authorizedCaps.gasLimit)).toBeGreaterThan(
+        BigInt(feeAuthorization!.preparedDefaults.gasLimit),
+      );
     });
 
     it("rejects non-PREPARED runs from promotion", async () => {
@@ -539,12 +543,12 @@ describe("ExecutionV4Orchestrator", () => {
         runV2.revision,
       );
 
-      // Base fee 0x50 > maxFeePerGas 0x20
+      // Base fee above the server-owned absolute max-fee ceiling.
       h.fakeRpcTransport.on("eth_getBlockByNumber", () => ({
         number: "0x10",
         hash: BLOCK_HASH,
         parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
-        baseFeePerGas: "0x50",
+        baseFeePerGas: "0x2540be401",
         timestamp: "0x66e44000",
       }));
 
@@ -981,6 +985,10 @@ describe("ExecutionV4Orchestrator", () => {
       expect(
         promptRun.operations[0].walletPromptAuthorization?.providerInvocation,
       ).toBe("PROVEN_NOT_INVOKED");
+      const persistedFees = promptRun.operations[0].preparationAttempts[0].feeAuthorization;
+      expect(persistedFees?.adjustmentPolicy).toBe("SERVER_BOUNDED_HEADROOM");
+      expect(promptRun.operations[0].walletPromptAuthorization?.walletIntent.feeAuthorization)
+        .toEqual(persistedFees);
 
       // Release send authority
       const { envelope, run: releasedRun } = await h.v4.releaseSendAuthority(
@@ -1661,7 +1669,7 @@ describe("ExecutionV4Orchestrator", () => {
       const h = createHarness();
       const broadcastRun = await setupBroadcastRun(h);
 
-      // maxFeePerGas 0x30 exceeds authorized cap 0x20
+      // maxFeePerGas exceeds the server-owned 10 gwei ceiling.
       h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
         hash: TX_HASH,
         chainId: "0xaa36a7",
@@ -1673,7 +1681,7 @@ describe("ExecutionV4Orchestrator", () => {
         type: "0x2",
         gas: "0x100",
         gasPrice: null,
-        maxFeePerGas: "0x30",
+        maxFeePerGas: "0x2540be401",
         maxPriorityFeePerGas: "0x4",
         accessList: [],
         blockHash: BLOCK_HASH,
@@ -2268,7 +2276,7 @@ describe("ExecutionV4Orchestrator", () => {
         txHash: TX_HASH,
       });
 
-      // Fee policy violated on chain (maxFee 0x30 > cap 0x20)
+      // Fee policy violated on chain above the server-owned ceiling.
       h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
         hash: TX_HASH,
         chainId: "0xaa36a7",
@@ -2280,7 +2288,7 @@ describe("ExecutionV4Orchestrator", () => {
         type: "0x2",
         gas: "0x100",
         gasPrice: null,
-        maxFeePerGas: "0x30",
+        maxFeePerGas: "0x2540be401",
         maxPriorityFeePerGas: "0x4",
         accessList: [],
         blockHash: BLOCK_HASH,
@@ -3095,7 +3103,7 @@ describe("ExecutionV4Orchestrator", () => {
     it("does not derive identity after an on-chain fee-policy violation", async () => {
       const h = createHarness({ readBack: true });
       const run = await setupFinalizedCorrelatedRun(h, "success", {
-        observedMaxFeePerGas: "0x21",
+        observedMaxFeePerGas: "0x2540be401",
       });
       expect(run.status).toBe("RECONCILIATION_REQUIRED");
       expect(run.tokenIdentity).toBeNull();

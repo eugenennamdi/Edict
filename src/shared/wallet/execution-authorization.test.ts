@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createInitialFeeAuthorizationV1,
+  createServerBoundedFeeAuthorizationV1,
   evaluateFeeAuthorizationV1,
   feeAuthorizationV1Schema,
   hashWalletExecutionIntentV1,
@@ -104,8 +105,16 @@ describe("FeeAuthorizationV1", () => {
     expect(evaluateFeeAuthorizationV1(fees, actual)).toEqual({ accepted: false, code });
   });
 
-  it("rejects legacy gasPrice and fee-model/type switching", () => {
+  it("uses transaction type rather than an RPC gasPrice compatibility field to classify fees", () => {
     expect(evaluateFeeAuthorizationV1(fees, { ...actualFees, gasPrice: "0x1" })).toEqual({
+      accepted: true,
+      maximumNetworkFeeWei: "0x2000",
+    });
+    expect(evaluateFeeAuthorizationV1(fees, {
+      ...actualFees,
+      transactionType: "0x0",
+      gasPrice: "0x1",
+    })).toEqual({
       accepted: false,
       code: "LEGACY_GAS_PRICE",
     });
@@ -113,6 +122,58 @@ describe("FeeAuthorizationV1", () => {
       accepted: false,
       code: "FEE_MODEL_CHANGED",
     });
+  });
+
+  it("derives server-owned bounded headroom while preserving Brickken values as defaults", () => {
+    const bounded = createServerBoundedFeeAuthorizationV1({
+      gasLimit: "0x100",
+      maxFeePerGas: "0x20",
+      maxPriorityFeePerGas: "0x4",
+    });
+    expect(bounded.preparedDefaults).toEqual(fees.preparedDefaults);
+    expect(bounded.adjustmentPolicy).toBe("SERVER_BOUNDED_HEADROOM");
+    expect(BigInt(bounded.authorizedCaps.gasLimit)).toBeGreaterThan(BigInt(bounded.preparedDefaults.gasLimit));
+    expect(BigInt(bounded.authorizedCaps.maxFeePerGas)).toBeGreaterThan(BigInt(bounded.preparedDefaults.maxFeePerGas));
+    expect(BigInt(bounded.authorizedCaps.maxPriorityFeePerGas)).toBeGreaterThan(BigInt(bounded.preparedDefaults.maxPriorityFeePerGas));
+    expect(BigInt(bounded.authorizedCaps.maximumNetworkFeeWei)).toBe(
+      BigInt(bounded.authorizedCaps.gasLimit) * BigInt(bounded.authorizedCaps.maxFeePerGas),
+    );
+    expect(evaluateFeeAuthorizationV1(bounded, {
+      ...actualFees,
+      gasLimit: bounded.authorizedCaps.gasLimit,
+      maxFeePerGas: bounded.authorizedCaps.maxFeePerGas,
+      maxPriorityFeePerGas: bounded.authorizedCaps.maxPriorityFeePerGas,
+      gasPrice: "0x1",
+    }).accepted).toBe(true);
+  });
+
+  it("classifies the exact mined OKX type-0x2 shape by bounded caps, never by gasPrice", () => {
+    const historical = feeAuthorizationV1Schema.parse({
+      authorizationVersion: "1.0",
+      feeModel: "EIP1559",
+      transactionType: "0x2",
+      preparedDefaults: {
+        gasLimit: "0x350c63",
+        maxFeePerGas: "0x454bf75b",
+        maxPriorityFeePerGas: "0x118c30",
+      },
+      authorizedCaps: {
+        gasLimit: "0x350c63",
+        maxFeePerGas: "0x454bf75b",
+        maxPriorityFeePerGas: "0x118c30",
+        maximumNetworkFeeWei: "0xe5c1491cfec31",
+      },
+      preparedAccessList: [],
+      adjustmentPolicy: "BOUNDED_NO_INCREASE",
+    });
+    expect(evaluateFeeAuthorizationV1(historical, {
+      transactionType: "0x2",
+      gasLimit: "0x350c63",
+      gasPrice: "0x7b729771",
+      maxFeePerGas: "0x9884d6a8",
+      maxPriorityFeePerGas: "0x406d72c5",
+      accessList: [],
+    })).toEqual({ accepted: false, code: "MAX_FEE_CAP_EXCEEDED" });
   });
 
   it("rejects malformed, overflowing and inconsistent fee arithmetic", () => {

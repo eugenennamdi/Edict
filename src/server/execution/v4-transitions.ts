@@ -2,7 +2,7 @@ import "server-only";
 
 import { canonicalizeJson, hashCanonicalJson, sha256Utf8 } from "@/core";
 import {
-  createInitialFeeAuthorizationV1,
+  createServerBoundedFeeAuthorizationV1,
   evaluateFeeAuthorizationV1,
   hashWalletExecutionIntentV1,
   immutableExecutionIdentityV1Schema,
@@ -216,7 +216,7 @@ async function preparedAttempt(input: {
     value: request.value,
     nonce: request.nonce,
   });
-  const feeAuthorization = createInitialFeeAuthorizationV1({
+  const feeAuthorization = createServerBoundedFeeAuthorizationV1({
     gasLimit: request.gas,
     maxFeePerGas: request.maxFeePerGas,
     maxPriorityFeePerGas: request.maxPriorityFeePerGas,

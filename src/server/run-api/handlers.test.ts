@@ -796,7 +796,12 @@ describe("explicit next-operation preparation API", () => {
   it("authorizes before body parsing and does not let the browser choose an operation", async () => {
     const value = await setup();
     expect((await value.prepare({ expectedRevision: value.approved.revision }, "")).status).toBe(403);
-    expect((await value.prepare({ expectedRevision: value.approved.revision, operation: "MINT" })).status).toBe(400);
+    for (const field of ["operation", "gasLimit", "maxFeePerGas", "maxPriorityFeePerGas", "maximumNetworkFeeWei"]) {
+      expect((await value.prepare({
+        expectedRevision: value.approved.revision,
+        [field]: field === "operation" ? "MINT" : "0xffff",
+      })).status).toBe(400);
+    }
     expect(value.brickken.prepareTokenization).not.toHaveBeenCalled();
   });
 

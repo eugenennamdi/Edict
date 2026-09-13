@@ -57,7 +57,7 @@ export const feeAuthorizationV1Schema = z.strictObject({
   preparedDefaults: feeValues,
   authorizedCaps: feeValues.extend({ maximumNetworkFeeWei: quantity }),
   preparedAccessList: accessList,
-  adjustmentPolicy: z.literal("BOUNDED_NO_INCREASE"),
+  adjustmentPolicy: z.enum(["BOUNDED_NO_INCREASE", "SERVER_BOUNDED_HEADROOM"]),
 }).superRefine((authorization, context) => {
   const defaults = authorization.preparedDefaults;
   const caps = authorization.authorizedCaps;
@@ -74,7 +74,9 @@ export const feeAuthorizationV1Schema = z.strictObject({
   const product = capGas! * capMax!;
   if (
     defaultPriority! > defaultMax! || capPriority! > capMax! ||
-    defaultGas! !== capGas! || defaultMax! !== capMax! || defaultPriority! !== capPriority! ||
+    defaultGas! > capGas! || defaultMax! > capMax! || defaultPriority! > capPriority! ||
+    (authorization.adjustmentPolicy === "BOUNDED_NO_INCREASE" &&
+      (defaultGas! !== capGas! || defaultMax! !== capMax! || defaultPriority! !== capPriority!)) ||
     product > MAX_UINT256 || product !== capNetwork!
   ) {
     context.addIssue({ code: "custom", message: "invalid fee authorization" });
@@ -170,6 +172,34 @@ export type FeeAuthorizationDecisionV1 = Readonly<
     }
 >;
 
+/**
+ * Fixed server policy for newly prepared transactions. These limits are not
+ * accepted from manifests, API requests, or browser wallet input.
+ */
+export const SERVER_FEE_AUTHORIZATION_POLICY_V1 = Object.freeze({
+  gasLimitHeadroomBps: 12_000n,
+  maxFeeHeadroomBps: 30_000n,
+  priorityFeeHeadroomBps: 30_000n,
+  gasLimitAbsoluteCeiling: 8_000_000n,
+  maxFeePerGasFloor: 3_000_000_000n,
+  maxFeePerGasAbsoluteCeiling: 10_000_000_000n,
+  maxPriorityFeePerGasFloor: 2_000_000_000n,
+  maxPriorityFeePerGasAbsoluteCeiling: 3_000_000_000n,
+  maximumNetworkFeeAbsoluteCeiling: 100_000_000_000_000_000n,
+});
+
+function ceilBasisPoints(value: bigint, basisPoints: bigint): bigint {
+  return (value * basisPoints + 9_999n) / 10_000n;
+}
+
+function maximum(left: bigint, right: bigint): bigint {
+  return left > right ? left : right;
+}
+
+function minimum(left: bigint, right: bigint): bigint {
+  return left < right ? left : right;
+}
+
 export function createInitialFeeAuthorizationV1(input: {
   readonly gasLimit: string;
   readonly maxFeePerGas: string;
@@ -203,12 +233,79 @@ export function createInitialFeeAuthorizationV1(input: {
   });
 }
 
+export function createServerBoundedFeeAuthorizationV1(input: {
+  readonly gasLimit: string;
+  readonly maxFeePerGas: string;
+  readonly maxPriorityFeePerGas: string;
+  readonly preparedAccessList?: readonly Readonly<{
+    address: string;
+    storageKeys: readonly string[];
+  }>[];
+}): FeeAuthorizationV1 {
+  const parsed = feeValues.parse({
+    gasLimit: input.gasLimit,
+    maxFeePerGas: input.maxFeePerGas,
+    maxPriorityFeePerGas: input.maxPriorityFeePerGas,
+  });
+  const policy = SERVER_FEE_AUTHORIZATION_POLICY_V1;
+  const defaultGas = BigInt(parsed.gasLimit);
+  const defaultMaxFee = BigInt(parsed.maxFeePerGas);
+  const defaultPriorityFee = BigInt(parsed.maxPriorityFeePerGas);
+  const gasLimit = minimum(
+    ceilBasisPoints(defaultGas, policy.gasLimitHeadroomBps),
+    policy.gasLimitAbsoluteCeiling,
+  );
+  const maxFeePerGas = minimum(
+    maximum(
+      ceilBasisPoints(defaultMaxFee, policy.maxFeeHeadroomBps),
+      policy.maxFeePerGasFloor,
+    ),
+    policy.maxFeePerGasAbsoluteCeiling,
+  );
+  const maxPriorityFeePerGas = minimum(
+    minimum(
+      maximum(
+        ceilBasisPoints(defaultPriorityFee, policy.priorityFeeHeadroomBps),
+        policy.maxPriorityFeePerGasFloor,
+      ),
+      policy.maxPriorityFeePerGasAbsoluteCeiling,
+    ),
+    maxFeePerGas,
+  );
+  const maximumNetworkFee = gasLimit * maxFeePerGas;
+  if (
+    defaultGas > gasLimit || defaultMaxFee > maxFeePerGas ||
+    defaultPriorityFee > maxPriorityFeePerGas || maximumNetworkFee > MAX_UINT256 ||
+    maximumNetworkFee > policy.maximumNetworkFeeAbsoluteCeiling
+  ) throw new TypeError("INVALID_FEE_AUTHORIZATION");
+  return feeAuthorizationV1Schema.parse({
+    authorizationVersion: "1.0",
+    feeModel: "EIP1559",
+    transactionType: "0x2",
+    preparedDefaults: parsed,
+    authorizedCaps: {
+      gasLimit: `0x${gasLimit.toString(16)}`,
+      maxFeePerGas: `0x${maxFeePerGas.toString(16)}`,
+      maxPriorityFeePerGas: `0x${maxPriorityFeePerGas.toString(16)}`,
+      maximumNetworkFeeWei: `0x${maximumNetworkFee.toString(16)}`,
+    },
+    preparedAccessList: (input.preparedAccessList ?? []).map((entry) => ({
+      address: entry.address,
+      storageKeys: [...entry.storageKeys],
+    })),
+    adjustmentPolicy: "SERVER_BOUNDED_HEADROOM",
+  });
+}
+
 const actualFeeFieldsSchema = z.strictObject({
   transactionType: z.literal("0x2"),
   gasLimit: quantity,
   maxFeePerGas: quantity,
   maxPriorityFeePerGas: quantity,
-  gasPrice: z.null().optional(),
+  // Mined EIP-1559 RPC responses commonly include the effective gas price.
+  // Transaction type and max-fee fields, not this compatibility field, own
+  // fee-model classification.
+  gasPrice: quantity.nullable().optional(),
   accessList,
 });
 
@@ -220,12 +317,12 @@ export function evaluateFeeAuthorizationV1(
   if (typeof actualRaw === "object" && actualRaw !== null) {
     if (
       "transactionType" in actualRaw &&
+      (actualRaw as { transactionType?: unknown }).transactionType === "0x0"
+    ) return Object.freeze({ accepted: false, code: "LEGACY_GAS_PRICE" });
+    if (
+      "transactionType" in actualRaw &&
       (actualRaw as { transactionType?: unknown }).transactionType !== authorization.transactionType
     ) return Object.freeze({ accepted: false, code: "FEE_MODEL_CHANGED" });
-    if (
-    "gasPrice" in actualRaw && (actualRaw as { gasPrice?: unknown }).gasPrice !== null &&
-    (actualRaw as { gasPrice?: unknown }).gasPrice !== undefined
-    ) return Object.freeze({ accepted: false, code: "LEGACY_GAS_PRICE" });
   }
   const actual = actualFeeFieldsSchema.parse(actualRaw);
   if (actual.transactionType !== authorization.transactionType) {
