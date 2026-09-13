@@ -1,16 +1,25 @@
 import "server-only";
 
 import { canonicalizeJson, validateAssetManifestV1 } from "@/core";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { InvalidRunSnapshotError, PersistenceDataError } from "../execution/errors";
 import {
   onchainTransactionEvidenceV1Schema,
   transactionReceiptEvidenceV1Schema,
 } from "../execution/onchain-evidence";
+import {
+  brickkenCorrelationV1Schema,
+  brickkenStatusEvidenceV1Schema,
+  preparationAttemptV1Schema,
+  rpcTransactionAuthorizationEvidenceV1Schema,
+  tokenIdentityV1Schema,
+  walletPromptAuthorizationRecordV1Schema,
+} from "../execution/v4-contracts";
 import type { ExecutionRun } from "../execution/types";
 
-export const EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSIONS = ["1.0", "2.0", "3.0"] as const;
-export const EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSION = "3.0" as const;
+export const EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSIONS = ["1.0", "2.0", "3.0", "4.0"] as const;
+export const EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSION = "4.0" as const;
 export type ExecutionRunPersistenceSchemaVersion =
   (typeof EXECUTION_RUN_PERSISTENCE_SCHEMA_VERSIONS)[number];
 
@@ -116,6 +125,34 @@ const operationV3Schema = operationSchema.extend({
   transactionReceiptEvidence: transactionReceiptEvidenceV1Schema.nullable(),
 }).strict();
 
+const operationV4Schema = operationV3Schema.omit({ stage: true }).extend({
+  stage: z.enum([
+    "NOT_STARTED",
+    "PREPARE_INTENT",
+    "PREPARED",
+    "PREPARED_STALE",
+    "REPREPARE_INTENT",
+    "WALLET_PROMPT_RECORDED",
+    "WALLET_REJECTED",
+    "BROADCAST_HASH_PERSISTED",
+    "BROADCAST_UNKNOWN",
+    "RPC_TRANSACTION_VERIFIED",
+    "POLICY_VIOLATION_ONCHAIN",
+    "RPC_TRANSACTION_RECONCILIATION_REQUIRED",
+    "BRICKKEN_CORRELATION_PENDING",
+    "BRICKKEN_CORRELATED",
+    "READ_BACK_VERIFIED",
+    "PREPARE_UNKNOWN",
+    "REJECTED",
+  ]),
+  preparationAttempts: z.array(preparationAttemptV1Schema).max(32),
+  activePreparationAttemptId: identifier.nullable(),
+  walletPromptAuthorization: walletPromptAuthorizationRecordV1Schema.nullable(),
+  rpcTransactionEvidence: rpcTransactionAuthorizationEvidenceV1Schema.nullable(),
+  brickkenCorrelation: brickkenCorrelationV1Schema.nullable(),
+  brickkenStatusEvidence: z.array(brickkenStatusEvidenceV1Schema).max(256),
+}).strict();
+
 const approvalV1Schema = z.object({
   planHash: hash,
   approvedByWallet: wallet,
@@ -213,10 +250,19 @@ const executionRunV3Schema = z.object({
   operations: z.tuple([operationV3Schema, operationV3Schema, operationV3Schema]),
 }).strict();
 
+const executionRunV4Schema = z.object({
+  schemaVersion: z.literal("4.0"),
+  ...executionRunCommonShape,
+  approval: approvalV2Schema,
+  operations: z.tuple([operationV4Schema, operationV4Schema, operationV4Schema]),
+  tokenIdentity: tokenIdentityV1Schema.nullable(),
+}).strict();
+
 const executionRunSchema = z.discriminatedUnion("schemaVersion", [
   executionRunV1Schema,
   executionRunV2Schema,
   executionRunV3Schema,
+  executionRunV4Schema,
 ]);
 
 const FORBIDDEN_PROPERTY_NAMES = new Set([
@@ -274,6 +320,14 @@ function deepFreeze<T>(value: T): T {
     if (descriptor && "value" in descriptor) deepFreeze(descriptor.value);
   }
   return Object.freeze(value);
+}
+
+function sha256Canonical(value: unknown): string {
+  return `sha256:${createHash("sha256").update(canonicalizeJson(value), "utf8").digest("hex")}`;
+}
+
+function sha256Text(value: string): string {
+  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
 }
 
 function parseSnapshot(value: unknown): ExecutionRun {
@@ -349,6 +403,167 @@ function parseSnapshot(value: unknown): ExecutionRun {
     });
     if (!hasTransactionEvidence || evidenceInvalid) {
       throw new TypeError("Persistence snapshot evidence invariants failed.");
+    }
+  }
+
+  if (parsed.schemaVersion === "4.0") {
+    const invalidOperation = parsed.operations.some((operation) => {
+      if (
+        operation.preparationAttempts.some((attempt, index) => attempt.sequence !== index + 1) ||
+        new Set(operation.preparationAttempts.map((attempt) => attempt.attemptId)).size !==
+          operation.preparationAttempts.length
+      ) return true;
+      const active = operation.activePreparationAttemptId === null
+        ? null
+        : operation.preparationAttempts.find(
+          (attempt) => attempt.attemptId === operation.activePreparationAttemptId,
+        ) ?? null;
+      if ((operation.activePreparationAttemptId !== null) !== (active !== null)) return true;
+      if (active !== null) {
+        const stageStateValid =
+          (operation.stage === "PREPARED" && active.state === "PREPARED" &&
+            operation.walletPromptAuthorization === null && operation.blockchainTxHash === null) ||
+          (operation.stage === "PREPARED_STALE" && active.state === "STALE" &&
+            operation.walletPromptAuthorization === null && operation.blockchainTxHash === null) ||
+          (operation.stage === "REPREPARE_INTENT" && active.state === "REPREPARE_INTENT" &&
+            operation.preparedTxId === null && operation.unsignedTransaction === null) ||
+          (operation.stage === "PREPARE_UNKNOWN" && active.state === "PREPARE_UNKNOWN") ||
+          (operation.stage === "REJECTED" && active.state === "REFUSED") ||
+          ([
+            "WALLET_PROMPT_RECORDED",
+            "WALLET_REJECTED",
+            "BROADCAST_HASH_PERSISTED",
+            "BROADCAST_UNKNOWN",
+            "RPC_TRANSACTION_VERIFIED",
+            "POLICY_VIOLATION_ONCHAIN",
+            "RPC_TRANSACTION_RECONCILIATION_REQUIRED",
+            "BRICKKEN_CORRELATION_PENDING",
+            "BRICKKEN_CORRELATED",
+            "READ_BACK_VERIFIED",
+          ].includes(operation.stage) && active.state === "PREPARED");
+        if (!stageStateValid) return true;
+      }
+      if (active !== null && active.state !== "REPREPARE_INTENT") {
+        if (
+          active.txId !== operation.preparedTxId ||
+          canonicalizeJson(active.unsignedTransaction) !== canonicalizeJson(operation.unsignedTransaction)
+        ) return true;
+      }
+      if (
+        active !== null && active.preparationFingerprint !== null &&
+        active.preparedRunRevision !== null && active.txId !== null &&
+        active.preparedAt !== null && active.immutableIdentity !== null &&
+        active.feeAuthorization !== null &&
+        active.preparationFingerprint !== sha256Canonical({
+          domain: "edict.preparation-attempt.v1",
+          runId: parsed.id,
+          runRevision: active.preparedRunRevision,
+          approvalRevision: parsed.approval.approvalRevision,
+          manifestHash: parsed.manifestHash,
+          planHash: parsed.planHash,
+          operation: { id: operation.id, kind: operation.kind },
+          attemptId: active.attemptId,
+          txId: active.txId,
+          preparedAt: active.preparedAt,
+          immutableIdentity: active.immutableIdentity,
+          feeAuthorization: active.feeAuthorization,
+        })
+      ) return true;
+      const prompt = operation.walletPromptAuthorization;
+      if (
+        ["WALLET_PROMPT_RECORDED", "WALLET_REJECTED", "BROADCAST_HASH_PERSISTED",
+          "BROADCAST_UNKNOWN", "RPC_TRANSACTION_VERIFIED",
+          "POLICY_VIOLATION_ONCHAIN",
+          "RPC_TRANSACTION_RECONCILIATION_REQUIRED", "BRICKKEN_CORRELATION_PENDING",
+          "BRICKKEN_CORRELATED", "READ_BACK_VERIFIED"].includes(operation.stage) && prompt === null
+      ) return true;
+      if (prompt !== null) {
+        const intent = prompt.walletIntent;
+        if (
+          active === null || active.preparationFingerprint === null ||
+          intent.runId !== parsed.id || intent.runRevision > parsed.revision ||
+          intent.approvalIdentity.approvalRevision !== parsed.approval.approvalRevision ||
+          intent.approvalIdentity.typedDataDigest !== parsed.approval.proof.typedDataDigest ||
+          intent.manifestHash !== parsed.manifestHash || intent.planHash !== parsed.planHash ||
+          intent.operation.id !== operation.id || intent.operation.kind !== operation.kind ||
+          intent.requiredSigner !== parsed.requiredSigner.walletAddress ||
+          intent.brickkenPreparation.preparationAttemptId !== active.attemptId ||
+          intent.brickkenPreparation.preparedTxId !== active.txId ||
+          intent.brickkenPreparation.preparationFingerprint !== active.preparationFingerprint ||
+          canonicalizeJson(intent.immutableIdentity) !== canonicalizeJson(active.immutableIdentity) ||
+          canonicalizeJson(intent.feeAuthorization) !== canonicalizeJson(active.feeAuthorization) ||
+          prompt.walletIntentHash !== sha256Canonical(intent) ||
+          intent.semanticAuthorization.calldataCommitment !== sha256Text(intent.immutableIdentity.data)
+        ) return true;
+        if (
+          (operation.stage === "WALLET_REJECTED" &&
+            prompt.providerInvocation !== "PROVEN_NOT_INVOKED") ||
+          (["BROADCAST_HASH_PERSISTED", "BROADCAST_UNKNOWN", "RPC_TRANSACTION_VERIFIED",
+            "POLICY_VIOLATION_ONCHAIN", "RPC_TRANSACTION_RECONCILIATION_REQUIRED",
+            "BRICKKEN_CORRELATION_PENDING", "BRICKKEN_CORRELATED", "READ_BACK_VERIFIED"]
+            .includes(operation.stage) && prompt.providerInvocation !== "INVOKED_OR_UNKNOWN") ||
+          (operation.stage === "BROADCAST_UNKNOWN" && prompt.unresolvedOutcome === null) ||
+          (operation.stage !== "BROADCAST_UNKNOWN" && prompt.unresolvedOutcome !== null)
+        ) return true;
+      }
+      const correlation = operation.brickkenCorrelation;
+      if (
+        (operation.stage === "BRICKKEN_CORRELATION_PENDING" && correlation?.lifecycle !== "PENDING") ||
+        (["BRICKKEN_CORRELATED", "READ_BACK_VERIFIED"].includes(operation.stage) &&
+          correlation?.lifecycle !== "CORRELATED")
+      ) return true;
+      if (correlation !== null && (
+        active === null || correlation.pair.txId !== active.txId ||
+        correlation.pair.txHash !== operation.blockchainTxHash ||
+        operation.rpcTransactionEvidence === null ||
+        operation.rpcTransactionEvidence.immutableIdentityStatus !== "MATCH"
+      )) return true;
+      const rpcEvidence = operation.rpcTransactionEvidence;
+      if (rpcEvidence !== null && (
+        operation.blockchainTxHash === null ||
+        rpcEvidence.transactionHash !== operation.blockchainTxHash ||
+        active === null ||
+        ((rpcEvidence.immutableIdentityStatus === "MATCH") !==
+          (canonicalizeJson(rpcEvidence.immutableIdentity) ===
+            canonicalizeJson(active.immutableIdentity))) ||
+        (rpcEvidence.feeAuthorizationStatus === "POLICY_VIOLATION" &&
+          parsed.status !== "RECONCILIATION_REQUIRED") ||
+        (rpcEvidence.immutableIdentityStatus === "MISMATCH" &&
+          parsed.status !== "RECONCILIATION_REQUIRED")
+      )) return true;
+      if (
+        (operation.stage === "RPC_TRANSACTION_VERIFIED" &&
+          rpcEvidence?.feeAuthorizationStatus !== "WITHIN_ENVELOPE") ||
+        (operation.stage === "POLICY_VIOLATION_ONCHAIN" &&
+          rpcEvidence?.feeAuthorizationStatus !== "POLICY_VIOLATION") ||
+        (operation.stage === "RPC_TRANSACTION_RECONCILIATION_REQUIRED" &&
+          rpcEvidence !== null && rpcEvidence.immutableIdentityStatus !== "MISMATCH") ||
+        (operation.transactionReceiptEvidence !== null && (
+          rpcEvidence === null || operation.blockchainTxHash === null ||
+          operation.transactionReceiptEvidence.transactionHash !== operation.blockchainTxHash ||
+          operation.transactionReceiptEvidence.from !== rpcEvidence.immutableIdentity.from ||
+          operation.transactionReceiptEvidence.to !== rpcEvidence.immutableIdentity.to ||
+          operation.transactionReceiptEvidence.type !== "0x2"
+        ))
+      ) return true;
+      return operation.brickkenStatusEvidence.some((evidence) =>
+        correlation === null || evidence.txId !== correlation.pair.txId ||
+        evidence.txHash !== correlation.pair.txHash
+      );
+    });
+    const tokenIdentityInvalid = parsed.tokenIdentity !== null && (
+      parsed.operations[0].stage !== "READ_BACK_VERIFIED" ||
+      parsed.operations[0].rpcTransactionEvidence?.feeAuthorizationStatus !== "WITHIN_ENVELOPE" ||
+      parsed.status === "RECONCILIATION_REQUIRED" ||
+      parsed.tokenIdentity.chainId !== parsed.chainId ||
+      parsed.tokenIdentity.tokenSymbol !== parsed.manifest.asset.symbol ||
+      parsed.tokenIdentity.tokenizerWalletAddress !== parsed.requiredSigner.walletAddress ||
+      parsed.tokenIdentity.tokenizationTxHash !== parsed.operations[0].blockchainTxHash ||
+      parsed.tokenIdentity.manifestHash !== parsed.manifestHash ||
+      parsed.tokenIdentity.planHash !== parsed.planHash
+    );
+    if (invalidOperation || tokenIdentityInvalid) {
+      throw new TypeError("Persistence snapshot V4 invariants failed.");
     }
   }
 

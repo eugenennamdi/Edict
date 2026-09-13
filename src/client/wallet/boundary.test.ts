@@ -19,18 +19,19 @@ describe("wallet trust-boundary invariants", () => {
   it("keeps runtime wallet modules explicitly client-only", () => {
     for (const path of [
       "src/client/run-api/approval-gateway.ts",
+      "src/client/run-api/wallet-execution-gateway.ts",
       "src/client/wallet/approval.ts",
       "src/client/wallet/discovery.ts",
       "src/client/wallet/errors.ts",
-      "src/client/wallet/execution.ts",
       "src/client/wallet/index.ts",
       "src/client/wallet/session.ts",
+      "src/client/wallet/v4-execution.ts",
     ]) {
       expect(source(path)).toMatch(/^"use client";\n\nimport "client-only";/);
     }
   });
 
-  it("keeps the callable route inventory at the five approved non-execution routes", () => {
+  it("keeps the callable route inventory at the twelve approved routes", () => {
     const routes = filesBelow(join(root, "src/app/api"))
       .filter((path) => path.endsWith("route.ts"))
       .map((path) => relative(join(root, "src/app"), path))
@@ -38,8 +39,15 @@ describe("wallet trust-boundary invariants", () => {
     expect(routes).toEqual([
       "api/runs/[runId]/approval-challenges/route.ts",
       "api/runs/[runId]/approval/route.ts",
+      "api/runs/[runId]/broadcast-hash/route.ts",
+      "api/runs/[runId]/broadcast-unknown/route.ts",
       "api/runs/[runId]/cancel/route.ts",
+      "api/runs/[runId]/prepare/route.ts",
+      "api/runs/[runId]/promote/route.ts",
+      "api/runs/[runId]/readiness/route.ts",
       "api/runs/[runId]/route.ts",
+      "api/runs/[runId]/track/route.ts",
+      "api/runs/[runId]/wallet-authorization/route.ts",
       "api/runs/route.ts",
     ]);
   });
@@ -61,26 +69,50 @@ describe("wallet trust-boundary invariants", () => {
     expect(gateway).not.toMatch(/capability|cookie|challenge.*(?:mac|purpose)|console\./iu);
   });
 
-  it("keeps Phase D approval readiness free of signing, approval HTTP, execution, persistence, and secret capabilities", () => {
+  it("keeps the preparation review UI outside every wallet and broadcast boundary", () => {
+    const review = [
+      source("src/components/execution-review-section.tsx"),
+      source("src/components/run-planning.ts"),
+    ].join("\n");
+    expect(review).not.toMatch(/client\/wallet\/execution|eth_sendTransaction|eth_sign|requestExplicit|window\.ethereum|localStorage|sessionStorage|document\.cookie/u);
+    expect(review).not.toMatch(/BRICKKEN_API_KEY|DATABASE_URL|EDICT_RUN_SECURITY_SECRET|console\./u);
+    expect(review.match(/\/prepare`/gu)).toHaveLength(1);
+    expect(review).not.toMatch(/\/broadcast|\/confirm|\/poll|\/read-back|\/receipt/u);
+  });
+
+  it("keeps Phase E signing inside the approved coordinator and excludes execution, persistence, and secrets", () => {
     const readinessSource = [
       "src/components/approval/approval-controller.ts",
       "src/components/approval/approval-section.tsx",
     ].map(source).join("\n");
-    expect(readinessSource).not.toMatch(/requestExplicit|eth_sign|eth_sendTransaction|approval-challenges|submitApproval|ApprovalGateway|client\/wallet\/execution/u);
-    expect(readinessSource).not.toMatch(/Brickken|RPC|localStorage|sessionStorage|document\.cookie|BRICKKEN_API_KEY|DATABASE_URL|console\.|\.focus\(/u);
+    const approvalUi = source("src/components/approval/approval-section.tsx");
+    const approvalBoundary = source("src/client/wallet/approval.ts");
+    expect(approvalUi).not.toMatch(/requestExplicit|eth_sign|submitApproval|approval-challenges/u);
+    expect(readinessSource).not.toMatch(/eth_sendTransaction|personal_sign|client\/wallet\/execution/u);
+    expect(readinessSource).not.toMatch(/Brickken|RPC|localStorage|sessionStorage|document\.cookie|BRICKKEN_API_KEY|DATABASE_URL|console\./u);
+    expect(approvalBoundary.match(/"eth_signTypedData_v4"/gu)).toHaveLength(1);
+    expect(approvalBoundary).not.toMatch(/personal_sign|eth_sign"|eth_sendTransaction/u);
   });
 
-  it("marks invocation immediately before the direct provider call with no await boundary", () => {
-    expect(source("src/client/wallet/execution.ts")).toMatch(
-      /providerInvoked = true;\n\s+const pendingResult = input\.wallet\.requestExplicit\("eth_sendTransaction"/u,
-    );
+  it("keeps exactly one V4 product send call site and excludes raw signing", () => {
+    const productionClientSource = ["src/client", "src/components"]
+      .flatMap((directory) => filesBelow(join(root, directory)))
+      .filter((path) => /\.(?:ts|tsx)$/.test(path) && !/\.test\.(?:ts|tsx)$/.test(path))
+      .map((path) => readFileSync(path, "utf8"))
+      .join("\n");
+    expect(productionClientSource.match(/method:\s*"eth_sendTransaction"/gu)).toHaveLength(1);
+    expect(productionClientSource).not.toMatch(/eth_sendRawTransaction|eth_signTransaction|privateKey|seed phrase/u);
   });
 
   it("performs no provider or network call when wallet modules are imported", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     vi.resetModules();
-    await Promise.all([import("./index"), import("../run-api/approval-gateway")]);
+    await Promise.all([
+      import("./index"),
+      import("../run-api/approval-gateway"),
+      import("../run-api/wallet-execution-gateway"),
+    ]);
     expect(fetchSpy).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });

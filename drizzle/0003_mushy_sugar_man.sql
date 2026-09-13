@@ -1,0 +1,2 @@
+ALTER TABLE "execution_runs" DROP CONSTRAINT "execution_runs_schema_version_check";--> statement-breakpoint
+ALTER TABLE "execution_runs" ADD CONSTRAINT "execution_runs_schema_version_check" CHECK ("execution_runs"."schema_version" in ('1.0', '2.0', '3.0', '4.0'));

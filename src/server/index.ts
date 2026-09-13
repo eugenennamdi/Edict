@@ -15,3 +15,4 @@ export * from "./persistence";
 export * from "./security";
 export * from "./orchestration";
 export * from "./run-api";
+export * from "./rpc";

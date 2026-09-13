@@ -26,6 +26,7 @@ async function view(): Promise<PlanningView> {
       status: "AWAITING_APPROVAL",
       terminalOutcome: null,
       approved: false,
+      execution: null,
       operations: [
         { id: "operation-1", kind: "TOKENIZE", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
         { id: "operation-2", kind: "WHITELIST", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
@@ -55,7 +56,7 @@ describe("approval readiness UI", () => {
     expect(html).toContain(current.manifest.investor.walletAddress);
     expect(html).toContain("25 tokens");
     expect(html).toContain("Ethereum Sepolia");
-    expect(html).toContain("Approving this plan will not submit a transaction");
+    expect(html).toContain("Approving this plan does not submit an on-chain transaction");
     expect(html).toContain("Use legacy injected provider");
     expect(html).not.toContain("Approve this plan");
     expect(fetch).not.toHaveBeenCalled();
@@ -70,19 +71,25 @@ describe("approval readiness UI", () => {
         approved: true,
         phase: "TOKENIZATION",
         status: "PREPARING",
+        execution: {
+          projectionVersion: "1.0",
+          nextOperation: { id: "operation-1", kind: "TOKENIZE", sequence: 1, name: "Create tokenization" },
+          preparationStatus: "READY_FOR_PREPARATION",
+          transactionReview: null,
+        },
         revision: 2,
       },
     };
     const html = renderToStaticMarkup(createElement(ApprovalReadinessSection, { view: approved }));
     expect(html).toContain("Plan approval recorded");
-    expect(html).toContain("Execution remains unavailable");
+    expect(html).toContain("Wallet confirmation and transaction submission remain unavailable");
     expect(html).not.toContain("Select wallet");
     expect(html).not.toContain("Allow account access");
     expect(html).not.toContain("Check wallet again");
     expect(html).not.toContain("Use legacy injected provider");
   });
 
-  it("uses semantic provider selection and exposes only readiness actions", () => {
+  it("uses semantic provider selection and keeps signing details outside React", () => {
     const source = readFileSync(new URL("approval-section.tsx", import.meta.url), "utf8");
     expect(source).toContain("<fieldset");
     expect(source).toContain('type="radio"');
@@ -90,6 +97,8 @@ describe("approval readiness UI", () => {
     expect(source).toContain("Allow account access");
     expect(source).toContain("Check wallet again");
     expect(source).toContain("Switch to Ethereum Sepolia");
-    expect(source).not.toMatch(/Approve this plan action|eth_sign|approval-challenges|submitApproval/u);
+    expect(source).toContain("Approve this plan");
+    expect(source).toContain("Refresh approval status");
+    expect(source).not.toMatch(/eth_sign|approval-challenges|submitApproval|eth_sendTransaction/u);
   });
 });

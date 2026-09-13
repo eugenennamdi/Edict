@@ -21,6 +21,18 @@ import unauthorizedSymbol from "./test-vectors/errors/unauthorized-token-symbol.
 const TOKENIZER = "0x1111111111111111111111111111111111111111";
 const INVESTOR = "0x2222222222222222222222222222222222222222";
 const TEST_KEY = "test-key";
+const LICENSED_ACCOUNT_EMAIL = "licensed-account@example.com";
+
+// Sanitized structural fixture from the 2026-09-09 controlled Phase 10C response.
+// Only the observed top-level envelope and semantic category are retained;
+// nested values and exact upstream prose were deliberately normalized.
+const sanitizedLiveLicenseEntitlement400 = {
+  errors: {
+    messages: ["Sanitized license or entitlement rejection"],
+    status: 400,
+    name: "Bad Request",
+  },
+} as const;
 
 const evidence: ConfirmedWhitelistEvidence = {
   runId: "run-1",
@@ -40,16 +52,18 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function installKey() {
   process.env.BRICKKEN_API_KEY = TEST_KEY;
+  process.env.BRICKKEN_TOKENIZER_EMAIL = LICENSED_ACCOUNT_EMAIL;
   process.env.BRICKKEN_BASE_URL = "https://api.sandbox.brickken.com";
 }
 
 afterEach(() => {
   delete process.env.BRICKKEN_API_KEY;
+  delete process.env.BRICKKEN_TOKENIZER_EMAIL;
   delete process.env.BRICKKEN_BASE_URL;
 });
 
 describe("Brickken server adapter", () => {
-  it("prepares tokenization against the encoding A fixture", async () => {
+  it("uses only the configured licensed-account email for tokenization preparation", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
     const adapter = createBrickkenServerAdapter({
       fetch: async (input, init) => {
@@ -61,7 +75,6 @@ describe("Brickken server adapter", () => {
     installKey();
     const result = await adapter.prepareTokenization({
       signerAddress: TOKENIZER,
-      tokenizerEmail: "tokenizer@example.com",
       name: "Example Token",
       tokenSymbol: "EXMPL",
       supplyCap: "1000000",
@@ -74,7 +87,10 @@ describe("Brickken server adapter", () => {
       chainId: "11155111",
       executionMode: "client-broadcast",
       tokenType: "RWA_TOKEN",
+      tokenizerEmail: LICENSED_ACCOUNT_EMAIL,
+      signerAddress: TOKENIZER,
     });
+    expect(JSON.stringify(calls[0]?.body)).not.toContain("eugene@xecute.xyz");
     if (result.ok) {
       expect(result.value.txId).toBe(encodingA.txId);
       expect(result.value.executionMode).toBe("client-broadcast");
@@ -208,6 +224,7 @@ describe("Brickken server adapter", () => {
       fetch: async () => jsonResponse(unauthorized, 401),
     });
     process.env.BRICKKEN_API_KEY = TEST_KEY;
+    process.env.BRICKKEN_TOKENIZER_EMAIL = LICENSED_ACCOUNT_EMAIL;
     process.env.BRICKKEN_BASE_URL = "https://api.sandbox.brickken.com";
     const result = await adapter.getTokenInfo({ tokenSymbol: "EXMPL" });
     expect(result.ok).toBe(false);
@@ -222,7 +239,6 @@ describe("Brickken server adapter", () => {
     });
     const credit = await creditAdapter.prepareTokenization({
       signerAddress: TOKENIZER,
-      tokenizerEmail: "tokenizer@example.com",
       name: "Example Token",
       tokenSymbol: "EXMPL",
       supplyCap: "1000",
@@ -239,6 +255,86 @@ describe("Brickken server adapter", () => {
     if (!symbol.ok) expect(symbol.error.code).toBe("ENTITLEMENT_REJECTED");
   });
 
+  it("classifies the sanitized live HTTP 400 license envelope as a definite entitlement refusal", async () => {
+    const adapter = createBrickkenServerAdapter({
+      fetch: async () => jsonResponse(sanitizedLiveLicenseEntitlement400, 400),
+    });
+    installKey();
+
+    const result = await adapter.prepareTokenization({
+      signerAddress: TOKENIZER,
+      name: "Example Token",
+      tokenSymbol: "EXMPL",
+      supplyCap: "1000",
+      documentationUrl: "https://example.com/token-docs",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("ENTITLEMENT_REJECTED");
+      expect(result.error.message).not.toContain("Sanitized license");
+      expect(JSON.stringify(result.error)).not.toContain(TEST_KEY);
+    }
+  });
+
+  it("classifies other SDK HTTP 400 API errors as definite invalid requests", async () => {
+    const adapter = createBrickkenServerAdapter({
+      fetch: async () => jsonResponse({ errors: { messages: ["A rejected request"] } }, 400),
+    });
+    installKey();
+
+    const result = await adapter.prepareTokenization({
+      signerAddress: TOKENIZER,
+      name: "Example Token",
+      tokenSymbol: "EXMPL",
+      supplyCap: "1000",
+      documentationUrl: "https://example.com/token-docs",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INVALID_REQUEST");
+  });
+
+  it("maps signer, rate-limit, and server refusals to bounded categories only", async () => {
+    installKey();
+    const input = {
+      signerAddress: TOKENIZER,
+      name: "Example Token",
+      tokenSymbol: "EXMPL",
+      supplyCap: "1000",
+      documentationUrl: "https://example.com/token-docs",
+    };
+    const cases = [
+      {
+        status: 403,
+        body: { errors: { messages: ["Signer is not approved"] } },
+        code: "SIGNER_NOT_APPROVED",
+      },
+      {
+        status: 429,
+        body: { errors: { messages: ["Slow down"] } },
+        code: "UPSTREAM_RATE_LIMITED",
+      },
+      {
+        status: 503,
+        body: { errors: { messages: ["Internal diagnostic prose"] } },
+        code: "UPSTREAM_SERVER_ERROR",
+      },
+    ] as const;
+
+    for (const item of cases) {
+      const adapter = createBrickkenServerAdapter({
+        fetch: async () => jsonResponse(item.body, item.status),
+      });
+      const result = await adapter.prepareTokenization(input);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe(item.code);
+        expect(JSON.stringify(result.error)).not.toContain(item.body.errors.messages[0]);
+      }
+    }
+  });
+
   it("refuses upstream values containing the API key instead of returning them", async () => {
     const leakedPrepare = structuredClone(encodingA);
     Object.assign(leakedPrepare.transactions[0], { diagnostic: TEST_KEY });
@@ -248,7 +344,6 @@ describe("Brickken server adapter", () => {
     installKey();
     const prepared = await prepareAdapter.prepareTokenization({
       signerAddress: TOKENIZER,
-      tokenizerEmail: "tokenizer@example.com",
       name: "Example Token",
       tokenSymbol: "EXMPL",
       supplyCap: "1000",
@@ -284,6 +379,27 @@ describe("Brickken server adapter", () => {
     if (!missing.ok) expect(missing.error.code).toBe("CONFIGURATION_MISSING");
   });
 
+  it("refuses preparation before fetch when the licensed-account email is absent or invalid", async () => {
+    const fetchSpy = async () => {
+      throw new Error("network should not be used");
+    };
+    process.env.BRICKKEN_API_KEY = TEST_KEY;
+    process.env.BRICKKEN_BASE_URL = "https://api.sandbox.brickken.com";
+    process.env.BRICKKEN_TOKENIZER_EMAIL = " Not-Normalized@example.com";
+    const adapter = createBrickkenServerAdapter({ fetch: fetchSpy });
+
+    const result = await adapter.prepareTokenization({
+      signerAddress: TOKENIZER,
+      name: "Example Token",
+      tokenSymbol: "EXMPL",
+      supplyCap: "1000",
+      documentationUrl: "https://example.com/token-docs",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("CONFIGURATION_MISSING");
+  });
+
   it("uses an explicitly injected sandbox configuration without reading global environment", async () => {
     const requests: string[] = [];
     const adapter = createBrickkenServerAdapter({
@@ -310,11 +426,39 @@ describe("Brickken server adapter", () => {
       value: {
         currencyName: "Sepolia ETH",
         blockExplorerHost: "sepolia.etherscan.io",
+        factoryAddress: null,
       },
     });
     expect(requests).toEqual([
       "https://api.sandbox.brickken.com/get-network-info?chainId=11155111",
     ]);
+  });
+
+  it("strictly validates and exposes only the network-info factory from the live response shape", async () => {
+    const adapter = createBrickkenServerAdapter({
+      runtimeConfig: {
+        apiKey: TEST_KEY,
+        baseUrl: "https://api.sandbox.brickken.com",
+        chainId: "11155111",
+      },
+      fetch: async () => jsonResponse({
+        currencyName: "Sepolia ETH",
+        blockExplorerUrl: "https://sepolia.etherscan.io",
+        factoryAddress: "0x23B04b6410D72Fa66A77a9e0146DF6634Ad4C462",
+        BKNAddress: "0x1111111111111111111111111111111111111111",
+        USDTAddress: "0x2222222222222222222222222222222222222222",
+        USDCAddress: "0x3333333333333333333333333333333333333333",
+      }),
+    });
+
+    await expect(adapter.getNetworkInfo({ chainId: "11155111" })).resolves.toEqual({
+      ok: true,
+      value: {
+        currencyName: "Sepolia ETH",
+        blockExplorerHost: "sepolia.etherscan.io",
+        factoryAddress: "0x23b04b6410d72fa66a77a9e0146df6634ad4c462",
+      },
+    });
   });
 
   it("rejects unexpected network-info response fields", async () => {
@@ -335,6 +479,50 @@ describe("Brickken server adapter", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("INVALID_EXTERNAL_RESPONSE");
+  });
+
+  it("serializes exact { txId, txHash } wire JSON body to POST /send-transactions without id or hash", async () => {
+    let capturedUrl: string | undefined;
+    let capturedInit: RequestInit | undefined;
+    const adapter = createBrickkenServerAdapter({
+      runtimeConfig: {
+        apiKey: TEST_KEY,
+        baseUrl: "https://api.sandbox.brickken.com",
+        chainId: "11155111",
+      },
+      fetch: async (input, init) => {
+        capturedUrl = String(input);
+        capturedInit = init;
+        return jsonResponse(sendPending, 202);
+      },
+    });
+
+    const result = await adapter.correlateClientBroadcast({
+      txId: "durable-tx-id-456",
+      txHash: "0x9f2c1f4b6e8a3d5c7b0e1a2d4f6c8b0a3e5d7c9f1b3a5c7e9d1f3b5a7c9e1d3f",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(capturedUrl).toBe("https://api.sandbox.brickken.com/send-transactions");
+    expect(capturedInit?.method).toBe("POST");
+    expect(capturedInit?.headers).toBeInstanceOf(Headers);
+    expect((capturedInit?.headers as Headers).get("content-type")).toBe("application/json");
+
+    // Exact raw serialized string
+    const expectedBody = JSON.stringify({
+      txId: "durable-tx-id-456",
+      txHash: "0x9f2c1f4b6e8a3d5c7b0e1a2d4f6c8b0a3e5d7c9f1b3a5c7e9d1f3b5a7c9e1d3f",
+    });
+    expect(capturedInit?.body).toBe(expectedBody);
+
+    // Exact property schema: contains txId and txHash, NEVER id or hash
+    const parsedBody = JSON.parse(String(capturedInit?.body));
+    expect(parsedBody).toEqual({
+      txId: "durable-tx-id-456",
+      txHash: "0x9f2c1f4b6e8a3d5c7b0e1a2d4f6c8b0a3e5d7c9f1b3a5c7e9d1f3b5a7c9e1d3f",
+    });
+    expect(parsedBody).not.toHaveProperty("id");
+    expect(parsedBody).not.toHaveProperty("hash");
   });
 
   it("excludes the live smoke test from the default Vitest config", () => {

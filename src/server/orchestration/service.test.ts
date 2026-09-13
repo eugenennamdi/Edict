@@ -7,8 +7,9 @@ import { createApprovalProofFixture } from "../execution/test-fixtures";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
 import { ExecutionRunService } from "../execution/run-service";
 import type { Clock, IdGenerator } from "../execution/infrastructure";
+import type { ExecutionRunRepository } from "../execution/repository";
 import { ExecutionOrchestrator } from "./service";
-import { BrickkenWritesDisabledError, disabledBrickkenWriteGate, type BrickkenWriteGate } from "./write-gate";
+import { BrickkenWritesDisabledError, createPreparationOnlyBrickkenWriteGate, disabledBrickkenWriteGate, type BrickkenWriteGate } from "./write-gate";
 
 const prepared: PreparedOperation = {
   txId: "brickken-tx-1",
@@ -40,6 +41,7 @@ function adapter(
     async prepareTokenization() { prepares += 1; return prepareResult; },
     async prepareWhitelist() { prepares += 1; return prepareResult; },
     async prepareMint() { prepares += 1; return prepareResult; },
+    async correlateClientBroadcast() { throw new Error("unused"); },
     async confirmBroadcast(input) { confirmations.push(input); return { ok: true, value: { txHash: input.txHash, status: "pending" } }; },
     async getTransactionStatus() { return statusResult; },
     async getTokenInfo() { throw new Error("unused"); },
@@ -69,7 +71,13 @@ async function approvedSetup(writeGate: BrickkenWriteGate, brickken = adapter())
     approvedByWallet: TOKENIZER_ADDRESS,
     proof: createApprovalProofFixture(created, clock.nowIso()),
   });
-  return { repository, runs, run, brickken, orchestrator: new ExecutionOrchestrator({ repository, runs, brickken: brickken.value, writeGate }) };
+  return { repository, runs, run, brickken, orchestrator: new ExecutionOrchestrator({
+    repository,
+    runs,
+    brickken: brickken.value,
+    writeGate,
+    brickkenTokenizerEmail: "tokenizer@example.com",
+  }) };
 }
 
 const enabledGate: BrickkenWriteGate = { assertEnabled() {} };
@@ -107,13 +115,53 @@ describe("durable execution orchestration", () => {
     expect(durable.operations[0].unsignedTransaction).toEqual(prepared.transaction.rawUnsigned);
   });
 
+  it("derives TOKENIZE server-side for the public preparation boundary", async () => {
+    const setup = await approvedSetup(enabledGate);
+    const result = await setup.orchestrator.prepareNextOperation(setup.run.id, setup.run.revision);
+    expect(result.revision).toBe(setup.run.revision + 2);
+    expect(result.operations[0]).toMatchObject({ kind: "TOKENIZE", stage: "PREPARED" });
+    expect(result.operations[1].stage).toBe("NOT_STARTED");
+    expect(setup.brickken.prepares()).toBe(1);
+  });
+
+  it("allows one server-derived preparation winner across concurrent requests", async () => {
+    const setup = await approvedSetup(enabledGate);
+    const results = await Promise.allSettled([
+      setup.orchestrator.prepareNextOperation(setup.run.id, setup.run.revision),
+      setup.orchestrator.prepareNextOperation(setup.run.id, setup.run.revision),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(setup.brickken.prepares()).toBe(1);
+  });
+
   it("marks an indeterminate prepare response for reconciliation", async () => {
     const brickken = adapter({ ok: false, error: new BrickkenAdapterError("INVALID_EXTERNAL_RESPONSE", "sanitized") });
     const setup = await approvedSetup(enabledGate, brickken);
-    await expect(setup.orchestrator.prepareOperation(setup.run.id, setup.run.revision, "TOKENIZE")).rejects.toMatchObject({ code: "BRICKKEN_OPERATION_FAILED" });
+    await expect(setup.orchestrator.prepareOperation(setup.run.id, setup.run.revision, "TOKENIZE")).rejects.toMatchObject({ code: "PREPARATION_UNCONFIRMED" });
     const durable = await setup.repository.getById(setup.run.id);
     expect(durable.status).toBe("RECONCILIATION_REQUIRED");
     expect(durable.operations[0].stage).toBe("PREPARE_UNKNOWN");
+    expect(durable.operations[0].brickkenError).toBe("PREPARATION_UNCONFIRMED");
+    expect(brickken.prepares()).toBe(1);
+  });
+
+  it("records a definite preparation entitlement refusal as terminal", async () => {
+    const brickken = adapter({
+      ok: false,
+      error: new BrickkenAdapterError("ENTITLEMENT_REJECTED", "sanitized"),
+    });
+    const setup = await approvedSetup(enabledGate, brickken);
+
+    await expect(
+      setup.orchestrator.prepareOperation(setup.run.id, setup.run.revision, "TOKENIZE"),
+    ).rejects.toMatchObject({ code: "ENTITLEMENT_REJECTED" });
+
+    const durable = await setup.repository.getById(setup.run.id);
+    expect(durable.status).toBe("FAILED");
+    expect(durable.terminalOutcome).toBe("FAILED");
+    expect(durable.operations[0].stage).toBe("REJECTED");
+    expect(durable.operations[0].brickkenError).toBe("ENTITLEMENT_REJECTED");
+    expect(JSON.stringify(durable)).not.toContain("sanitized");
     expect(brickken.prepares()).toBe(1);
   });
 
@@ -121,6 +169,32 @@ describe("durable execution orchestration", () => {
     const setup = await approvedSetup(enabledGate);
     await expect(setup.orchestrator.prepareOperation(setup.run.id, setup.run.revision - 1, "TOKENIZE")).rejects.toMatchObject({ code: "REPOSITORY_REVISION_CONFLICT" });
     expect(setup.brickken.prepares()).toBe(0);
+  });
+
+  it("fails a manifest/hash mismatch before any intent or adapter call", async () => {
+    const setup = await approvedSetup(enabledGate);
+    const mismatched = { ...setup.run, manifestHash: `sha256:${"0".repeat(64)}` };
+    const repository: ExecutionRunRepository = {
+      create: async () => { throw new Error("unused"); },
+      getById: async () => mismatched,
+      update: async () => { throw new Error("must not mutate"); },
+    };
+    const orchestrator = new ExecutionOrchestrator({
+      repository,
+      runs: setup.runs,
+      brickken: setup.brickken.value,
+      writeGate: enabledGate,
+      brickkenTokenizerEmail: "tokenizer@example.com",
+    });
+    await expect(orchestrator.prepareNextOperation(setup.run.id, setup.run.revision))
+      .rejects.toMatchObject({ code: "EXECUTION_INVARIANT_FAILED" });
+    expect(setup.brickken.prepares()).toBe(0);
+  });
+
+  it("the production preparation gate can never authorize confirmation", () => {
+    const gate = createPreparationOnlyBrickkenWriteGate(true);
+    expect(() => gate.assertEnabled("PREPARE")).not.toThrow();
+    expect(() => gate.assertEnabled("CONFIRM_BROADCAST")).toThrow(BrickkenWritesDisabledError);
   });
 
   it("confirms only the identical durable pair and leaves pending poll-only", async () => {
@@ -141,7 +215,7 @@ describe("durable execution orchestration", () => {
     const preparedRun = await setup.orchestrator.prepareOperation(setup.run.id, setup.run.revision, "TOKENIZE");
     const prompted = await setup.orchestrator.recordWalletPrompt(preparedRun.id, preparedRun.revision, "TOKENIZE");
     const broadcast = await setup.orchestrator.recordWalletResult(prompted.id, prompted.revision, "TOKENIZE", { outcome: "BROADCAST", txHash: `0x${"cd".repeat(32)}` });
-    const disabled = new ExecutionOrchestrator({ repository: setup.repository, runs: setup.runs, brickken: setup.brickken.value, writeGate: disabledBrickkenWriteGate });
+    const disabled = new ExecutionOrchestrator({ repository: setup.repository, runs: setup.runs, brickken: setup.brickken.value, writeGate: disabledBrickkenWriteGate, brickkenTokenizerEmail: "tokenizer@example.com" });
     await expect(disabled.confirmBroadcast(broadcast.id, broadcast.revision, "TOKENIZE")).rejects.toBeInstanceOf(BrickkenWritesDisabledError);
     const durable = await setup.repository.getById(broadcast.id);
     expect(durable.revision).toBe(broadcast.revision);

@@ -1,5 +1,7 @@
 # Edict product UI redesign plan
 
+> Historical scope note: this proposal predates Phase 10 execution activation. The canonical product route is `/records/[runId]`; the current API has six routes after adding preparation only. Its older “no prepare” observations describe the earlier workspace checkpoint.
+
 **Status: proposal for review; implementation is not authorized.**
 
 Repository assessment: 2026-09-08. Deliverable scope: product design and frontend architecture only. This document proposes a presentation system around the existing application contract. It does not authorize wallet activity, external execution, migrations, new APIs, or changes to deterministic/security logic.

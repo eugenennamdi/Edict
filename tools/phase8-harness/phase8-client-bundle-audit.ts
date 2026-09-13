@@ -14,13 +14,22 @@ export const PHASE8_CLIENT_AUDIT_SENTINEL =
   "phase8-synthetic-client-credential-sentinel-7f6c";
 const PHASE8_BOOTSTRAP_AUDIT_SENTINEL =
   "phase8-synthetic-bootstrap-verifier-sentinel-4d2a";
+const PHASE8_TOKENIZER_EMAIL_AUDIT_SENTINEL =
+  "phase8-synthetic-tokenizer-email-7d3c@example.com";
 
 const EXPECTED_API_ROUTES = Object.freeze([
   "/api/runs",
   "/api/runs/[runId]",
   "/api/runs/[runId]/approval",
   "/api/runs/[runId]/approval-challenges",
+  "/api/runs/[runId]/broadcast-hash",
+  "/api/runs/[runId]/broadcast-unknown",
   "/api/runs/[runId]/cancel",
+  "/api/runs/[runId]/prepare",
+  "/api/runs/[runId]/promote",
+  "/api/runs/[runId]/readiness",
+  "/api/runs/[runId]/track",
+  "/api/runs/[runId]/wallet-authorization",
 ] as const);
 
 const EXPECTED_APP_PATHS = Object.freeze([
@@ -43,11 +52,20 @@ const REQUIRED_MANIFESTS = Object.freeze([
 const PROHIBITED_PUBLIC_TOKENS = Object.freeze([
   PHASE8_CLIENT_AUDIT_SENTINEL,
   PHASE8_BOOTSTRAP_AUDIT_SENTINEL,
+  PHASE8_TOKENIZER_EMAIL_AUDIT_SENTINEL,
   "BRICKKEN_API_KEY",
   "NEXT_PUBLIC_BRICKKEN_API_KEY",
+  "BRICKKEN_TOKENIZER_EMAIL",
+  "NEXT_PUBLIC_BRICKKEN_TOKENIZER_EMAIL",
   "DATABASE_URL",
   "EDICT_SEPOLIA_RPC_URL",
   "EDICT_RUN_SECURITY_SECRET",
+  "EDICT_TRANSACTION_PREPARATION_ENABLED",
+  "EDICT_TOKENIZE_EXECUTION_ENABLED",
+  "EDICT_TOKENIZE_ALLOWED_DESTINATION",
+  "EDICT_TOKENIZE_FUNCTION_SIGNATURE",
+  "EDICT_TOKENIZE_CALLDATA_COMMITMENT",
+  "NEXT_PUBLIC_EDICT_TOKENIZE_",
   "EDICT_PHASE8_MODE",
   "EDICT_PHASE8_HOST",
   "EDICT_PHASE8_PORT",
@@ -187,13 +205,17 @@ const NODE_PROCESS_BOUNDARY: Phase8AuditProcessBoundary = {
     return revision;
   },
   trackedFiles(projectRoot) {
-    const result = spawnSync("git", ["ls-files", "-z", "--cached"], {
-      cwd: projectRoot,
-      env: { PATH: "/usr/bin:/bin" },
-      encoding: "buffer",
-      maxBuffer: 8 * 1_024 * 1_024,
-      timeout: BUILD_TIMEOUT_MS,
-    });
+    const result = spawnSync(
+      "git",
+      ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+      {
+        cwd: projectRoot,
+        env: { PATH: "/usr/bin:/bin" },
+        encoding: "buffer",
+        maxBuffer: 8 * 1_024 * 1_024,
+        timeout: BUILD_TIMEOUT_MS,
+      },
+    );
     if (result.status !== 0 || !(result.stdout instanceof Buffer)) {
       throw new Error("PHASE8_CLIENT_BUNDLE_AUDIT_FAILED");
     }
@@ -222,6 +244,7 @@ const NODE_PROCESS_BOUNDARY: Phase8AuditProcessBoundary = {
         npm_config_offline: "true",
         npm_config_update_notifier: "false",
         BRICKKEN_API_KEY: PHASE8_CLIENT_AUDIT_SENTINEL,
+        BRICKKEN_TOKENIZER_EMAIL: PHASE8_TOKENIZER_EMAIL_AUDIT_SENTINEL,
       },
       maxBuffer: 16 * 1_024 * 1_024,
       timeout: BUILD_TIMEOUT_MS,

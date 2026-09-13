@@ -22,6 +22,7 @@ const run: PublicRunProjection = {
   status: "AWAITING_APPROVAL",
   terminalOutcome: null,
   approved: false,
+  execution: null,
   operations: [
     { id: "operation-1", kind: "TOKENIZE", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
     { id: "operation-2", kind: "WHITELIST", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
@@ -84,15 +85,14 @@ function setup() {
     issueChallenge: vi.fn(async () => challenge()),
     submitApproval: vi.fn(async () => approved),
   };
-  return { request, wallet, gateway, signature };
+  return { request, wallet, gateway, signature, approved };
 }
 
 describe("browser EIP-712 approval", () => {
   it("passes the exact server-issued string with the exact required signer", async () => {
     const { request, wallet, gateway, signature } = setup();
     const result = await approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,
@@ -124,8 +124,7 @@ describe("browser EIP-712 approval", () => {
     vi.mocked(gateway.issueChallenge).mockResolvedValue(changed);
     await expect(
       approveRunFromUserAction({
-        runId: run.id,
-        expectedRevision: 1,
+        authority: run,
         wallet,
         gateway,
         nowEpochSeconds: () => NOW,
@@ -143,8 +142,7 @@ describe("browser EIP-712 approval", () => {
     });
     await expect(
       approveRunFromUserAction({
-        runId: run.id,
-        expectedRevision: 1,
+        authority: run,
         wallet,
         gateway,
         nowEpochSeconds: () => NOW,
@@ -167,8 +165,7 @@ describe("browser EIP-712 approval", () => {
     });
     vi.mocked(gateway.issueChallenge).mockResolvedValue(hostile);
     await expect(approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,
@@ -181,8 +178,7 @@ describe("browser EIP-712 approval", () => {
     const { wallet, gateway } = setup();
     vi.mocked(gateway.readRun).mockReset().mockResolvedValueOnce(run).mockResolvedValueOnce(run);
     const result = await approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,
@@ -200,8 +196,7 @@ describe("browser EIP-712 approval", () => {
     const { wallet, gateway } = setup();
     vi.mocked(gateway.submitApproval).mockRejectedValueOnce(new ApprovalGatewayError("TRANSPORT_FAILURE"));
     const result = await approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,
@@ -217,8 +212,7 @@ describe("browser EIP-712 approval", () => {
     vi.mocked(gateway.submitApproval).mockRejectedValueOnce(new ApprovalGatewayError("TRANSPORT_FAILURE"));
     vi.mocked(gateway.readRun).mockReset().mockResolvedValueOnce(run).mockResolvedValueOnce(run);
     const result = await approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,
@@ -236,8 +230,7 @@ describe("browser EIP-712 approval", () => {
       .mockResolvedValueOnce(run)
       .mockRejectedValueOnce(new ApprovalGatewayError("SERVICE_UNAVAILABLE"));
     const result = await approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,
@@ -254,8 +247,7 @@ describe("browser EIP-712 approval", () => {
       .mockResolvedValueOnce(run)
       .mockRejectedValueOnce(new ApprovalGatewayError("TRANSPORT_FAILURE"));
     const result = await approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,
@@ -270,8 +262,7 @@ describe("browser EIP-712 approval", () => {
     const stale = { ...run, revision: 2 } as PublicRunProjection;
     vi.mocked(gateway.readRun).mockReset().mockResolvedValue(stale);
     const result = await approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,
@@ -288,8 +279,7 @@ describe("browser EIP-712 approval", () => {
     vi.mocked(gateway.issueChallenge).mockRejectedValueOnce(new ApprovalGatewayError("STALE_OR_STATE_CONFLICT"));
     vi.mocked(gateway.readRun).mockReset().mockResolvedValueOnce(run).mockResolvedValueOnce({ ...run, revision: 2 });
     const result = await approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,
@@ -306,8 +296,7 @@ describe("browser EIP-712 approval", () => {
     vi.mocked(gateway.submitApproval).mockRejectedValueOnce(new ApprovalGatewayError("STALE_OR_STATE_CONFLICT"));
     vi.mocked(gateway.readRun).mockReset().mockResolvedValueOnce(run).mockResolvedValueOnce({ ...run, revision: 2 });
     const result = await approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,
@@ -326,8 +315,7 @@ describe("browser EIP-712 approval", () => {
       .mockResolvedValueOnce(run)
       .mockRejectedValueOnce(new ApprovalGatewayError("ACCESS_UNAVAILABLE"));
     const result = await approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,
@@ -347,8 +335,30 @@ describe("browser EIP-712 approval", () => {
       revision: 3,
     });
     const result = await approveRunFromUserAction({
-      runId: run.id,
-      expectedRevision: 1,
+      authority: run,
+      wallet,
+      gateway,
+      nowEpochSeconds: () => NOW,
+    });
+    expect(result).toEqual({ outcome: "APPROVAL_UNCONFIRMED", reason: "UNSAFE_DURABLE_STATE" });
+  });
+
+  it.each([
+    ["run", { id: "22222222-2222-4222-8222-222222222222" }],
+    ["manifest", { manifestHash: `sha256:${"3".repeat(64)}` }],
+    ["plan", { planHash: `sha256:${"4".repeat(64)}` }],
+    ["signer", { requiredSigner: { role: "tokenizer" as const, walletAddress: "0x1111111111111111111111111111111111111111" } }],
+    ["environment", { environment: "production" } as unknown as Partial<PublicRunProjection>],
+    ["chain", { chainId: "1" } as unknown as Partial<PublicRunProjection>],
+    ["terminal", { terminalOutcome: "FAILED" as const, status: "FAILED" as const }],
+  ])("does not establish approval from changed %s authority", async (_label, change) => {
+    const { wallet, gateway, approved } = setup();
+    vi.mocked(gateway.readRun).mockReset().mockResolvedValueOnce(run).mockResolvedValueOnce({
+      ...approved,
+      ...change,
+    });
+    const result = await approveRunFromUserAction({
+      authority: run,
       wallet,
       gateway,
       nowEpochSeconds: () => NOW,

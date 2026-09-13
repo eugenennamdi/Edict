@@ -6,7 +6,7 @@ export const fields = [
   { name: "symbol", path: "asset.symbol", label: "Token symbol", section: "asset", hint: "3–5 letters or digits. Normalized to uppercase.", placeholder: "e.g. RWA", type: "text" },
   { name: "supplyCap", path: "asset.supplyCap", label: "Supply cap", section: "asset", hint: "Maximum supply, in whole tokens.", placeholder: "0", type: "text", numeric: true },
   { name: "documentationUrl", path: "asset.documentationUrl", label: "Documentation URL", section: "asset", hint: "An HTTPS document URL without embedded credentials.", placeholder: "https://", type: "url", wide: true },
-  { name: "tokenizerEmail", path: "tokenizer.email", label: "Tokenizer email", section: "authority", placeholder: "name@company.com", type: "email", wide: true },
+  { name: "tokenizerEmail", path: "tokenizer.email", label: "Project / issuer email", section: "authority", hint: "Stored in the manifest; Brickken account identity is configured server-side.", placeholder: "name@company.com", type: "email", wide: true },
   { name: "tokenizerWallet", path: "tokenizer.walletAddress", label: "Required signer address", section: "authority", hint: "The tokenizer’s public Ethereum address. No wallet connection needed to plan.", placeholder: "0x…", type: "text", wide: true, mono: true },
   { name: "investorEmail", path: "investor.email", label: "Investor email", section: "allocation", hint: "Must differ from the tokenizer email.", placeholder: "name@company.com", type: "email", wide: true },
   { name: "investorWallet", path: "investor.walletAddress", label: "Recipient address", section: "allocation", hint: "The investor’s public Ethereum address.", placeholder: "0x…", type: "text", wide: true, mono: true },

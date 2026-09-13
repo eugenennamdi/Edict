@@ -13,6 +13,8 @@ import {
 } from "./planning-presentation";
 import { MandateForm } from "./planning-form";
 import { ApprovalReadinessSection } from "./approval/approval-section";
+import { ExecutionReviewSection } from "./execution-review-section";
+import { WalletExecutionSection } from "./wallet-execution-section";
 import {
   DraftSummary,
   PlanDocument,
@@ -122,6 +124,11 @@ export default function RunPlanningWorkspace({
       if (error.current) error.current.focus();
       else cancelButton.current?.focus();
     });
+  }
+
+  async function prepareNextOperation() {
+    await workspace.prepareNextOperation();
+    requestAnimationFrame(() => error.current?.focus());
   }
 
   return (
@@ -351,7 +358,7 @@ export default function RunPlanningWorkspace({
                     : "Plan approval not recorded"}
                 </span>
                 <Separator orientation="vertical" className="h-3 bg-border" />
-                <span className="text-muted-foreground">Execution controls offline</span>
+                <span className="text-muted-foreground">Wallet execution requires server authorization · Production deny-all</span>
               </div>
 
               <div className="flex items-center gap-2">
@@ -455,7 +462,21 @@ export default function RunPlanningWorkspace({
               ) : (
                 <div className="space-y-6">
                   <PlanDocument view={view} />
-                  <ApprovalReadinessSection view={view} />
+                  <ApprovalReadinessSection
+                    view={view}
+                    acceptDurableRun={workspace.acceptDurableRun}
+                  />
+                  <ExecutionReviewSection
+                    view={view}
+                    pending={state.pending === "prepare"}
+                    preparationUnconfirmed={state.preparationUnconfirmed}
+                    onPrepare={() => void prepareNextOperation()}
+                  />
+                  <WalletExecutionSection
+                    key={`${view.run.id}:${view.run.revision}`}
+                    run={view.run}
+                    onRefresh={async () => { await workspace.refresh(); }}
+                  />
                 </div>
               )
             ) : durableRoute ? (

@@ -9,6 +9,7 @@ import {
   type EdictEip1193Provider,
   type WalletReadiness,
   type WalletSource,
+  type WalletTransactionRequestV1,
 } from "@/shared/wallet";
 import { WalletBoundaryError, providerErrorCode } from "./errors";
 
@@ -184,13 +185,36 @@ export class SelectedWalletSession {
     return this.inspect(requiredSigner);
   }
 
-  async requestExplicit(method: "eth_signTypedData_v4" | "eth_sendTransaction", params: readonly unknown[]) {
+  async requestExplicit(method: "eth_signTypedData_v4", params: readonly unknown[]) {
     this.#assertAvailable();
+    return this.#invoke({ method, params }, this.#deadlines.typedDataSignature);
+  }
+
+  async sendTransactionOnce(input: {
+    readonly expectedGeneration: number;
+    readonly requiredSigner: string;
+    readonly walletRequest: WalletTransactionRequestV1;
+  }): Promise<unknown> {
+    this.assertGeneration(input.expectedGeneration);
+    const chainRaw = await this.#request("eth_chainId");
+    this.assertGeneration(input.expectedGeneration);
+    const accountsRaw = await this.#request("eth_accounts");
+    this.assertGeneration(input.expectedGeneration);
+    const readiness = this.#readiness(
+      accountsRaw,
+      chainRaw,
+      input.requiredSigner,
+      input.expectedGeneration,
+    );
+    if (readiness.state === "WRONG_CHAIN") throw new WalletBoundaryError("WRONG_CHAIN");
+    if (readiness.state !== "READY") {
+      throw new WalletBoundaryError("REQUIRED_ACCOUNT_UNAVAILABLE");
+    }
+    this.assertGeneration(input.expectedGeneration);
     return this.#invoke(
-      { method, params },
-      method === "eth_sendTransaction"
-        ? this.#deadlines.sendTransaction
-        : this.#deadlines.typedDataSignature,
+      { method: "eth_sendTransaction", params: [input.walletRequest] },
+      this.#deadlines.sendTransaction,
+      input.expectedGeneration,
     );
   }
 
@@ -244,11 +268,15 @@ export class SelectedWalletSession {
   async #invoke(
     input: { readonly method: string; readonly params?: readonly unknown[] | Record<string, unknown> },
     deadlineMs: number,
+    expectedGeneration?: number,
   ): Promise<unknown> {
     this.#assertAvailable();
     let timer: unknown;
     let expired = false;
-    const providerPromise = Promise.resolve().then(() => this.#requestReference.call(this.#provider, input));
+    const providerPromise = Promise.resolve().then(() => {
+      if (expectedGeneration !== undefined) this.assertGeneration(expectedGeneration);
+      return this.#requestReference.call(this.#provider, input);
+    });
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
       timer = this.#timers.setTimeout(() => {
         expired = true;

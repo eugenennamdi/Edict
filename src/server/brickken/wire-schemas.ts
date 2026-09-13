@@ -109,6 +109,10 @@ export const networkInfoSchema = z
   .strictObject({
     currencyName: z.string().max(128).optional(),
     blockExplorerUrl: z.string().max(2_048).optional(),
+    factoryAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional(),
+    BKNAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional(),
+    USDTAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional(),
+    USDCAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional(),
   })
   .readonly();
 

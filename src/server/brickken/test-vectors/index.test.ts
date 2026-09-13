@@ -35,7 +35,7 @@ describe("Brickken sourced test vectors", () => {
     }
   });
 
-  it("records omitted unofficial success bodies instead of inventing them", () => {
+  it("records omitted unofficial or live success bodies instead of inventing them", () => {
     const omitted = new Set(inventory.omitted.map((entry) => entry.id));
     expect(omitted.has("whitelist-status-string-variant")).toBe(true);
     expect(omitted.has("send-confirmed-client-broadcast-response")).toBe(true);

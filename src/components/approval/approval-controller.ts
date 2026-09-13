@@ -4,12 +4,32 @@ import "client-only";
 
 import type { PublicRunProjection } from "@/shared/run";
 import type { DiscoveredWallet, WalletReadiness, WalletSource } from "@/shared/wallet";
+import { createApprovalHttpGateway } from "@/client/run-api/approval-gateway";
+import {
+  ApprovalGatewayError,
+  approveRunFromUserAction,
+  readApprovalStatusFromUserAction,
+  type ApprovalGateway,
+  type ApprovalGatewayErrorCode,
+  type ApprovalAttemptResult,
+  type ApprovalWalletSession,
+} from "@/client/wallet/approval";
 import { InjectedWalletDiscovery } from "@/client/wallet/discovery";
 import { WalletBoundaryError, type WalletErrorCode } from "@/client/wallet/errors";
 
 export type ApprovalReadinessTarget = Readonly<Pick<
   PublicRunProjection,
-  "id" | "revision" | "requiredSigner" | "phase" | "status" | "approved" | "terminalOutcome"
+  | "id"
+  | "revision"
+  | "manifestHash"
+  | "planHash"
+  | "environment"
+  | "chainId"
+  | "requiredSigner"
+  | "phase"
+  | "status"
+  | "approved"
+  | "terminalOutcome"
 >>;
 
 export type ApprovalReadinessStatus =
@@ -32,7 +52,26 @@ export type ApprovalReadinessStatus =
   | "APPROVAL_RECORDED"
   | "APPROVAL_NOT_ELIGIBLE";
 
-export type ApprovalReadinessPending = "SELECT" | "INSPECT" | "ACCOUNT_ACCESS" | "SWITCH" | null;
+export type ApprovalReadinessPending =
+  | "SELECT"
+  | "INSPECT"
+  | "ACCOUNT_ACCESS"
+  | "SWITCH"
+  | "APPROVAL"
+  | "REFRESH_APPROVAL"
+  | null;
+
+export type PlanApprovalStatus =
+  | "IDLE"
+  | "IN_PROGRESS"
+  | "SIGNATURE_REJECTED"
+  | "SIGNING_UNSUPPORTED"
+  | "NOT_RECORDED"
+  | "STALE_OR_CHANGED"
+  | "ACCESS_UNAVAILABLE"
+  | "UNCONFIRMED"
+  | "REQUEST_FAILED"
+  | "RECORDED";
 
 export interface ApprovalReadinessState {
   readonly target: ApprovalReadinessTarget;
@@ -41,11 +80,13 @@ export interface ApprovalReadinessState {
   readonly selectedProviderId: string | null;
   readonly selectedSource: WalletSource | null;
   readonly status: ApprovalReadinessStatus;
+  readonly approvalStatus: PlanApprovalStatus;
   readonly pending: ApprovalReadinessPending;
   readonly safeErrorCode: WalletErrorCode | null;
+  readonly approvalErrorCode: WalletErrorCode | ApprovalGatewayErrorCode | null;
 }
 
-interface ReadinessSession {
+interface ReadinessSession extends ApprovalWalletSession {
   readonly selectionId: string;
   readonly source: WalletSource;
   readonly generation: number;
@@ -78,6 +119,9 @@ export interface ApprovalReadinessControllerOptions {
   readonly readLegacyProvider?: () => unknown;
   readonly timers?: ApprovalReadinessTimers;
   readonly discoveryWindowMs?: number;
+  readonly approvalGateway?: ApprovalGateway;
+  readonly nowEpochSeconds?: () => bigint;
+  readonly acceptDurableRun?: (run: PublicRunProjection) => boolean;
 }
 
 const defaultTimers: ApprovalReadinessTimers = Object.freeze({
@@ -107,14 +151,21 @@ export function initialApprovalReadinessState(
     selectedProviderId: null,
     selectedSource: null,
     status: initialStatus(target),
+    approvalStatus: target.approved ? "RECORDED" : "IDLE",
     pending: null,
     safeErrorCode: null,
+    approvalErrorCode: null,
   });
 }
 
 function targetChanged(current: ApprovalReadinessTarget, next: ApprovalReadinessTarget): boolean {
   return current.id !== next.id ||
     current.revision !== next.revision ||
+    current.manifestHash !== next.manifestHash ||
+    current.planHash !== next.planHash ||
+    current.environment !== next.environment ||
+    current.chainId !== next.chainId ||
+    current.requiredSigner.role !== next.requiredSigner.role ||
     current.requiredSigner.walletAddress !== next.requiredSigner.walletAddress ||
     current.phase !== next.phase ||
     current.status !== next.status ||
@@ -155,8 +206,14 @@ function walletErrorCode(error: unknown): WalletErrorCode {
   return error instanceof WalletBoundaryError ? error.code : "PROVIDER_UNAVAILABLE";
 }
 
+function approvalIsLocked(status: PlanApprovalStatus): boolean {
+  return ["IN_PROGRESS", "ACCESS_UNAVAILABLE", "UNCONFIRMED", "RECORDED"].includes(status);
+}
+
 export function createApprovalReadinessController(options: ApprovalReadinessControllerOptions) {
   const timers = options.timers ?? defaultTimers;
+  const approvalGateway = options.approvalGateway;
+  const nowEpochSeconds = options.nowEpochSeconds ?? (() => BigInt(Math.floor(Date.now() / 1000)));
   const discovery = options.discovery ?? (() => {
     if (!options.events) throw new Error("APPROVAL_READINESS_EVENTS_REQUIRED");
     return new InjectedWalletDiscovery({
@@ -209,7 +266,9 @@ export function createApprovalReadinessController(options: ApprovalReadinessCont
       selectedProviderId: next.selectionId,
       selectedSource: next.source,
       status: "PROVIDER_SELECTED_UNCHECKED",
+      approvalStatus: "IDLE",
       safeErrorCode: null,
+      approvalErrorCode: null,
     });
   };
 
@@ -264,7 +323,13 @@ export function createApprovalReadinessController(options: ApprovalReadinessCont
     status: ApprovalReadinessStatus,
     operation: (selected: ReadinessSession) => Promise<WalletReadiness>,
   ): Promise<void> => {
-    if (disposed || busy || !session || !approvalEligible(target)) return;
+    if (
+      disposed ||
+      busy ||
+      !session ||
+      approvalIsLocked(state.approvalStatus) ||
+      !approvalEligible(target)
+    ) return;
     busy = true;
     const serial = ++actionSerial;
     const generation = settlementGeneration;
@@ -314,7 +379,7 @@ export function createApprovalReadinessController(options: ApprovalReadinessCont
   );
 
   const select = async (legacy: boolean): Promise<void> => {
-    if (disposed || busy || !approvalEligible(target)) return;
+    if (disposed || busy || approvalIsLocked(state.approvalStatus) || !approvalEligible(target)) return;
     const candidate = state.candidateSelectionId;
     if (!legacy) {
       const available = state.providers.some(
@@ -345,6 +410,161 @@ export function createApprovalReadinessController(options: ApprovalReadinessCont
     await inspect();
   };
 
+  const acceptDurableRun = (run: PublicRunProjection): boolean => {
+    try {
+      return options.acceptDurableRun?.(run) ?? false;
+    } catch {
+      return false;
+    }
+  };
+
+  const settleApprovalResult = (result: ApprovalAttemptResult): void => {
+    if (result.outcome === "APPROVAL_RECORDED") {
+      if (!acceptDurableRun(result.run)) {
+        clearSession();
+        publish({
+          status: "READINESS_INVALIDATED",
+          approvalStatus: "UNCONFIRMED",
+          pending: null,
+          approvalErrorCode: null,
+        });
+        return;
+      }
+      clearSession();
+      publish({
+        status: "APPROVAL_RECORDED",
+        approvalStatus: "RECORDED",
+        selectedProviderId: null,
+        selectedSource: null,
+        pending: null,
+        safeErrorCode: null,
+        approvalErrorCode: null,
+      });
+      return;
+    }
+    if (result.outcome === "APPROVAL_NOT_RECORDED") {
+      if (!acceptDurableRun(result.run)) {
+        clearSession();
+        publish({
+          status: "READINESS_INVALIDATED",
+          approvalStatus: "UNCONFIRMED",
+          pending: null,
+          approvalErrorCode: null,
+        });
+        return;
+      }
+      const changed = result.reason === "STALE_OR_CHANGED" ||
+        result.run.revision !== target.revision ||
+        result.run.phase !== target.phase ||
+        result.run.status !== target.status ||
+        result.run.terminalOutcome !== target.terminalOutcome;
+      if (changed) {
+        clearSession();
+        publish({
+          status: "READINESS_INVALIDATED",
+          approvalStatus: "STALE_OR_CHANGED",
+          selectedProviderId: null,
+          selectedSource: null,
+          pending: null,
+          safeErrorCode: null,
+          approvalErrorCode: null,
+        });
+        return;
+      }
+      publish({
+        approvalStatus: "NOT_RECORDED",
+        approvalErrorCode: null,
+      });
+      return;
+    }
+    publish({
+      approvalStatus: result.outcome === "ACCESS_UNAVAILABLE" ? "ACCESS_UNAVAILABLE" : "UNCONFIRMED",
+      approvalErrorCode: null,
+    });
+  };
+
+  const approvePlan = async (): Promise<void> => {
+    if (
+      disposed ||
+      busy ||
+      !session ||
+      !approvalGateway ||
+      state.status !== "READY" ||
+      approvalIsLocked(state.approvalStatus) ||
+      state.approvalStatus === "SIGNING_UNSUPPORTED" ||
+      !approvalEligible(target)
+    ) return;
+    busy = true;
+    const serial = ++actionSerial;
+    const selected = session;
+    publish({ pending: "APPROVAL", approvalStatus: "IN_PROGRESS", approvalErrorCode: null });
+    try {
+      const result = await approveRunFromUserAction({
+        authority: target,
+        wallet: selected,
+        gateway: approvalGateway,
+        nowEpochSeconds,
+      });
+      if (disposed || serial !== actionSerial || selected !== session) return;
+      settleApprovalResult(result);
+    } catch (error) {
+      if (disposed || serial !== actionSerial || selected !== session) return;
+      if (error instanceof WalletBoundaryError) {
+        const code = error.code;
+        if (code === "SIGNATURE_REJECTED") {
+          publish({ approvalStatus: "SIGNATURE_REJECTED", approvalErrorCode: code });
+        } else if (code === "TYPED_DATA_SIGNING_UNSUPPORTED" || code === "UNSUPPORTED_METHOD") {
+          publish({ approvalStatus: "SIGNING_UNSUPPORTED", approvalErrorCode: code });
+        } else {
+          const status = code === "REQUIRED_ACCOUNT_UNAVAILABLE"
+            ? "REQUIRED_SIGNER_MISSING"
+            : code === "WRONG_CHAIN"
+              ? "WRONG_NETWORK"
+              : "READINESS_INVALIDATED";
+          publish({ status, approvalStatus: "REQUEST_FAILED", safeErrorCode: code, approvalErrorCode: code });
+        }
+      } else if (error instanceof ApprovalGatewayError) {
+        publish({
+          approvalStatus: error.code === "ACCESS_UNAVAILABLE" ? "ACCESS_UNAVAILABLE" : "REQUEST_FAILED",
+          approvalErrorCode: error.code,
+        });
+      } else {
+        publish({ approvalStatus: "REQUEST_FAILED", approvalErrorCode: null });
+      }
+    } finally {
+      if (!disposed && serial === actionSerial) {
+        busy = false;
+        publish({ pending: null });
+      }
+    }
+  };
+
+  const refreshApprovalStatus = async (): Promise<void> => {
+    if (
+      disposed ||
+      busy ||
+      !approvalGateway ||
+      !["ACCESS_UNAVAILABLE", "UNCONFIRMED"].includes(state.approvalStatus)
+    ) return;
+    busy = true;
+    const serial = ++actionSerial;
+    publish({ pending: "REFRESH_APPROVAL", approvalErrorCode: null });
+    try {
+      const result = await readApprovalStatusFromUserAction({
+        authority: target,
+        gateway: approvalGateway,
+        unrecordedReason: "REFUSED_OR_UNRECORDED",
+      });
+      if (disposed || serial !== actionSerial) return;
+      settleApprovalResult(result);
+    } finally {
+      if (!disposed && serial === actionSerial) {
+        busy = false;
+        publish({ pending: null });
+      }
+    }
+  };
+
   return Object.freeze({
     getState: () => state,
 
@@ -362,7 +582,7 @@ export function createApprovalReadinessController(options: ApprovalReadinessCont
     },
 
     chooseProvider(selectionId: string): void {
-      if (disposed || busy || !approvalEligible(target)) return;
+      if (disposed || busy || approvalIsLocked(state.approvalStatus) || !approvalEligible(target)) return;
       const selected = state.providers.find((provider) => provider.selectionId === selectionId);
       if (!selected || selected.status !== "AVAILABLE") return;
       if (session && session.selectionId !== selectionId) clearSession();
@@ -371,14 +591,18 @@ export function createApprovalReadinessController(options: ApprovalReadinessCont
         selectedProviderId: session?.selectionId ?? null,
         selectedSource: session?.source ?? null,
         status: session ? state.status : "PROVIDER_AVAILABLE",
+        approvalStatus: "IDLE",
         pending: null,
         safeErrorCode: null,
+        approvalErrorCode: null,
       });
     },
 
     selectWallet: () => select(false),
     selectLegacyProvider: () => select(true),
     checkWallet: inspect,
+    approvePlan,
+    refreshApprovalStatus,
 
     allowAccountAccess: () => {
       if (!["ACCOUNT_ACCESS_REQUIRED", "ACCOUNT_ACCESS_REJECTED"].includes(state.status)) {
@@ -414,8 +638,10 @@ export function createApprovalReadinessController(options: ApprovalReadinessCont
           : approvalEligible(next)
             ? providerListStatus(state.providers, discoverySettled)
             : "APPROVAL_NOT_ELIGIBLE",
+        approvalStatus: next.approved ? "RECORDED" : "IDLE",
         pending: null,
         safeErrorCode: null,
+        approvalErrorCode: null,
       });
     },
 
@@ -434,10 +660,12 @@ export function createApprovalReadinessController(options: ApprovalReadinessCont
 export function createBrowserApprovalReadinessController(input: {
   readonly target: ApprovalReadinessTarget;
   readonly publish: (state: ApprovalReadinessState) => void;
+  readonly acceptDurableRun: (run: PublicRunProjection) => boolean;
 }) {
   if (typeof window === "undefined") throw new Error("APPROVAL_READINESS_BROWSER_REQUIRED");
   return createApprovalReadinessController({
     ...input,
+    approvalGateway: createApprovalHttpGateway(),
     events: window,
     readLegacyProvider: () => {
       const descriptor = Object.getOwnPropertyDescriptor(globalThis, "ethereum");

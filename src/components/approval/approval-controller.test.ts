@@ -9,6 +9,10 @@ const UUID = "11111111-1111-4111-8111-111111111111";
 const target: ApprovalReadinessTarget = Object.freeze<ApprovalReadinessTarget>({
   id: "11111111-1111-4111-8111-111111111111",
   revision: 1,
+  manifestHash: `sha256:${"1".repeat(64)}`,
+  planHash: `sha256:${"2".repeat(64)}`,
+  environment: "sandbox",
+  chainId: "11155111",
   requiredSigner: { role: "tokenizer", walletAddress: SIGNER },
   phase: "PLAN",
   status: "AWAITING_APPROVAL",
@@ -319,10 +323,11 @@ describe("approval readiness controller", () => {
     expect(h.state().providers).toHaveLength(1);
   });
 
-  it("contains no signing, approval HTTP, execution, storage, secret, logging, or focus capability", () => {
+  it("contains no direct signing method, execution, storage, secret, logging, or automatic focus capability", () => {
     const source = ["approval-controller.ts", "approval-section.tsx"]
       .map((file) => readFileSync(new URL(file, import.meta.url), "utf8"))
       .join("\n");
-    expect(source).not.toMatch(/eth_sign|eth_sendTransaction|requestExplicit|approval-challenges|submitApproval|ApprovalGateway|client\/wallet\/execution|Brickken|RPC|localStorage|sessionStorage|document\.cookie|console\.|\.focus\(/u);
+    expect(readFileSync(new URL("approval-section.tsx", import.meta.url), "utf8")).not.toMatch(/eth_sign|requestExplicit|submitApproval|approval-challenges/u);
+    expect(source).not.toMatch(/eth_sendTransaction|personal_sign|client\/wallet\/execution|Brickken|RPC|localStorage|sessionStorage|document\.cookie|console\./u);
   });
 });

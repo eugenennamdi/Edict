@@ -4,7 +4,11 @@ export type BrickkenAdapterErrorCode =
   | "ENTITLEMENT_REJECTED"
   | "CREDITS_EXHAUSTED"
   | "INVALID_REQUEST"
+  | "SIGNER_NOT_APPROVED"
+  | "UPSTREAM_RATE_LIMITED"
+  | "UPSTREAM_SERVER_ERROR"
   | "INVALID_EXTERNAL_RESPONSE"
+  | "STATUS_CONTRADICTION"
   | "UNSUPPORTED_TRANSACTION_BATCH"
   | "UNSUPPORTED_CHAIN"
   | "PREPARED_TRANSACTION_INCOMPLETE"
@@ -54,7 +58,12 @@ export function safeErrorMessage(
     ENTITLEMENT_REJECTED: "The sandbox credential is not entitled for this token or signer.",
     CREDITS_EXHAUSTED: "The sandbox credential has no remaining credits for this method.",
     INVALID_REQUEST: "The Brickken request was rejected as invalid.",
+    SIGNER_NOT_APPROVED: "Brickken did not approve the requested signer.",
+    UPSTREAM_RATE_LIMITED: "Brickken rate-limited the preparation request.",
+    UPSTREAM_SERVER_ERROR: "Brickken returned a server error during preparation.",
     INVALID_EXTERNAL_RESPONSE: "The Brickken response could not be trusted.",
+    STATUS_CONTRADICTION:
+      "The transaction status response contradicts the expected transaction hash or contains contradictory hash fields.",
     UNSUPPORTED_TRANSACTION_BATCH: "client-broadcast requires exactly one prepared transaction.",
     UNSUPPORTED_CHAIN: "Only Ethereum Sepolia is supported.",
     PREPARED_TRANSACTION_INCOMPLETE:
