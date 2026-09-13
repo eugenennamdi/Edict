@@ -541,7 +541,7 @@ describe("wallet ambiguity and correlation authority", () => {
         observedAt: "2026-09-11T09:32:03.000Z",
         txId: pair.txId,
         txHash: pair.txHash,
-        status: "success",
+        status: "rejected",
       },
       id: "status",
     });
@@ -552,7 +552,7 @@ describe("wallet ambiguity and correlation authority", () => {
       run, kind: "TOKENIZE", evidence: receiptEvidence("FINALIZED"), id: "finalized",
     });
     expect(run.operations[0].transactionReceiptEvidence?.finalityStatus).toBe("FINALIZED");
-    expect(run.operations[0].brickkenStatus).toBe("success");
+    expect(run.operations[0].brickkenStatus).toBe("rejected");
     expect(run.status).toBe("RECONCILIATION_REQUIRED");
     expect(run.phase).toBe("TOKENIZATION");
     expect(() => recordTokenIdentityFromReadBackV4({
@@ -689,7 +689,7 @@ describe("wallet ambiguity and correlation authority", () => {
         observedAt: "2026-09-11T09:50:02.000Z",
         txId: pair.txId,
         txHash: pair.txHash,
-        status: "success",
+        status: "rejected",
       },
       id: "status",
     });

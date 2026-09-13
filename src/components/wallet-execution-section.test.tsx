@@ -22,7 +22,13 @@ describe("wallet execution UI composition", () => {
       "Transaction hash recorded",
       "Broadcast outcome uncertain",
       "Reconciliation required",
+      "Promote prepared run to V4",
+      "Check server readiness",
+      "Track transaction status",
     ]) expect(source).toContain(text);
+    expect(source.indexOf('mutateActivation("promote")')).toBeLessThan(
+      source.indexOf('mutateActivation("readiness")'),
+    );
     expect(source).not.toMatch(/BRICKKEN_API_KEY|DATABASE_URL|privateKey|seed phrase|eth_sendRawTransaction/u);
   });
 

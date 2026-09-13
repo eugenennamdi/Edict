@@ -469,6 +469,7 @@ export function createBrickkenServerAdapter(
           value: {
             currencyName: parsed.data.currencyName ?? null,
             blockExplorerHost: host,
+            factoryAddress: parsed.data.factoryAddress?.toLowerCase() ?? null,
           } satisfies NetworkInfoView,
         };
       });

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createRunApiRuntime, createRuntimeSemanticAuthorization } from "./runtime";
 import {
@@ -36,6 +37,14 @@ describe("Production RunApiRuntime composition", () => {
     expect(runtime.access).toBeDefined();
     expect(runtime.approvals).toBeDefined();
     expect(runtime.walletExecution).toBeDefined();
+  });
+
+  it("wires V4 tracking to exact-pair correlation and hardened status without the V3 alias", () => {
+    const source = readFileSync(new URL("./runtime.ts", import.meta.url), "utf8");
+    expect(source).toContain("brickken.correlateClientBroadcast(pair)");
+    expect(source).toContain("brickken.getTransactionStatus(locator)");
+    expect(source).not.toContain("confirmBroadcast(");
+    expect(source).not.toContain("get-transaction-status");
   });
 
   it("enforces DENY-ALL semantic authorization so releaseSendAuthority is permanently unreachable", async () => {

@@ -17,6 +17,7 @@ import { createPreparationOnlyBrickkenWriteGate } from "../orchestration/write-g
 import type { RunApiRuntime } from "./runtime";
 import {
   ExecutionV4Orchestrator,
+  OrchestrationError,
   TOKENIZE_ALLOWED_DESTINATION,
   TOKENIZE_CALLDATA_COMMITMENT,
   TOKENIZE_EXECUTION_GATE,
@@ -602,6 +603,16 @@ describe("V4 browser wallet run routes", () => {
     // Handles CAS conflict
     vi.mocked(value.walletExecution.trackExecution).mockRejectedValueOnce(new RepositoryRevisionConflictError());
     expect((await value.call(trackExecutionHandler, "track", { expectedRevision: 1 })).status).toBe(409);
+
+    vi.mocked(value.walletExecution.trackExecution).mockRejectedValueOnce(
+      new OrchestrationError("READ_BACK_BINDING_UNRESOLVED"),
+    );
+    const unresolved = await value.call(trackExecutionHandler, "track", { expectedRevision: 2 });
+    expect(unresolved.status).toBe(503);
+    expect(await unresolved.json()).toEqual({
+      ok: false,
+      error: { code: "READ_BACK_BINDING_UNRESOLVED" },
+    });
   });
 });
 

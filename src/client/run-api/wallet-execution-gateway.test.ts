@@ -40,6 +40,31 @@ function errorCode(error: unknown): unknown {
 }
 
 describe("wallet execution HTTP gateway", () => {
+  it.each(["promote", "readiness", "track"] as const)(
+    "posts one explicit %s action with only the durable revision",
+    async (action) => {
+      const run = {
+        id: RUN_ID,
+        schemaVersion: "4.0",
+      };
+      const transport = vi.fn(async () => json({ ok: true, run }));
+      const gateway = createWalletExecutionHttpGateway(transport);
+      // This narrow fixture intentionally exercises transport routing; strict
+      // public DTO rejection is covered by the malformed-response cases.
+      await expect(gateway[action](RUN_ID, 8)).rejects.toMatchObject({
+        code: "MALFORMED_RESPONSE",
+      });
+      expect(transport).toHaveBeenCalledOnce();
+      expect(transport).toHaveBeenCalledWith(
+        `/api/runs/${RUN_ID}/${action}`,
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ expectedRevision: 8 }),
+        }),
+      );
+    },
+  );
+
   it("posts one exact authorization request and accepts only the strict envelope response", async () => {
     const transport = vi.fn(async () => json({ ok: true, envelope }));
     const gateway = createWalletExecutionHttpGateway(transport);

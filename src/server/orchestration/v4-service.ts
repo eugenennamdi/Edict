@@ -16,6 +16,7 @@ import {
   type BrickkenCorrelationOutcome,
   type BrickkenCorrelationResult,
   type BrickkenStatusDurableEvidenceV1,
+  type BrickkenServerAdapter,
   type BrickkenTransactionLocator,
   type BrickkenTransactionStatusResult,
   BrickkenAdapterError,
@@ -109,6 +110,7 @@ export class DenyAllSemanticAuthorizationEvaluator
 
 export interface BrickkenCorrelationSender {
   send(pair: { readonly txId: string; readonly txHash: string }): Promise<
+    | BrickkenCorrelationResult
     | Readonly<{
         status: number;
         data?: unknown;
@@ -130,6 +132,7 @@ export class DisabledBrickkenCorrelationSender
 
 export interface BrickkenStatusFetcher {
   fetch(locator: BrickkenTransactionLocator): Promise<
+    | BrickkenTransactionStatusResult
     | Readonly<{
         status: number;
         data?: unknown;
@@ -155,6 +158,10 @@ export interface ExecutionV4OrchestratorDependencies {
   readonly semanticAuthorization?: SemanticAuthorizationEvaluator;
   readonly brickkenCorrelationSender?: BrickkenCorrelationSender;
   readonly brickkenStatusFetcher?: BrickkenStatusFetcher;
+  readonly brickkenReadBack?: Pick<
+    BrickkenServerAdapter,
+    "getTokenInfo" | "getTokenizerInfo"
+  >;
 }
 
 export type PreflightWalletAuthorizationResult =
@@ -259,6 +266,7 @@ export class ExecutionV4Orchestrator {
   readonly #semanticAuth: SemanticAuthorizationEvaluator;
   readonly #correlationSender: BrickkenCorrelationSender;
   readonly #statusFetcher: BrickkenStatusFetcher;
+  readonly #readBack: ExecutionV4OrchestratorDependencies["brickkenReadBack"];
 
   constructor(deps: ExecutionV4OrchestratorDependencies) {
     this.#deps = deps;
@@ -268,6 +276,7 @@ export class ExecutionV4Orchestrator {
       deps.brickkenCorrelationSender ?? new DisabledBrickkenCorrelationSender();
     this.#statusFetcher =
       deps.brickkenStatusFetcher ?? new DisabledBrickkenStatusFetcher();
+    this.#readBack = deps.brickkenReadBack;
   }
 
   async promotePreparedRunToV4(
@@ -318,6 +327,9 @@ export class ExecutionV4Orchestrator {
   ): Promise<{ evaluation: FreshnessEvaluation; run: ExecutionRun }> {
     const current = await this.#deps.repository.getById(runId);
     assertRevision(current, expectedRevision);
+    // Promotion is an explicit, separately authorized mutation. Readiness must
+    // never upgrade a V2 record as a side effect.
+    assertV4(current);
     const { kind, operation: op } = deriveActiveOperation(current);
     const evaluation = await evaluatePreparedFreshness({
       client: this.#deps.rpc,
@@ -1218,37 +1230,41 @@ export class ExecutionV4Orchestrator {
     let classified: BrickkenCorrelationResult;
     try {
       const rawResponse = await this.#correlationSender.send(pair);
-      let status = 200;
-      let bodyText = "";
-      let json: unknown = null;
+      if ("outcome" in rawResponse) {
+        classified = rawResponse;
+      } else {
+        let status = 200;
+        let bodyText = "";
+        let json: unknown = null;
 
-      if (rawResponse instanceof Response) {
-        status = rawResponse.status;
-        bodyText = await rawResponse.text();
-        try {
-          json = JSON.parse(bodyText);
-        } catch {
-          json = null;
+        if (rawResponse instanceof Response) {
+          status = rawResponse.status;
+          bodyText = await rawResponse.text();
+          try {
+            json = JSON.parse(bodyText);
+          } catch {
+            json = null;
+          }
+        } else if (typeof rawResponse === "object" && rawResponse !== null) {
+          const obj = rawResponse as {
+            status?: number;
+            data?: unknown;
+            rawBody?: string;
+          };
+          status = obj.status ?? 200;
+          json = obj.data ?? obj;
+          bodyText = obj.rawBody ?? JSON.stringify(json);
         }
-      } else if (typeof rawResponse === "object" && rawResponse !== null) {
-        const obj = rawResponse as {
-          status?: number;
-          data?: unknown;
-          rawBody?: string;
-        };
-        status = obj.status ?? 200;
-        json = obj.data ?? obj;
-        bodyText = obj.rawBody ?? JSON.stringify(json);
-      }
 
-      classified = classifyCorrelationResponse({
-        requestedTxHash: pair.txHash,
-        txId: pair.txId,
-        status,
-        bodyText,
-        json,
-        correlatedAt: this.#deps.clock.nowIso(),
-      });
+        classified = classifyCorrelationResponse({
+          requestedTxHash: pair.txHash,
+          txId: pair.txId,
+          status,
+          bodyText,
+          json,
+          correlatedAt: this.#deps.clock.nowIso(),
+        });
+      }
     } catch (error) {
       classified = classifyCorrelationTransportError(error);
     }
@@ -1359,7 +1375,7 @@ export class ExecutionV4Orchestrator {
         responseByteCount: 0,
         contentType: "application/json",
         transactionHash: op.blockchainTxHash,
-        rawStatusText: lastEvidence?.status ?? "success",
+        rawStatusText: lastEvidence?.status ?? null,
         diagnosticError: null,
         error: null,
       };
@@ -1379,48 +1395,52 @@ export class ExecutionV4Orchestrator {
 
     try {
       const rawResponse = await this.#statusFetcher.fetch(locator);
-      let rawJson: unknown;
-      let httpStatus = 200;
-      let responseByteCount = 0;
-      let contentType: string | null = "application/json";
-
-      if (rawResponse instanceof Response) {
-        httpStatus = rawResponse.status;
-        contentType = rawResponse.headers.get("content-type");
-        const text = await rawResponse.text();
-        responseByteCount = Buffer.byteLength(text, "utf8");
-        try {
-          rawJson = JSON.parse(text);
-        } catch {
-          rawJson = null;
-        }
-      } else if (typeof rawResponse === "object" && rawResponse !== null) {
-        const obj = rawResponse as {
-          status?: number;
-          data?: unknown;
-          rawBody?: string;
-          headers?: Headers;
-        };
-        httpStatus = obj.status ?? 200;
-        rawJson = obj.data ?? obj;
-        const text = obj.rawBody ?? JSON.stringify(rawJson);
-        responseByteCount = Buffer.byteLength(text, "utf8");
+      if ("rawStatusText" in rawResponse) {
+        statusResult = rawResponse;
       } else {
-        rawJson = rawResponse;
-      }
+        let rawJson: unknown;
+        let httpStatus = 200;
+        let responseByteCount = 0;
+        let contentType: string | null = "application/json";
 
-      statusResult = parseTransactionStatusResponse(
-        {
-          json: rawJson,
+        if (rawResponse instanceof Response) {
+          httpStatus = rawResponse.status;
+          contentType = rawResponse.headers.get("content-type");
+          const text = await rawResponse.text();
+          responseByteCount = Buffer.byteLength(text, "utf8");
+          try {
+            rawJson = JSON.parse(text);
+          } catch {
+            rawJson = null;
+          }
+        } else if (typeof rawResponse === "object" && rawResponse !== null) {
+          const obj = rawResponse as {
+            status?: number;
+            data?: unknown;
+            rawBody?: string;
+            headers?: Headers;
+          };
+          httpStatus = obj.status ?? 200;
+          rawJson = obj.data ?? obj;
+          const text = obj.rawBody ?? JSON.stringify(rawJson);
+          responseByteCount = Buffer.byteLength(text, "utf8");
+        } else {
+          rawJson = rawResponse;
+        }
+
+        statusResult = parseTransactionStatusResponse(
+          {
+            json: rawJson,
+            locator,
+            expectedTxHash: op.blockchainTxHash,
+            httpStatus,
+            responseByteCount,
+            contentType,
+          },
           locator,
-          expectedTxHash: op.blockchainTxHash,
-          httpStatus,
-          responseByteCount,
-          contentType,
-        },
-        locator,
-        op.blockchainTxHash,
-      );
+          op.blockchainTxHash,
+        );
+      }
     } catch (error) {
       if (
         error instanceof BrickkenAdapterError &&
@@ -1590,9 +1610,38 @@ export class ExecutionV4Orchestrator {
 
     // 4. Brickken Status
     if (currentOp.stage === "BRICKKEN_CORRELATED") {
-      const statusRes = await this.checkBrickkenStatus(runId, current.revision);
-      current = statusRes.run;
-      statusResult = statusRes.statusResult;
+      try {
+        const statusRes = await this.checkBrickkenStatus(runId, current.revision);
+        current = statusRes.run;
+        statusResult = statusRes.statusResult;
+        currentOp = deriveActiveOperation(current).operation;
+      } catch (error) {
+        // Status text and availability are non-authoritative diagnostics. An
+        // identity contradiction still persists reconciliation inside
+        // checkBrickkenStatus; only adapter transport/shape failures are ignored
+        // here so they cannot veto independently authoritative RPC + read-back.
+        if (!(error instanceof BrickkenAdapterError)) throw error;
+      }
+    }
+
+    // 5. Authoritative server-owned read-back. Brickken status is structural
+    // evidence only; it cannot create token identity without the independent
+    // finalized receipt, immutable transaction match, fee compliance, and
+    // exact durable correlation gates enforced by the transition below.
+    if (
+      this.#readBack !== undefined &&
+      current.phase === "TOKENIZATION" &&
+      current.status !== "RECONCILIATION_REQUIRED" &&
+      currentOp.stage === "BRICKKEN_CORRELATED" &&
+      currentOp.transactionReceiptEvidence?.executionStatus === "SUCCESS" &&
+      currentOp.transactionReceiptEvidence.finalityStatus === "FINALIZED" &&
+      currentOp.rpcTransactionEvidence?.immutableIdentityStatus === "MATCH" &&
+      currentOp.rpcTransactionEvidence.feeAuthorizationStatus === "WITHIN_ENVELOPE"
+    ) {
+      current = await this.recordTokenIdentityFromReadBack(
+        runId,
+        current.revision,
+      );
     }
 
     return {
@@ -1605,14 +1654,89 @@ export class ExecutionV4Orchestrator {
   }
 
   async recordTokenIdentityFromReadBack(
-    _runId: string,
-    _expectedRevision: number,
-    _readBack?: unknown,
+    runId: string,
+    expectedRevision: number,
+    untrustedCallerIdentity?: unknown,
   ): Promise<ExecutionRunV4> {
-    // EDICT_SECURITY: A caller-supplied token address must NEVER be sufficient to create
-    // TokenIdentityV1. TokenIdentityV1 must ultimately come from a server-owned verified read
-    // after successful receipt, canonical inclusion, and FINALIZED state.
-    // Untrusted caller input is rejected and read-back verification remains disabled.
-    throw new OrchestrationError("READ_BACK_FAILED");
+    // No caller-controlled token identity is accepted at this trust boundary.
+    if (untrustedCallerIdentity !== undefined || this.#readBack === undefined) {
+      throw new OrchestrationError("READ_BACK_FAILED");
+    }
+
+    const current = await this.#deps.repository.getById(runId);
+    assertRevision(current, expectedRevision);
+    assertV4(current);
+    if (current.phase !== "TOKENIZATION") {
+      throw new IllegalStateTransitionError();
+    }
+
+    const operation = current.operations[0];
+    const activeAttempt = operation.activePreparationAttemptId === null
+      ? undefined
+      : operation.preparationAttempts.find(
+        (attempt) => attempt.attemptId === operation.activePreparationAttemptId,
+      );
+    if (
+      operation.stage !== "BRICKKEN_CORRELATED" ||
+      operation.brickkenCorrelation?.lifecycle !== "CORRELATED" ||
+      activeAttempt?.txId === null ||
+      activeAttempt?.txId === undefined ||
+      operation.brickkenCorrelation.pair.txId !== activeAttempt.txId ||
+      operation.blockchainTxHash === null ||
+      operation.brickkenCorrelation.pair.txHash !== operation.blockchainTxHash ||
+      operation.transactionReceiptEvidence?.executionStatus !== "SUCCESS" ||
+      operation.transactionReceiptEvidence.finalityStatus !== "FINALIZED" ||
+      operation.transactionReceiptEvidence.identityStatus !== "MATCH" ||
+      operation.transactionReceiptEvidence.reconciliationStatus !== "CLEAR" ||
+      operation.transactionReceiptEvidence.transactionHash !== operation.blockchainTxHash ||
+      operation.rpcTransactionEvidence?.immutableIdentityStatus !== "MATCH" ||
+      operation.rpcTransactionEvidence.feeAuthorizationStatus !== "WITHIN_ENVELOPE" ||
+      operation.rpcTransactionEvidence.transactionHash !== operation.blockchainTxHash ||
+      current.status === "RECONCILIATION_REQUIRED"
+    ) {
+      throw new IllegalStateTransitionError();
+    }
+
+    const tokenSymbol = current.manifest.asset.symbol;
+    const [tokenResult, tokenizerResult] = await Promise.all([
+      this.#readBack.getTokenInfo({ tokenSymbol }),
+      this.#readBack.getTokenizerInfo({ tokenSymbol }),
+    ]);
+    if (!tokenResult.ok || !tokenizerResult.ok) {
+      throw new OrchestrationError("READ_BACK_FAILED");
+    }
+
+    const token = tokenResult.value;
+    const tokenizer = tokenizerResult.value;
+    const expectedWallet = current.requiredSigner.walletAddress.toLowerCase();
+    const observedWallet = tokenizer.companyWalletAddress.toLowerCase();
+    const tokenWallet = token.companyWalletAddress?.toLowerCase() ?? null;
+    if (
+      token.tokenSymbol !== tokenSymbol ||
+      tokenizer.chainId !== current.chainId ||
+      observedWallet !== expectedWallet ||
+      tokenizer.email?.toLowerCase() !== current.manifest.tokenizer.email ||
+      (tokenWallet !== null && tokenWallet !== expectedWallet) ||
+      (token.tokenizerEmail !== null &&
+        token.tokenizerEmail.toLowerCase() !== current.manifest.tokenizer.email) ||
+      (token.name !== null && token.name !== current.manifest.asset.name) ||
+      (token.tokenName !== null && token.tokenName !== current.manifest.asset.name) ||
+      (token.tokenType !== null && token.tokenType !== current.manifest.asset.tokenType) ||
+      (token.maxTokenSupply !== null &&
+        token.maxTokenSupply !== current.manifest.asset.supplyCap) ||
+      (token.paymentChainId !== null && token.paymentChainId !== current.chainId) ||
+      !/^0x[0-9a-fA-F]{40}$/.test(tokenizer.tokenAddress) ||
+      tokenizer.tokenAddress.toLowerCase() ===
+        "0x0000000000000000000000000000000000000000"
+    ) {
+      throw new OrchestrationError("READ_BACK_FAILED");
+    }
+
+    // These symbol-scoped reads can validate a candidate's metadata, but they
+    // expose no transaction hash, deployment log proof, or creation identifier
+    // that binds tokenAddress to this finalized TOKENIZE. Persisting the
+    // candidate would permit an older or unrelated matching token to become the
+    // run identity, so production remains fail-closed.
+    throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
   }
 }

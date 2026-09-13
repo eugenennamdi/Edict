@@ -473,6 +473,7 @@ export default function RunPlanningWorkspace({
                     onPrepare={() => void prepareNextOperation()}
                   />
                   <WalletExecutionSection
+                    key={`${view.run.id}:${view.run.revision}`}
                     run={view.run}
                     onRefresh={async () => { await workspace.refresh(); }}
                   />

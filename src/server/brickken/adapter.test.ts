@@ -363,11 +363,39 @@ describe("Brickken server adapter", () => {
       value: {
         currencyName: "Sepolia ETH",
         blockExplorerHost: "sepolia.etherscan.io",
+        factoryAddress: null,
       },
     });
     expect(requests).toEqual([
       "https://api.sandbox.brickken.com/get-network-info?chainId=11155111",
     ]);
+  });
+
+  it("strictly validates and exposes only the network-info factory from the live response shape", async () => {
+    const adapter = createBrickkenServerAdapter({
+      runtimeConfig: {
+        apiKey: TEST_KEY,
+        baseUrl: "https://api.sandbox.brickken.com",
+        chainId: "11155111",
+      },
+      fetch: async () => jsonResponse({
+        currencyName: "Sepolia ETH",
+        blockExplorerUrl: "https://sepolia.etherscan.io",
+        factoryAddress: "0x23B04b6410D72Fa66A77a9e0146DF6634Ad4C462",
+        BKNAddress: "0x1111111111111111111111111111111111111111",
+        USDTAddress: "0x2222222222222222222222222222222222222222",
+        USDCAddress: "0x3333333333333333333333333333333333333333",
+      }),
+    });
+
+    await expect(adapter.getNetworkInfo({ chainId: "11155111" })).resolves.toEqual({
+      ok: true,
+      value: {
+        currencyName: "Sepolia ETH",
+        blockExplorerHost: "sepolia.etherscan.io",
+        factoryAddress: "0x23b04b6410d72fa66a77a9e0146df6634ad4c462",
+      },
+    });
   });
 
   it("rejects unexpected network-info response fields", async () => {

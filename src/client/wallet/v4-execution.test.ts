@@ -83,6 +83,8 @@ function harness(provider = new Provider()) {
   const unknowns: unknown[] = [];
   let authorityAvailable = true;
   const gateway: WalletExecutionHttpGateway = {
+    promote: vi.fn(async () => ({} as never)),
+    readiness: vi.fn(async () => ({} as never)),
     authorize: vi.fn(async () => {
       if (!authorityAvailable) throw new Error("revision conflict");
       authorityAvailable = false;
@@ -96,6 +98,7 @@ function harness(provider = new Provider()) {
       unknowns.push(input);
       return {} as never;
     }),
+    track: vi.fn(async () => ({} as never)),
   };
   return {
     provider,

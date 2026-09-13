@@ -33,6 +33,7 @@ import {
 } from "./v4-service";
 import {
   BRICKKEN_NONCE_MISMATCH_STRING,
+  type BrickkenServerAdapter,
   type BrickkenTransactionLocator,
 } from "../brickken";
 
@@ -184,9 +185,47 @@ class FakeBrickkenStatusFetcher implements BrickkenStatusFetcher {
   }
 }
 
+class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo" | "getTokenizerInfo"> {
+  tokenCalls = 0;
+  tokenizerCalls = 0;
+  tokenAddress = "0x3333333333333333333333333333333333333333";
+  walletAddress = TOKENIZER_ADDRESS;
+
+  async getTokenInfo(query: { tokenSymbol: string }) {
+    this.tokenCalls += 1;
+    return {
+      ok: true as const,
+      value: {
+        name: "Café Receivables",
+        tokenName: null,
+        tokenSymbol: query.tokenSymbol,
+        tokenType: "RWA_TOKEN",
+        tokenizerEmail: "tokenizer@example.com",
+        companyWalletAddress: TOKENIZER_ADDRESS,
+        maxTokenSupply: "1000",
+        paymentChainId: "11155111",
+      },
+    };
+  }
+
+  async getTokenizerInfo() {
+    this.tokenizerCalls += 1;
+    return {
+      ok: true as const,
+      value: {
+        companyWalletAddress: this.walletAddress,
+        tokenAddress: this.tokenAddress,
+        paymentTokenAddress: null,
+        chainId: "11155111",
+        email: "tokenizer@example.com",
+      },
+    };
+  }
+}
+
 let globalAttemptCounter = 0;
 
-function createHarness() {
+function createHarness(options: { readonly readBack?: boolean } = {}) {
   let tick = 0;
   let id = 0;
   const clock: Clock = {
@@ -228,6 +267,7 @@ function createHarness() {
   const semanticAuth = new FakeSemanticAuthorizationEvaluator();
   const correlationSender = new FakeBrickkenCorrelationSender();
   const statusFetcher = new FakeBrickkenStatusFetcher();
+  const readBack = new FakeBrickkenReadBack();
 
   const v4 = new ExecutionV4Orchestrator({
     repository,
@@ -237,6 +277,7 @@ function createHarness() {
     semanticAuthorization: semanticAuth,
     brickkenCorrelationSender: correlationSender,
     brickkenStatusFetcher: statusFetcher,
+    ...(options.readBack ? { brickkenReadBack: readBack } : {}),
   });
 
   return {
@@ -247,6 +288,7 @@ function createHarness() {
     semanticAuth,
     correlationSender,
     statusFetcher,
+    readBack,
     v4,
     clock,
     ids,
@@ -357,6 +399,18 @@ describe("ExecutionV4Orchestrator", () => {
   });
 
   describe("Part C: Prepared Freshness Service", () => {
+    it("requires explicit promotion and cannot upgrade a V2 run through readiness", async () => {
+      const h = createHarness();
+      const runV2 = await createPreparedV2Run(h);
+
+      await expect(
+        h.v4.evaluateAndApplyPreparedFreshness(runV2.id, runV2.revision),
+      ).rejects.toThrow(IllegalStateTransitionError);
+      const durable = await h.repository.getById(runV2.id);
+      expect(durable.schemaVersion).toBe("2.0");
+      expect(durable.revision).toBe(runV2.revision);
+    });
+
     it("returns ELIGIBLE without mutating run or churning revision", async () => {
       const h = createHarness();
       const runV2 = await createPreparedV2Run(h);
@@ -2209,7 +2263,7 @@ describe("ExecutionV4Orchestrator", () => {
       expect(statusResult.diagnosticError).toBe("STATUS_CONTRADICTION");
     });
 
-    it("sets RECONCILIATION_REQUIRED on raw 'rejected' without marking FAILED", async () => {
+    it("retains raw 'rejected' as evidence without granting it lifecycle authority", async () => {
       const h = createHarness();
       const correlatedRun = await setupCorrelatedRun(h);
 
@@ -2228,8 +2282,9 @@ describe("ExecutionV4Orchestrator", () => {
         );
 
       expect(durableEvidence.rawStatusText).toBe("rejected");
-      expect(rejectedStatusRun.status).toBe("RECONCILIATION_REQUIRED");
-      expect(rejectedStatusRun.terminalOutcome).toBeNull(); // NOT FAILED
+      expect(rejectedStatusRun.status).toBe("CONFIRMING");
+      expect(rejectedStatusRun.operations[0].stage).toBe("BRICKKEN_CORRELATED");
+      expect(rejectedStatusRun.terminalOutcome).toBeNull();
     });
   });
 
@@ -2445,7 +2500,10 @@ describe("ExecutionV4Orchestrator", () => {
   });
 
   describe("Part O: Token Read-Back and Terminal Read Protection", () => {
-    async function setupFinalizedCorrelatedRun(h: ReturnType<typeof createHarness>) {
+    async function setupFinalizedCorrelatedRun(
+      h: ReturnType<typeof createHarness>,
+      rawStatus: "pending" | "success" | "rejected" = "success",
+    ) {
       const runV2 = await createPreparedV2Run(h);
       const v4Run = await h.v4.promotePreparedRunToV4(
         runV2.id,
@@ -2527,7 +2585,7 @@ describe("ExecutionV4Orchestrator", () => {
       h.statusFetcher.response = {
         status: 200,
         data: {
-          status: "success",
+          status: rawStatus,
           transactionHash: TX_HASH,
         },
       };
@@ -2567,6 +2625,34 @@ describe("ExecutionV4Orchestrator", () => {
       expect(current.operations[0].stage).toBe("BRICKKEN_CORRELATED");
       expect(current.operations[1].stage).toBe("NOT_STARTED");
       expect(current.operations[2].stage).toBe("NOT_STARTED");
+    });
+
+    it("refuses candidate token identity when read-back cannot bind it to this finalized transaction", async () => {
+      const h = createHarness({ readBack: true });
+      await expect(setupFinalizedCorrelatedRun(h, "rejected")).rejects.toMatchObject({
+        code: "READ_BACK_BINDING_UNRESOLVED",
+      });
+      const run = (await h.repository.getById(
+        "11111111-1111-4111-8111-111111111111",
+      )) as ExecutionRunV4;
+      expect(run.phase).toBe("TOKENIZATION");
+      expect(run.operations[0].stage).toBe("BRICKKEN_CORRELATED");
+      expect(run.tokenIdentity).toBeNull();
+      expect(h.readBack.tokenCalls).toBe(1);
+      expect(h.readBack.tokenizerCalls).toBe(1);
+    });
+
+    it("fails closed when authoritative tokenizer identity mismatches the approved signer", async () => {
+      const h = createHarness({ readBack: true });
+      h.readBack.walletAddress = "0x5555555555555555555555555555555555555555";
+
+      await expect(setupFinalizedCorrelatedRun(h)).rejects.toThrow(OrchestrationError);
+      const durable = (await h.repository.getById(
+        "11111111-1111-4111-8111-111111111111",
+      )) as ExecutionRunV4;
+      expect(durable.phase).toBe("TOKENIZATION");
+      expect(durable.tokenIdentity).toBeNull();
+      expect(durable.operations[0].stage).toBe("BRICKKEN_CORRELATED");
     });
   });
 });

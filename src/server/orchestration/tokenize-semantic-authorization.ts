@@ -68,6 +68,25 @@ function privateGateExposed(environment: Readonly<Record<string, string | undefi
   return Object.keys(environment).some((key) => key.startsWith("NEXT_PUBLIC_EDICT_TOKENIZE_"));
 }
 
+export function deriveTokenizeSelectorFromCanonicalSignature(
+  signature: string,
+): `0x${string}` {
+  try {
+    const item = parseAbiItem(signature);
+    if (
+      item.type !== "function" ||
+      `function ${formatAbiItem(item)}` !== signature ||
+      signature.length > 512
+    ) {
+      throw new TokenizePolicyConfigurationError();
+    }
+    return toFunctionSelector(item).toLowerCase() as `0x${string}`;
+  } catch (error) {
+    if (error instanceof TokenizePolicyConfigurationError) throw error;
+    throw new TokenizePolicyConfigurationError();
+  }
+}
+
 function readPolicy(environment: Readonly<Record<string, string | undefined>>): TokenizeSemanticAuthorizationPolicy | null {
   const destination = environment[TOKENIZE_ALLOWED_DESTINATION];
   const signature = environment[TOKENIZE_FUNCTION_SIGNATURE];
@@ -80,16 +99,12 @@ function readPolicy(environment: Readonly<Record<string, string | undefined>>): 
     return null;
   }
   try {
-    const item = parseAbiItem(signature);
-    if (
-      item.type !== "function" || `function ${formatAbiItem(item)}` !== signature ||
-      signature.length > 512
-    ) return null;
+    const allowedSelector = deriveTokenizeSelectorFromCanonicalSignature(signature);
     return Object.freeze({
       policyVersion: TOKENIZE_POLICY_VERSION,
       allowedDestination: getAddress(destination).toLowerCase() as `0x${string}`,
       reviewedFunctionSignature: signature,
-      allowedSelector: toFunctionSelector(item).toLowerCase() as `0x${string}`,
+      allowedSelector,
       allowedCalldataCommitment: calldataCommitment as `sha256:${string}`,
       brickkenMethod: "newTokenization",
       executionMode: "client-broadcast",

@@ -106,6 +106,8 @@ The sanitized adapter projection was:
 
 **VERIFIED** — A `pending` status means broadcast but not yet confirmed and must be polled rather than resubmitted. [Get Transaction Status](https://docs.brickken.com/api-reference/endpoint/get-transaction-status)
 
+**DECISION — corrected 2026-09-13** — That sentence records Brickken's documented prose, not lifecycle authority accepted by Edict. Production treats every returned status string as opaque structural evidence; no spelling advances or fails a run.
+
 **DECISION** — Persist the prepare response before exposing the wallet action; persist `txHash` immediately after the wallet returns it and before calling `/send-transactions`; persist every poll result.
 
 **SUPPORT-CONFIRMED — 2026-09-11** — Brickken requires exact equality for `chainId`, `from`, `to`, `data`, `value`, and `nonce`. The prepared nonce must be explicitly supplied to `eth_sendTransaction`. Brickken does not compare `gasLimit`, `maxFeePerGas`, or `maxPriorityFeePerGas`; Edict nevertheless accepts changes only inside a separately user-authorized bounded fee envelope. A consumed prepared nonce requires a new explicit `/prepare-transactions` call for the same operation, never local nonce mutation.
@@ -178,6 +180,10 @@ The sanitized adapter projection was:
 | VERIFIED | `GET /get-balance-whitelist` | `tokenSymbol`, `investorEmail` | `walletAddress`, `tokenAddress`, `tokenDecimals`, `tokenBalanceRaw`, formatted `tokenBalance`, `isWhitelisted`, `balanceSource: "blockchain"`; legacy `bknFees` and `senderBalance` are always `"0"`. [Get Balance and Whitelist Status](https://docs.brickken.com/api-reference/endpoint/get-balance-whitelist) | DECISION — Match email-resolved wallet and token address, require whitelist true, and compare mint amount using `tokenBalanceRaw` plus decimals. |
 
 **DECISION** — Verification fails closed on missing fields, address mismatch, chain mismatch, whitelist false, unexpected decimals, or balance mismatch. A failure produces no deployment receipt.
+
+**DECISION — production TOKENIZE read-back correction, 2026-09-13** — The V4 orchestrator treats `/transaction-status` text as opaque evidence with no lifecycle authority. After exact durable correlation and matching fee-compliant finalized RPC execution, server-owned `/get-token-info` and `/get-tokenizer-info` reads can establish a matching candidate. They do not return the creating transaction hash or another transaction-specific deployment proof. Consequently an older or unrelated same-symbol token cannot be excluded, `TokenIdentityV1` is not persisted, and production fails with `READ_BACK_BINDING_UNRESOLVED` until a transaction-bound authoritative source is implemented.
+
+**LIVE READ-ONLY OBSERVATION — 2026-09-13** — Exact request: `GET https://api.sandbox.brickken.com/get-network-info?chainId=11155111` with the server-held `x-api-key` redacted. Sanitized response: HTTP 200; top-level string fields were `currencyName`, `blockExplorerUrl`, `factoryAddress`, `BKNAddress`, `USDTAddress`, and `USDCAddress`; `currencyName` was `Sepolia ETH`, `blockExplorerUrl` was `https://sepolia.etherscan.io`, and `factoryAddress` was `0x23B04b6410D72Fa66A77a9e0146DF6634Ad4C462`. The adapter previously rejected this current shape because its strict schema allowed only the first two fields. It now strictly validates all six observed fields while its server-only network projection adds only normalized `factoryAddress`.
 
 **ASSUMPTION** — For a new demo investor with zero initial balance, the post-mint balance equals the requested mint amount after decimal scaling. If reuse of an existing investor is permitted later, capture a pre-mint balance and verify the delta instead.
 

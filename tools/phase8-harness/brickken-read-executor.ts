@@ -57,6 +57,7 @@ const normalizedNetworkResultSchema = z.strictObject({
   value: z.strictObject({
     currencyName: z.string().max(128).nullable(),
     blockExplorerHost: z.string().max(255).nullable(),
+    factoryAddress: z.string().regex(/^0x[0-9a-f]{40}$/).nullable().optional(),
   }),
 });
 

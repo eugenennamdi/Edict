@@ -358,10 +358,9 @@ prepare (API key)
   → wallet eth_sendTransaction (normalised)
   → persist txHash before Brickken correlation
   → POST /send-transactions { txId, txHash }   // correlation; idempotent same pair
-  → GET /transaction-status?txId=… and/or hash=…
-       pending  → keep polling, never resubmit
-       success  → read-back
-       rejected → terminal for that tx
+  → GET /transaction-status?txId=… and/or hash=… // opaque evidence only
+  → trusted RPC six-field, receipt and finalized-head verification
+  → transaction-bound server read-back (currently unresolved)
 ```
 
 | State | Meaning | Next |
@@ -370,13 +369,13 @@ prepare (API key)
 | Broadcast, RPC not verified | Local `txHash` exists | Trusted RPC verifies immutable identity and fee envelope; never resend. |
 | RPC verified, correlation pending | Exact pair exists | Correlate or bounded-retry only the identical pair. Temporary not-found stays pending. |
 | Correlation HTTP 202 `pending` | Brickken accepted the pair; chain confirmation incomplete | Poll `/transaction-status` and trusted RPC independently. |
-| Status `pending` | Broadcast, not mined/confirmed | Poll. Do not resubmit. |
-| Status `success` | Brickken terminal success | Read-back. Token address is not in this payload. |
-| Status `rejected` | Brickken terminal failure + `error` | Do not issue a receipt. |
+| Any bounded status text | Opaque structural evidence only; it has no lifecycle meaning | Retain diagnostically. Trusted RPC and exact correlation continue to govern progression; never resubmit. |
 
 Relayed send prose uses `status: "confirmed"` on HTTP 200. That value is **not** in the status enum. **CONFLICT**. It is out of scope for Edict `client-broadcast` except as a parser hazard.
 
 Finality/confirmation depth: **UNKNOWN**. Prose equates `pending` with “not yet mined” / “not yet confirmed”.
+
+**DECISION — corrected 2026-09-13** — Those prose meanings are not trusted by Edict. No `status` spelling, including `success`, `rejected`, `confirmed`, or `completed`, may advance or fail a V4 run.
 
 Prepared-transaction expiry time: **UNKNOWN**. Outstanding-prepare quota: **VERIFIED** SDK README.
 
@@ -441,8 +440,7 @@ Exact JSON envelopes for those strings are **UNKNOWN** except the send `error: {
 
 | Signal | Class | Source |
 | --- | --- | --- |
-| `pending` | In flight | Status |
-| `rejected` + `error` | Terminal Brickken failure | Status |
+| Any bounded status text, including `pending` or `rejected` | Opaque Brickken evidence with zero Edict lifecycle authority | Status response |
 | `UserIsNotWhitelisted(address)` selector `0xaafefe9b` | Contract revert | Troubleshooting |
 
 ## 9. Retry and ambiguity matrix
@@ -463,16 +461,14 @@ This matrix is the Phase 3 contract for later orchestration. It exists to preven
 | Brickken send transport/`5xx` after a persisted hash | Safe to retry **identical** `{txId,txHash}` only | Idempotent confirm |
 | Brickken send `400` “broadcast transaction not found on the prepared chain” | Safe to retry identical confirm (propagation) | SDK documents this gap |
 | Brickken send 400 signature/mode/shape | Permanent / user-correctable or FAILED | Do not broadcast a second transaction |
-| Status `pending` | Safe only to poll | Never resubmit |
+| Any bounded status text | Diagnostic evidence only | Never resubmit; continue/retry only authoritative reads for the same durable identifiers |
 | Local poll timeout | Safe only to poll later | `TIMED_OUT`, nonterminal. Resume same ids. |
-| Status `success` | Terminal success for that write | Read-back. Never resend. |
-| Status `rejected` | Permanent for that transaction | No receipt. No automatic replacement. |
 | Multi-tx prepare under `client-broadcast` | Permanent for this mode | Refuse. Do not sign a subset. |
 | Read `401`/`400` missing key | Authentication | Fix server config |
 | Read `Unauthorized token symbol` / `Investor not found` / whitelist false / balance mismatch | Permanent / verification failure | Fail closed |
 | Read transport/`5xx`/`429` | Safe to retry unchanged (read-only) | Bounded backoff |
 
-**Never automatically resubmit** after any of: persisted `txHash`; ambiguous prepare timeout; ambiguous wallet result; `BroadcastConfirmationError`; `pending`; `success`; `rejected`.
+**Never automatically resubmit** after any of: persisted `txHash`; ambiguous prepare timeout; ambiguous wallet result; `BroadcastConfirmationError`; or any observed status text.
 
 SDK default retry (3 attempts, 500 ms, jitter) applies to `429`, `5xx`, and transport. **EDICT_DECISION** — set prepare attempts to **one** until prepare idempotency is documented. Confirm-send of an existing pair may retry. Reads may retry.
 

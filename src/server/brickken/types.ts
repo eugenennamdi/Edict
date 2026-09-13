@@ -146,6 +146,7 @@ export interface BalanceWhitelistView {
 export interface NetworkInfoView {
   readonly currencyName: string | null;
   readonly blockExplorerHost: string | null;
+  readonly factoryAddress: string | null;
 }
 
 export interface BrickkenServerAdapter {

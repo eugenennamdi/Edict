@@ -49,6 +49,7 @@ export function createRuntimeSemanticAuthorization(
 /** Called only after the deny-by-default deployment gate has passed. */
 export function createRunApiRuntime(): RunApiRuntime {
   const repository = createNeonExecutionRunRepository();
+  const brickken = createBrickkenServerAdapter();
   const mac = createSecurityTokenMac();
   const runs = new ExecutionRunService({
     repository,
@@ -65,7 +66,7 @@ export function createRunApiRuntime(): RunApiRuntime {
     execution: new ExecutionOrchestrator({
       repository,
       runs,
-      brickken: createBrickkenServerAdapter(),
+      brickken,
       writeGate: createPreparationOnlyBrickkenWriteGate(preparationEnabled),
     }),
     walletExecution: new ExecutionV4Orchestrator({
@@ -74,6 +75,29 @@ export function createRunApiRuntime(): RunApiRuntime {
       ids,
       rpc: createTrustedSepoliaRpcClient(createProductionSepoliaRpcTransport()),
       semanticAuthorization: createRuntimeSemanticAuthorization(),
+      brickkenCorrelationSender: {
+        async send(pair) {
+          const result = await brickken.correlateClientBroadcast(pair);
+          if (!result.ok) throw result.error;
+          return result.value;
+        },
+      },
+      brickkenStatusFetcher: {
+        async fetch(locator) {
+          const result = await brickken.getTransactionStatus(locator);
+          if (!result.ok) throw result.error;
+          return Object.freeze({
+            httpStatus: result.value.httpStatus ?? 200,
+            responseByteCount: result.value.responseByteCount ?? 0,
+            contentType: result.value.contentType ?? "application/json",
+            transactionHash: result.value.transactionHash,
+            rawStatusText: result.value.status,
+            diagnosticError: result.value.diagnosticError ?? result.value.error,
+            error: result.value.diagnosticError ?? result.value.error,
+          });
+        },
+      },
+      brickkenReadBack: brickken,
     }),
     nowIso: () => new Date().toISOString(),
   });

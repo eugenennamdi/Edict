@@ -43,6 +43,7 @@ type ErrorCode =
   | "STATE_CONFLICT"
   | "PREPARATION_DISABLED"
   | "PREPARATION_UNCONFIRMED"
+  | "READ_BACK_BINDING_UNRESOLVED"
   | "EXECUTION_AUTHORIZATION_UNAVAILABLE"
   | "SERVICE_UNAVAILABLE";
 
@@ -140,6 +141,9 @@ function mapError(error: unknown): Response {
       return failure(403, "EXECUTION_AUTHORIZATION_UNAVAILABLE");
     }
     if (error.code === "EXECUTION_INVARIANT_FAILED") return failure(409, "STATE_CONFLICT");
+    if (error.code === "READ_BACK_BINDING_UNRESOLVED") {
+      return failure(503, "READ_BACK_BINDING_UNRESOLVED");
+    }
     return failure(503, "PREPARATION_UNCONFIRMED");
   }
   if (error instanceof ExecutionError) {

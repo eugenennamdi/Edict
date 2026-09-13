@@ -55,6 +55,8 @@ export type BrowserBroadcastUnknownReason =
   | "HASH_PERSISTENCE_UNCONFIRMED";
 
 export interface WalletExecutionHttpGateway {
+  promote(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
+  readiness(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
   authorize(runId: string, expectedRevision: number): Promise<SendAuthorizedEnvelopeV1>;
   ingestHash(runId: string, input: {
     readonly expectedRevision: number;
@@ -68,6 +70,7 @@ export interface WalletExecutionHttpGateway {
     readonly walletIntentHash: `sha256:${string}`;
     readonly reason: BrowserBroadcastUnknownReason;
   }): Promise<PublicRunProjection>;
+  track(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
 }
 
 export type WalletExecutionHttpTransport = (path: string, options: RequestInit) => Promise<Response>;
@@ -183,6 +186,12 @@ export function createWalletExecutionHttpGateway(
   transport: WalletExecutionHttpTransport = (path, options) => fetch(path, options),
 ): WalletExecutionHttpGateway {
   return Object.freeze({
+    async promote(runId: string, expectedRevision: number) {
+      return mutateRevision(transport, runId, expectedRevision, "promote");
+    },
+    async readiness(runId: string, expectedRevision: number) {
+      return mutateRevision(transport, runId, expectedRevision, "readiness");
+    },
     async authorize(runId: string, expectedRevision: number) {
       const parsedRunId = publicRunIdSchema.safeParse(runId);
       const revision = revisionSchema.safeParse(expectedRevision);
@@ -220,5 +229,26 @@ export function createWalletExecutionHttpGateway(
         parsed.data,
       ));
     },
+    async track(runId: string, expectedRevision: number) {
+      return mutateRevision(transport, runId, expectedRevision, "track");
+    },
   });
+}
+
+async function mutateRevision(
+  transport: WalletExecutionHttpTransport,
+  runId: string,
+  expectedRevision: number,
+  action: "promote" | "readiness" | "track",
+): Promise<PublicRunProjection> {
+  const parsedRunId = publicRunIdSchema.safeParse(runId);
+  const revision = revisionSchema.safeParse(expectedRevision);
+  if (!parsedRunId.success || !revision.success) {
+    throw new WalletExecutionGatewayError("MALFORMED_REQUEST");
+  }
+  return runFromResponse(await post(
+    transport,
+    `/api/runs/${parsedRunId.data}/${action}`,
+    { expectedRevision: revision.data },
+  ));
 }

@@ -45,9 +45,23 @@ export function WalletExecutionSection({
   readonly run: PublicRunProjection;
   readonly onRefresh: () => Promise<void>;
 }) {
-  const eligible = run.approved && run.status === "AWAITING_WALLET" && run.operations[0].stage === "PREPARED";
+  const prepared = run.approved && run.status === "AWAITING_WALLET" && run.operations[0].stage === "PREPARED";
+  const needsPromotion = prepared && run.schemaVersion !== "4.0";
+  const canCheckReadiness = prepared && run.schemaVersion === "4.0";
+  const hasTrackableHash = run.schemaVersion === "4.0" &&
+    run.operations[0].blockchainTxHash !== null && run.phase === "TOKENIZATION" &&
+    run.terminalOutcome === null;
+  const durableReconciliation = run.status === "RECONCILIATION_REQUIRED";
+  const canTrack = hasTrackableHash && !durableReconciliation;
+  const visible = prepared || hasTrackableHash;
   const [providers, setProviders] = useState<readonly DiscoveredWallet[]>([]);
   const [model, setModel] = useState<WalletExecutionUiModel>(initialWalletExecutionUiModel);
+  const [serverReadyRevision, setServerReadyRevision] = useState<number | null>(null);
+  const [activationAction, setActivationAction] = useState<"promote" | "readiness" | "track" | null>(null);
+  const [activationError, setActivationError] = useState<Readonly<{
+    revision: number;
+    message: string;
+  }> | null>(null);
   const state = model.state;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const session = useRef<SelectedWalletSession | null>(null);
@@ -55,7 +69,7 @@ export function WalletExecutionSection({
   const busy = useRef(false);
 
   useEffect(() => {
-    if (!eligible) return;
+    if (!canCheckReadiness || serverReadyRevision !== run.revision) return;
     const value = new InjectedWalletDiscovery({
       events: window,
     });
@@ -78,9 +92,39 @@ export function WalletExecutionSection({
       value.dispose();
       discovery.current = null;
     };
-  }, [eligible, run.id, run.revision]);
+  }, [canCheckReadiness, serverReadyRevision, run.id, run.revision]);
 
-  if (!eligible) return null;
+  if (!visible) return null;
+
+  async function mutateActivation(action: "promote" | "readiness" | "track") {
+    if (busy.current || activationAction !== null) return;
+    busy.current = true;
+    setActivationAction(action);
+    setActivationError(null);
+    try {
+      const gateway = createWalletExecutionHttpGateway();
+      const result = action === "promote"
+        ? await gateway.promote(run.id, run.revision)
+        : action === "readiness"
+          ? await gateway.readiness(run.id, run.revision)
+          : await gateway.track(run.id, run.revision);
+      if (action === "readiness" && result.schemaVersion === "4.0" &&
+        result.operations[0].stage === "PREPARED" && result.revision === run.revision) {
+        setServerReadyRevision(run.revision);
+      } else {
+        await onRefresh();
+      }
+    } catch {
+      setServerReadyRevision(null);
+      setActivationError({
+        revision: run.revision,
+        message: "The server did not confirm this action. Refresh the durable record before trying again.",
+      });
+    } finally {
+      busy.current = false;
+      setActivationAction(null);
+    }
+  }
 
   async function inspect(selected: SelectedWalletSession) {
     const readiness = await selected.inspect(run.requiredSigner.walletAddress);
@@ -161,6 +205,31 @@ export function WalletExecutionSection({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {needsPromotion && (
+          <Button size="sm" disabled={activationAction !== null} onClick={() => void mutateActivation("promote")}>
+            {activationAction === "promote" ? "Promoting durable run…" : "Promote prepared run to V4"}
+          </Button>
+        )}
+        {canCheckReadiness && serverReadyRevision !== run.revision && (
+          <Button size="sm" disabled={activationAction !== null} onClick={() => void mutateActivation("readiness")}>
+            {activationAction === "readiness" ? "Checking server readiness…" : "Check server readiness"}
+          </Button>
+        )}
+        {canTrack && (
+          <Button size="sm" disabled={activationAction !== null} onClick={() => void mutateActivation("track")}>
+            {activationAction === "track" ? "Tracking once…" : "Track transaction status"}
+          </Button>
+        )}
+        {durableReconciliation && (
+          <div role="alert" className="flex gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs">
+            <AlertTriangle className="h-4 w-4 shrink-0" />The durable run requires reconciliation. Edict will not authorize, resend, or replace this transaction.
+          </div>
+        )}
+        {activationError?.revision === run.revision && (
+          <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs">
+            {activationError.message}
+          </div>
+        )}
         {providers.length > 0 && selectedId === null && (
           <div className="space-y-2">
             {providers.map((provider) => (

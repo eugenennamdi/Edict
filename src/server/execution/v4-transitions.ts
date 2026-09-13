@@ -938,15 +938,8 @@ export function recordBrickkenStatusEvidenceV4(input: {
     operation.stage !== "BRICKKEN_CORRELATED" || correlation?.lifecycle !== "CORRELATED" ||
     evidence.txId !== correlation.pair.txId || evidence.txHash !== correlation.pair.txHash
   ) throw new IllegalStateTransitionError();
-  const feePolicyViolated = operation.rpcTransactionEvidence?.feeAuthorizationStatus ===
-    "POLICY_VIOLATION";
   return appendEvent(
-    replaceOperation({
-      ...run,
-      status: evidence.status === "rejected" || feePolicyViolated
-        ? "RECONCILIATION_REQUIRED"
-        : run.status,
-    }, input.kind, {
+    replaceOperation(run, input.kind, {
       ...operation,
       brickkenStatus: evidence.status,
       brickkenStatusEvidence: [...operation.brickkenStatusEvidence, evidence],
@@ -1016,7 +1009,7 @@ export function recordTokenIdentityFromReadBackV4(input: {
   const readBack = tokenReadBackSchema.parse(input.readBack);
   if (
     operation.stage !== "BRICKKEN_CORRELATED" || operation.brickkenCorrelation?.lifecycle !== "CORRELATED" ||
-    operation.brickkenStatus !== "success" || operation.transactionReceiptEvidence?.executionStatus !== "SUCCESS" ||
+    operation.transactionReceiptEvidence?.executionStatus !== "SUCCESS" ||
     operation.transactionReceiptEvidence.finalityStatus !== "FINALIZED" ||
     operation.rpcTransactionEvidence?.feeAuthorizationStatus !== "WITHIN_ENVELOPE" ||
     run.status === "RECONCILIATION_REQUIRED" ||

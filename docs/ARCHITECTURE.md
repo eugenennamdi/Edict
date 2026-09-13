@@ -48,6 +48,16 @@
 
 **OPEN QUESTION — live activation blocker** — Neither the reviewed Brickken documentation, the pinned `brickken-sdk` package, nor retained successful evidence provides an authoritative Sepolia deployment destination plus the ABI/function signature behind prepared `newTokenization` calldata. The official example fixture explicitly contains a placeholder destination and truncated calldata. An authorized operator must supply and independently review the exact destination, canonical function signature, and exact prepared calldata commitment before setting the gate; the historical fixture is not a trust root.
 
+**DECISION — final activation fix pass, 2026-09-12** — Production V4 tracking now composes the existing server adapter's `correlateClientBroadcast({txId, txHash})` and hardened `getTransactionStatus` operations. Correlation receives only the immutable durable pair, preserves the three-attempt retry/reconciliation taxonomy, and never invokes the legacy V3 `confirmBroadcast` alias. Status remains structural evidence; it cannot establish execution, finality, fee compliance, or token identity.
+
+**DECISION — server-owned TOKENIZE read-back, corrected 2026-09-13** — `/transaction-status` text is opaque structural evidence and has no lifecycle authority; `pending`, `success`, and `rejected` are retained only as observed strings. Candidate token reads require exact durable correlation, trusted-RPC six-field identity match, fee compliance, successful canonical receipt and Ethereum `FINALIZED` head. `/get-token-info` plus `/get-tokenizer-info` can then compare symbol, metadata, chain and tokenizer identity, but neither response binds its `tokenAddress` to the finalized transaction hash. Production therefore returns `READ_BACK_BINDING_UNRESOLVED`, persists no `TokenIdentityV1`, and cannot enter WHITELIST. Caller-supplied identity remains categorically rejected.
+
+**DECISION — explicit activation sequence, 2026-09-12** — The product sequence is `V2 PREPARED → POST /promote → V4 PREPARED → POST /readiness → explicit wallet readiness → explicit authorize/send → explicit POST /track`. Readiness asserts V4 and cannot promote; GET/recovery remains mutation-free. Tracking is user-invoked and performs no automatic replacement or high-frequency poll.
+
+**DECISION — operator calldata review** — `npm run review:tokenize-calldata -- <run-id>` reads one durable PREPARED TOKENIZE run and emits only run ID, revision, prepared `txId`, destination, four-byte selector and `sha256:` commitment of the exact canonical calldata. It neither changes state nor reads or changes the activation gate.
+
+**LIVE READ-ONLY OBSERVATION — 2026-09-13** — An explicitly authorized authenticated sandbox `GET /get-network-info?chainId=11155111` returned HTTP 200 with string fields `currencyName`, `blockExplorerUrl`, `factoryAddress`, `BKNAddress`, `USDTAddress`, and `USDCAddress`; the sanitized factory was `0x23B04b6410D72Fa66A77a9e0146DF6634Ad4C462`. The prior strict schema omitted the last four address fields and therefore rejected the otherwise valid response. The corrected schema validates every observed field but the server-only preflight exposes only `factoryAddress`. A trusted Sepolia read of ERC-1967 slot `0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc` at `finalized` resolved `0x2C24f3Fe7665eA83B2280bb5a7E66072C869AD89`, matching the independently reviewed implementation. The configured canonical ABI signature is currently absent/invalid, so selector verification remains blocked; the gate remains off.
+
 
 **VERIFIED** — On 2026-09-04, the Neon migration completed without error and the explicitly opted-in live database test passed create, read, atomic compare-and-swap update, stale-revision refusal, and cleanup of its uniquely created run. Durable persistence is verified. The test made no Brickken request or blockchain operation and emitted no credential.
 
@@ -104,7 +114,7 @@ Brickken sandbox API ──► Ethereum Sepolia
 - **DECISION** — Application-boundary timestamps are canonical ISO-8601 UTC strings. The adapter alone maps them to and from Postgres timestamp-with-time-zone values.
 - **DECISION** — The snapshot may contain deployment-required emails, public wallet addresses, prepared transaction identifiers, and public transaction hashes. Routine persistence errors and logs must not print them.
 - **VERIFIED — 2026-09-11 read-only Neon audit** — Migration `0002_gorgeous_squadron_sinister.sql` is recorded in the live Drizzle ledger, and the live constraint permits `1.0 | 2.0 | 3.0`. All 14 rows observed were V2; there were no V1 or V3 rows and no durable wallet-prompt or broadcast operation. The earlier statement that `0002` was unapplied was inaccurate.
-- **DECISION** — V1, V2 and V3 remain backward-decodable without silent mutation or upgrade. V4 strictly adds the execution-authority records described above. Migration `0003_mushy_sugar_man.sql` only extends the check constraint to include `4.0`; it is generated for offline review and must not be applied without separate authorization.
+- **USER-CONFIRMED — 2026-09-13** — Migration `0003_mushy_sugar_man.sql` is already applied. Pre-activation requires only a read-only ledger/constraint verification; applying or reapplying migration 0003 is not an activation step.
 
 ## Compositional persisted state machine
 
@@ -131,10 +141,10 @@ Brickken sandbox API ──► Ethereum Sepolia
 | DECISION — any write `*/AWAITING_WALLET` | User approves wallet prompt; wallet returns hash; hash persisted | same phase `BROADCAST_RECORDED` |
 | DECISION — any write `*/BROADCAST_RECORDED` | Trusted Sepolia RPC returns the identical hash and matching signed transaction fields; evidence enters V3 | same phase `BROADCAST_RECORDED` |
 | DECISION — matching V3 broadcast | Brickken accepts identical `{txId, txHash}` | same phase `CONFIRMING` |
-| DECISION — any write `*/CONFIRMING` | Brickken reports `pending` | same phase `CONFIRMING` |
-| DECISION — `TOKENIZATION/CONFIRMING` | Brickken reports `success`; a matching successful receipt reaches recorded finality; token read-back identifies expected asset/address | `WHITELIST/PREPARING` |
-| DECISION — `WHITELIST/CONFIRMING` | Brickken reports `success`; whitelist read-back is true | `MINT/PREPARING` |
-| DECISION — `MINT/CONFIRMING` | Brickken reports `success` | `VERIFICATION/READY` |
+| DECISION — any write `*/CONFIRMING` | Brickken transaction-status text is observed | same phase `CONFIRMING`; text is evidence only |
+| DECISION — `TOKENIZATION/CONFIRMING` | Exact correlation, matching fee-compliant finalized RPC execution, and transaction-bound token identity read-back all verify | `WHITELIST/PREPARING` |
+| DECISION — `WHITELIST/CONFIRMING` | Exact correlation, matching fee-compliant finalized RPC execution, and authoritative whitelist read-back verify | `MINT/PREPARING` |
+| DECISION — `MINT/CONFIRMING` | Exact correlation, matching fee-compliant finalized RPC execution, and authoritative balance/token read-back verify | `VERIFICATION/READY` |
 | DECISION — `VERIFICATION/READY` | All requested/observed assertions pass and evidence persists | `VERIFICATION/SUCCEEDED` |
 | DECISION — `VERIFICATION/SUCCEEDED` | Immutable receipt persists in same database transaction | `RECEIPT/SUCCEEDED` + `COMPLETE` |
 

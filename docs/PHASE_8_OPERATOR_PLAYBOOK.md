@@ -88,9 +88,9 @@ Each row is a separate process and fresh human decision. A successful action con
 | 4 | `WALLET_SEND` | Exact prepared wallet-request hash; durable prompt lock; separate visible Execute | Persist returned hash or `BROADCAST_UNKNOWN`; never resend automatically. |
 | 5 | `RPC_TRANSACTION_COMPARE` | Trusted server RPC lookup by persisted hash; exact signed-field equivalence enters V3 | Any mismatch, unrelated hash, absent/dropped/replaced ambiguity or reorg blocks Brickken confirmation. Replacement detection is manual/unresolved. |
 | 6 | `BRICKKEN_CONFIRM` | V3 transaction evidence is `MATCH/CLEAR`; submit only persisted `{txId, txHash}` once | Ambiguous response blocks; do not poll automatically. |
-| 7 | `BRICKKEN_POLL` | Persisted identical IDs; one explicitly bounded poll action | Pending stops pending; rejected is terminal; no automatic loop or resend. |
+| 7 | `BRICKKEN_POLL` | Persisted identical IDs; one explicitly bounded poll action | Retain bounded status text as opaque evidence only; no text value is terminal or authorizes advancement; no automatic loop or resend. |
 | 8 | `RPC_FINALITY` | Matching receipt and block identity from trusted RPC; successful execution; separately observed finalized head | Persist included/finalized evidence; reorg or disagreement blocks. |
-| 9 | `BRICKKEN_READ_BACK` | Brickken success plus matching successful finalized receipt | Persist requested-versus-observed result; never issue success on mismatch. |
+| 9 | `BRICKKEN_READ_BACK` | Exact durable correlation, trusted-RPC six-field match, compliant fees, successful canonical receipt and finalized head | Persist identity only from a transaction-bound authoritative read. Current symbol-scoped reads cannot establish that binding and must stop with `READ_BACK_BINDING_UNRESOLVED`. |
 
 For later tokenization, whitelist and mint testing, repeat the complete stop sequence in order. Standalone whitelist must be durably read-back verified before mint preparation with the documented `needWhitelist: false` assumption. No current live evidence validates that assumption.
 
@@ -113,7 +113,7 @@ The approved wallet request, trusted-RPC transaction and receipt have separate s
 | signature fields; block hash/number/index | Response-only identity metadata, not request fields. |
 | receipt `gasUsed` | Receipt-only observation; must not exceed transaction gas limit. |
 | receipt `effectiveGasPrice` | Derived receipt-only observation. |
-| receipt status/contract address | Status must be success before read-back; contract creation is refused. |
+| receipt status/contract address | Trusted RPC receipt execution must be successful before read-back; contract creation is refused. Brickken status text is irrelevant to this gate. |
 | finalized block | Receipt inclusion block number must not exceed the separately observed finalized head; both identities are persisted. |
 
 The implementation does not claim automatic replacement detection. A missing transaction, a different transaction under the returned hash, a changed inclusion identity or reorganization is manual reconciliation and must never lead to an automatic replacement transaction.

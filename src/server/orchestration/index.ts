@@ -48,6 +48,7 @@ export {
   TokenizeOnlySemanticAuthorizationEvaluator,
   TokenizePolicyConfigurationError,
   createProductionSemanticAuthorizationEvaluator,
+  deriveTokenizeSelectorFromCanonicalSignature,
   readTokenizeSemanticAuthorizationPolicy,
   type TokenizeAuthorizationDenialReason,
   type TokenizeSemanticAuthorizationPolicy,
