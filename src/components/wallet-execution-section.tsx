@@ -29,6 +29,7 @@ function label(state: WalletExecutionViewState): string {
     REQUIRED_SIGNER_UNAVAILABLE: "Required signer unavailable",
     READY: "Ready for wallet prompt",
     AUTHORIZATION_UNAVAILABLE: "Execution authorization unavailable",
+    AUTHORIZATION_POLICY_REFUSED: "TOKENIZE authorization refused",
     DURABLE_REFRESH_REQUIRED: "Durable refresh required",
     PROMPT_IN_PROGRESS: "Wallet prompt in progress",
     HASH_RECORDED: "Transaction hash recorded",
@@ -257,6 +258,11 @@ export function WalletExecutionSection({
         {state === "AUTHORIZATION_UNAVAILABLE" && (
           <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
             Production execution remains deny-all. No wallet transaction request was made.
+          </div>
+        )}
+        {state === "AUTHORIZATION_POLICY_REFUSED" && (
+          <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+            This TOKENIZE run is not authorized for wallet submission. No wallet transaction request was made.
           </div>
         )}
         {state === "DURABLE_REFRESH_REQUIRED" && (

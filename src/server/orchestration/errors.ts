@@ -6,6 +6,7 @@ export type OrchestrationErrorCode =
   | "READ_BACK_FAILED"
   | "READ_BACK_BINDING_UNRESOLVED"
   | "AUTHORIZATION_DENIED"
+  | "AUTHORIZATION_POLICY_REFUSED"
   | "CORRELATION_FAILED"
   | "STATUS_CONTRADICTION"
   | "AUTHENTICATION_REJECTED"
@@ -29,6 +30,7 @@ export class OrchestrationError extends Error {
       READ_BACK_BINDING_UNRESOLVED:
         "The deployed token address cannot be bound to the finalized tokenization transaction.",
       AUTHORIZATION_DENIED: "Semantic authorization denied execution of the requested operation.",
+      AUTHORIZATION_POLICY_REFUSED: "The durable TOKENIZE run is not authorized for wallet submission.",
       CORRELATION_FAILED: "Brickken transaction correlation failed.",
       STATUS_CONTRADICTION: "Brickken status evidence contradicted durable execution identity.",
       AUTHENTICATION_REJECTED: "Brickken rejected the sandbox credential.",

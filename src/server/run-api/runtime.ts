@@ -6,6 +6,10 @@ import { getServerEnv } from "../env";
 import {
   ExecutionOrchestrator,
   ExecutionV4Orchestrator,
+  TOKENIZE_ALLOWED_DESTINATION,
+  TOKENIZE_CALLDATA_COMMITMENT,
+  TOKENIZE_EXECUTION_GATE,
+  TOKENIZE_FUNCTION_SIGNATURE,
   createProductionSemanticAuthorizationEvaluator,
   createPreparationOnlyBrickkenWriteGate,
 } from "../orchestration";
@@ -40,10 +44,22 @@ export interface RunApiRuntime {
   readonly nowIso: () => string;
 }
 
+function tokenizeAuthorizationEnvironmentFromServerEnv() {
+  const env = getServerEnv();
+  return Object.freeze({
+    [TOKENIZE_EXECUTION_GATE]: env.EDICT_TOKENIZE_EXECUTION_ENABLED,
+    [TOKENIZE_ALLOWED_DESTINATION]: env.EDICT_TOKENIZE_ALLOWED_DESTINATION,
+    [TOKENIZE_FUNCTION_SIGNATURE]: env.EDICT_TOKENIZE_FUNCTION_SIGNATURE,
+    [TOKENIZE_CALLDATA_COMMITMENT]: env.EDICT_TOKENIZE_CALLDATA_COMMITMENT,
+  });
+}
+
 export function createRuntimeSemanticAuthorization(
-  environment: Readonly<Record<string, string | undefined>> = process.env,
+  environment?: Readonly<Record<string, string | undefined>>,
 ): SemanticAuthorizationEvaluator {
-  return createProductionSemanticAuthorizationEvaluator(environment);
+  return createProductionSemanticAuthorizationEvaluator(
+    environment ?? tokenizeAuthorizationEnvironmentFromServerEnv(),
+  );
 }
 
 /** Called only after the deny-by-default deployment gate has passed. */

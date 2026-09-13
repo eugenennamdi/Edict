@@ -35,6 +35,7 @@ const unknownInputSchema = bindingSchema.extend({
 
 export type WalletExecutionGatewayErrorCode =
   | "EXECUTION_AUTHORIZATION_UNAVAILABLE"
+  | "AUTHORIZATION_POLICY_REFUSED"
   | "REVISION_CONFLICT"
   | "AUTHORIZATION_RESPONSE_UNKNOWN"
   | "MALFORMED_RESPONSE"
@@ -141,6 +142,11 @@ async function post(
       response.status === 403 &&
       isErrorCode(raw, "EXECUTION_AUTHORIZATION_UNAVAILABLE")
     ) throw new WalletExecutionGatewayError("EXECUTION_AUTHORIZATION_UNAVAILABLE");
+    if (
+      authorizationRequest &&
+      response.status === 403 &&
+      isErrorCode(raw, "AUTHORIZATION_POLICY_REFUSED")
+    ) throw new WalletExecutionGatewayError("AUTHORIZATION_POLICY_REFUSED");
     if (response.status === 409 && isErrorCode(raw, "REVISION_CONFLICT")) {
       throw new WalletExecutionGatewayError("REVISION_CONFLICT");
     }

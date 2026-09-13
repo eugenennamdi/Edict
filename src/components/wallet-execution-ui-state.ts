@@ -6,6 +6,7 @@ export type WalletExecutionViewState =
   | "REQUIRED_SIGNER_UNAVAILABLE"
   | "READY"
   | "AUTHORIZATION_UNAVAILABLE"
+  | "AUTHORIZATION_POLICY_REFUSED"
   | "DURABLE_REFRESH_REQUIRED"
   | "PROMPT_IN_PROGRESS"
   | "HASH_RECORDED"
@@ -22,6 +23,7 @@ export type WalletExecutionUiEvent =
   | Readonly<{ type: "LOCAL_STATE"; state: WalletExecutionViewState }>
   | Readonly<{ type: "START" }>
   | Readonly<{ type: "AUTHORIZATION_UNAVAILABLE" }>
+  | Readonly<{ type: "AUTHORIZATION_POLICY_REFUSED" }>
   | Readonly<{ type: "REFRESH_REQUIRED" }>
   | Readonly<{ type: "AMBIGUOUS" }>
   | Readonly<{ type: "HASH_RECORDED" }>
@@ -37,6 +39,12 @@ export function classifyWalletExecutionFailure(code: string): Readonly<{
   if (code === "EXECUTION_AUTHORIZATION_UNAVAILABLE") {
     return Object.freeze({
       event: Object.freeze({ type: "AUTHORIZATION_UNAVAILABLE" }),
+      refresh: false,
+    });
+  }
+  if (code === "SEMANTIC_POLICY_REFUSED") {
+    return Object.freeze({
+      event: Object.freeze({ type: "AUTHORIZATION_POLICY_REFUSED" }),
       refresh: false,
     });
   }
@@ -76,6 +84,9 @@ export function reduceWalletExecutionUi(
   }
   if (event.type === "AUTHORIZATION_UNAVAILABLE") {
     return Object.freeze({ state: "AUTHORIZATION_UNAVAILABLE", locked: true, inProgress: false });
+  }
+  if (event.type === "AUTHORIZATION_POLICY_REFUSED") {
+    return Object.freeze({ state: "AUTHORIZATION_POLICY_REFUSED", locked: true, inProgress: false });
   }
   if (event.type === "REFRESH_REQUIRED") {
     return Object.freeze({ state: "DURABLE_REFRESH_REQUIRED", locked: true, inProgress: false });

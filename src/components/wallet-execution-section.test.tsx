@@ -21,6 +21,8 @@ describe("wallet execution UI composition", () => {
       "Switch to Ethereum Sepolia",
       "Required signer unavailable",
       "Execution authorization unavailable",
+      "TOKENIZE authorization refused",
+      "This TOKENIZE run is not authorized for wallet submission",
       "Ready for wallet prompt",
       "Wallet prompt in progress",
       "Transaction hash recorded",
@@ -127,6 +129,10 @@ describe("wallet execution UI composition", () => {
     });
     expect(classifyWalletExecutionFailure("EXECUTION_AUTHORIZATION_UNAVAILABLE")).toEqual({
       event: { type: "AUTHORIZATION_UNAVAILABLE" },
+      refresh: false,
+    });
+    expect(classifyWalletExecutionFailure("SEMANTIC_POLICY_REFUSED")).toEqual({
+      event: { type: "AUTHORIZATION_POLICY_REFUSED" },
       refresh: false,
     });
   });

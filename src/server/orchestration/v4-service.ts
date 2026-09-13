@@ -106,9 +106,11 @@ export interface SemanticAuthorizationEvaluator {
 export class DenyAllSemanticAuthorizationEvaluator
   implements SemanticAuthorizationEvaluator
 {
-  readonly isProductionDenyAll = true;
+  readonly isProductionDenyAll: boolean;
 
-  constructor(readonly reason: string = "AUTHORIZATION_DENIED") {}
+  constructor(readonly reason: string = "AUTHORIZATION_DENIED") {
+    this.isProductionDenyAll = reason !== "POLICY_CONFIG_INVALID";
+  }
 
   async evaluate(): Promise<Readonly<{ authorized: false; reason: string }>> {
     return Object.freeze({
@@ -541,7 +543,7 @@ export class ExecutionV4Orchestrator {
         expectedRevision,
       );
       if (!preflight.authorized) {
-        throw new OrchestrationError("AUTHORIZATION_DENIED");
+        throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
       }
       nonceEvidence = preflight.freshness?.nonceEvidence;
       semantic = preflight.semanticAuthorization;
@@ -577,6 +579,12 @@ export class ExecutionV4Orchestrator {
     if (this.#semanticAuth.isProductionDenyAll) {
       throw new OrchestrationError("AUTHORIZATION_DENIED");
     }
+    if (
+      this.#semanticAuth instanceof DenyAllSemanticAuthorizationEvaluator &&
+      this.#semanticAuth.reason === "POLICY_CONFIG_INVALID"
+    ) {
+      throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
+    }
 
     let current = await this.#deps.repository.getById(runId);
     assertRevision(current, expectedRevision);
@@ -595,7 +603,7 @@ export class ExecutionV4Orchestrator {
         currentRevision,
       );
       if (!preflight.authorized) {
-        throw new OrchestrationError("AUTHORIZATION_DENIED");
+        throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
       }
       const foundation: V4PreparationFoundationInput = {
         attemptId: active.attemptId,

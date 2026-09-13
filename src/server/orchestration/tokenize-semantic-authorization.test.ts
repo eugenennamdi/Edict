@@ -6,7 +6,7 @@ import { createApprovalProofFixture } from "../execution/test-fixtures";
 import type { ExecutionRunV4, PreparationAttemptV1 } from "../execution/types";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
 import { createTrustedSepoliaRpcClient } from "../rpc";
-import { ExecutionV4Orchestrator } from "./v4-service";
+import { DenyAllSemanticAuthorizationEvaluator, ExecutionV4Orchestrator } from "./v4-service";
 import {
   calculatePreparationFingerprintV1,
   upgradePreparedRunToV4,
@@ -150,6 +150,13 @@ async function decision(
 }
 
 describe("TOKENIZE semantic activation config", () => {
+  it("defaults to deny-all when no environment object is supplied", () => {
+    expect(createProductionSemanticAuthorizationEvaluator()).toBeInstanceOf(
+      DenyAllSemanticAuthorizationEvaluator,
+    );
+    expect(createProductionSemanticAuthorizationEvaluator().isProductionDenyAll).toBe(true);
+  });
+
   it("accepts only the reviewed bare canonical signature and derives 0xf3d02cfd", () => {
     expect(
       deriveTokenizeSelectorFromCanonicalSignature(REVIEWED_TOKENIZE_FUNCTION_SIGNATURE),
@@ -191,7 +198,8 @@ describe("TOKENIZE semantic activation config", () => {
     const evaluator = createProductionSemanticAuthorizationEvaluator({
       [TOKENIZE_EXECUTION_GATE]: "1",
     });
-    expect(evaluator.isProductionDenyAll).toBe(true);
+    expect(evaluator.isProductionDenyAll).toBe(false);
+    expect(evaluator).toBeInstanceOf(DenyAllSemanticAuthorizationEvaluator);
     await expect(evaluator.evaluate({} as never)).resolves.toEqual({
       authorized: false,
       reason: "POLICY_CONFIG_INVALID",

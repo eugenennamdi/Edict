@@ -56,10 +56,50 @@ describe("Production RunApiRuntime composition", () => {
     const runtime = createRunApiRuntime();
     expect(runtime.walletExecution).toBeDefined();
 
-    // Any attempt to release send authority must be unconditionally rejected by DenyAll
     await expect(
-      runtime.walletExecution!.releaseSendAuthority("11111111-1111-4111-8111-111111111111", 0),
-    ).rejects.toThrow(OrchestrationError);
+      runtime.walletExecution!.releaseSendAuthority("11111111-1111-4111-8111-111111111111", 1),
+    ).rejects.toMatchObject({ name: "OrchestrationError", code: "AUTHORIZATION_DENIED" });
+  });
+
+  it("composes the TOKENIZE-only evaluator from getServerEnv on the production runtime factory", async () => {
+    process.env[TOKENIZE_EXECUTION_GATE] = "1";
+    process.env[TOKENIZE_ALLOWED_DESTINATION] = REVIEWED_SEPOLIA_FACTORY;
+    process.env[TOKENIZE_FUNCTION_SIGNATURE] = REVIEWED_TOKENIZE_FUNCTION_SIGNATURE;
+    process.env[TOKENIZE_CALLDATA_COMMITMENT] = `sha256:${"1".repeat(64)}`;
+    expect(createRuntimeSemanticAuthorization()).toBeInstanceOf(
+      TokenizeOnlySemanticAuthorizationEvaluator,
+    );
+    expect(createRuntimeSemanticAuthorization().isProductionDenyAll).toBe(false);
+    const runtime = createRunApiRuntime();
+    await expect(
+      runtime.walletExecution!.releaseSendAuthority("11111111-1111-4111-8111-111111111111", 1),
+    ).rejects.toSatisfy((error: unknown) => !(
+      error instanceof OrchestrationError && error.code === "AUTHORIZATION_DENIED"
+    ));
+  });
+
+  it("refuses malformed commitment as policy-config invalid, not gate deny-all", async () => {
+    process.env[TOKENIZE_EXECUTION_GATE] = "1";
+    process.env[TOKENIZE_ALLOWED_DESTINATION] = REVIEWED_SEPOLIA_FACTORY;
+    process.env[TOKENIZE_FUNCTION_SIGNATURE] = REVIEWED_TOKENIZE_FUNCTION_SIGNATURE;
+    process.env[TOKENIZE_CALLDATA_COMMITMENT] = "sha256:not-64-hex";
+    const evaluator = createRuntimeSemanticAuthorization();
+    expect(evaluator).toBeInstanceOf(DenyAllSemanticAuthorizationEvaluator);
+    expect(evaluator.isProductionDenyAll).toBe(false);
+    const runtime = createRunApiRuntime();
+    await expect(
+      runtime.walletExecution!.releaseSendAuthority("11111111-1111-4111-8111-111111111111", 1),
+    ).rejects.toMatchObject({ code: "AUTHORIZATION_POLICY_REFUSED" });
+  });
+
+  it("reads TOKENIZE policy from getServerEnv rather than dynamic process.env index access", () => {
+    const source = readFileSync(new URL("./runtime.ts", import.meta.url), "utf8");
+    expect(source).toContain("env.EDICT_TOKENIZE_EXECUTION_ENABLED");
+    expect(source).toContain("env.EDICT_TOKENIZE_ALLOWED_DESTINATION");
+    expect(source).toContain("env.EDICT_TOKENIZE_FUNCTION_SIGNATURE");
+    expect(source).toContain("env.EDICT_TOKENIZE_CALLDATA_COMMITMENT");
+    expect(source).not.toMatch(/createProductionSemanticAuthorizationEvaluator\(\s*process\.env\s*\)/);
+    expect(source).not.toMatch(/=\s*process\.env\s*,/);
   });
 
   it("composes the TOKENIZE-only evaluator only for exact private activation and policy", () => {

@@ -126,7 +126,7 @@ function readPolicy(environment: Readonly<Record<string, string | undefined>>): 
 }
 
 export function readTokenizeSemanticAuthorizationPolicy(
-  environment: Readonly<Record<string, string | undefined>> = process.env,
+  environment: Readonly<Record<string, string | undefined>> = {},
 ): Readonly<
   | { enabled: true; policy: TokenizeSemanticAuthorizationPolicy }
   | { enabled: false; reason: "TOKENIZE_GATE_DISABLED" | "POLICY_CONFIG_INVALID" }
@@ -343,7 +343,7 @@ export class TokenizeOnlySemanticAuthorizationEvaluator implements SemanticAutho
 }
 
 export function createProductionSemanticAuthorizationEvaluator(
-  environment: Readonly<Record<string, string | undefined>> = process.env,
+  environment: Readonly<Record<string, string | undefined>> = {},
 ): SemanticAuthorizationEvaluator {
   const config = readTokenizeSemanticAuthorizationPolicy(environment);
   if (!config.enabled) {

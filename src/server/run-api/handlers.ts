@@ -53,6 +53,7 @@ type ErrorCode =
   | "PREPARATION_REFUSED"
   | "READ_BACK_BINDING_UNRESOLVED"
   | "EXECUTION_AUTHORIZATION_UNAVAILABLE"
+  | "AUTHORIZATION_POLICY_REFUSED"
   | "SERVICE_UNAVAILABLE";
 
 function response(status: number, body: unknown, extraHeaders?: HeadersInit): Response {
@@ -147,6 +148,9 @@ function mapError(error: unknown): Response {
   if (error instanceof OrchestrationError) {
     if (error.code === "AUTHORIZATION_DENIED") {
       return failure(403, "EXECUTION_AUTHORIZATION_UNAVAILABLE");
+    }
+    if (error.code === "AUTHORIZATION_POLICY_REFUSED") {
+      return failure(403, "AUTHORIZATION_POLICY_REFUSED");
     }
     if (error.code === "EXECUTION_INVARIANT_FAILED") return failure(409, "STATE_CONFLICT");
     if (error.code === "READ_BACK_BINDING_UNRESOLVED") {

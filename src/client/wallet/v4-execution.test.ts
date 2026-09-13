@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { WalletExecutionHttpGateway } from "@/client/run-api/wallet-execution-gateway";
+import { WalletExecutionGatewayError } from "@/client/run-api/wallet-execution-gateway";
 import type { EdictEip1193Provider, SendAuthorizedEnvelopeV1 } from "@/shared/wallet";
 import { SelectedWalletSession } from "./session";
 import { executeSendAuthorizedEnvelopeFromUserAction } from "./v4-execution";
@@ -151,6 +152,26 @@ describe("V4 browser wallet execution coordinator", () => {
     expect(provider.calls.map(({ method }) => method).filter((method) =>
       ["wallet_switchEthereumChain", "eth_sendTransaction"].includes(method)
     )).toEqual(["wallet_switchEthereumChain", "eth_sendTransaction"]);
+  });
+
+  it("keeps production deny-all distinct from TOKENIZE policy refusal", async () => {
+    const denied = harness();
+    vi.mocked(denied.gateway.authorize).mockRejectedValueOnce(
+      new WalletExecutionGatewayError("EXECUTION_AUTHORIZATION_UNAVAILABLE"),
+    );
+    await expect(execute(denied)).rejects.toMatchObject({
+      code: "EXECUTION_AUTHORIZATION_UNAVAILABLE",
+    });
+    expect(sends(denied.provider)).toHaveLength(0);
+
+    const refused = harness();
+    vi.mocked(refused.gateway.authorize).mockRejectedValueOnce(
+      new WalletExecutionGatewayError("AUTHORIZATION_POLICY_REFUSED"),
+    );
+    await expect(execute(refused)).rejects.toMatchObject({
+      code: "SEMANTIC_POLICY_REFUSED",
+    });
+    expect(sends(refused.provider)).toHaveLength(0);
   });
 
   it("fails a missing required signer before authority release or provider invocation", async () => {

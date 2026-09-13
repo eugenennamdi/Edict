@@ -404,6 +404,23 @@ describe("V4 browser wallet run routes", () => {
     });
   });
 
+  it("maps policy refusal distinctly from production deny-all", async () => {
+    const value = await setup();
+    vi.mocked(value.walletExecution.releaseSendAuthority).mockRejectedValueOnce(
+      new OrchestrationError("AUTHORIZATION_POLICY_REFUSED"),
+    );
+    const refused = await value.call(
+      walletAuthorizationHandler,
+      "wallet-authorization",
+      { expectedRevision: 8 },
+    );
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toEqual({
+      ok: false,
+      error: { code: "AUTHORIZATION_POLICY_REFUSED" },
+    });
+  });
+
   it("accepts only expectedRevision and never accepts browser-selected authority fields", async () => {
     const value = await setup();
     const success = await value.call(walletAuthorizationHandler, "wallet-authorization", { expectedRevision: 8 });
