@@ -104,6 +104,37 @@ describe("execution preparation review UI", () => {
     expect(html).not.toContain("Send transaction");
   });
 
+  it("renders clear stale explanation when transaction has expired", () => {
+    const ready = view("READY_FOR_PREPARATION");
+    const stale: PlanningView = { ...ready, run: {
+      ...ready.run,
+      status: "AWAITING_WALLET",
+      revision: 6,
+      execution: {
+        ...ready.run.execution!,
+        preparationStatus: "PREPARED_STALE" as const,
+        staleReason: "PRICE_REPORT_EXPIRED" as const,
+        reprepareEligible: true,
+        transactionReview: null,
+      },
+      operations: [
+        { ...ready.run.operations[0], stage: "PREPARED_STALE", preparedTxId: "prepared-1" },
+        ready.run.operations[1], ready.run.operations[2],
+      ],
+    } };
+    const html = renderToStaticMarkup(createElement(ExecutionReviewSection, {
+      view: stale,
+      pending: false,
+      preparationUnconfirmed: false,
+      onPrepare: vi.fn(),
+    }));
+    expect(html).toContain("Prepared transaction stale");
+    expect(html).toContain("The prepared transaction expired before execution");
+    expect(html).toContain("PRICE_REPORT_EXPIRED");
+    expect(html).toContain("No transaction was submitted to the network and no funds were moved.");
+    expect(html).toContain("eligible for repreparation upon explicit operator request");
+  });
+
   it("contains no wallet provider, signing, broadcast, secret, or browser-storage capability", () => {
     const source = readFileSync(new URL("execution-review-section.tsx", import.meta.url), "utf8");
     expect(source).not.toMatch(/client\/wallet|eth_sendTransaction|eth_requestAccounts|eth_sign|window\.|document\.|localStorage|sessionStorage|BRICKKEN_API_KEY|DATABASE_URL|console\./u);

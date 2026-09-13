@@ -102,6 +102,9 @@ export async function deriveExecutionPreparationProjection(
   let preparationStatus: PublicExecutionPreparation["preparationStatus"];
   let preparationFailureCode: PreparationFailureCode | null = null;
   let transactionReview: PreparedTransactionReviewV1 | null = null;
+  let staleReason: "NONCE_MISMATCH" | "PRICE_REPORT_EXPIRED" | null = null;
+  let reprepareEligible: boolean | null = null;
+
   if (run.status === "PREPARING" && operation.stage === "NOT_STARTED") {
     preparationStatus = "READY_FOR_PREPARATION";
   } else if (run.status === "PREPARING" && operation.stage === "PREPARE_INTENT") {
@@ -109,6 +112,20 @@ export async function deriveExecutionPreparationProjection(
   } else if (run.status === "AWAITING_WALLET" && operation.stage === "PREPARED") {
     preparationStatus = "PREPARED_FOR_REVIEW";
     transactionReview = await preparedReview(run, operation);
+  } else if (run.status === "AWAITING_WALLET" && operation.stage === "PREPARED_STALE") {
+    preparationStatus = "PREPARED_STALE";
+    if ("preparationAttempts" in operation && Array.isArray((operation as { preparationAttempts?: unknown[] }).preparationAttempts)) {
+      const activeId = (operation as { activePreparationAttemptId?: string }).activePreparationAttemptId;
+      const attempts = (operation as { preparationAttempts: Array<{ attemptId: string; staleReason?: "NONCE_MISMATCH" | "PRICE_REPORT_EXPIRED" | null }> }).preparationAttempts;
+      const active = attempts.find((a) => a.attemptId === activeId);
+      if (active?.staleReason) {
+        staleReason = active.staleReason;
+      }
+    }
+    const hasAuth = "walletPromptAuthorization" in operation &&
+      (operation as { walletPromptAuthorization?: unknown }).walletPromptAuthorization !== null;
+    const hasHash = operation.blockchainTxHash !== null;
+    reprepareEligible = !hasAuth && !hasHash;
   } else if (
     run.status === "RECONCILIATION_REQUIRED" &&
     operation.stage === "PREPARE_UNKNOWN"
@@ -142,6 +159,8 @@ export async function deriveExecutionPreparationProjection(
     }),
     preparationStatus,
     preparationFailureCode,
+    staleReason,
+    reprepareEligible,
     transactionReview,
   });
 }

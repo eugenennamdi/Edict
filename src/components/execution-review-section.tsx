@@ -32,6 +32,7 @@ export function ExecutionReviewSection({
   const review = execution.transactionReview;
   const ready = execution.preparationStatus === "READY_FOR_PREPARATION" && !preparationUnconfirmed;
   const failed = execution.preparationStatus === "PREPARATION_FAILED";
+  const stale = execution.preparationStatus === "PREPARED_STALE";
   const blocked = preparationUnconfirmed || [
     "PREPARATION_PENDING",
     "PREPARATION_UNCONFIRMED",
@@ -45,16 +46,18 @@ export function ExecutionReviewSection({
             {failed ? "Operation outcome" : "Next operation"}
           </Badge>
           <Badge
-            variant={review ? "success" : blocked || failed ? "destructive" : "secondary"}
+            variant={review ? "success" : blocked || failed || stale ? "destructive" : "secondary"}
             className="w-fit text-[10px] uppercase"
           >
             {review
               ? "Prepared for review"
               : failed
                 ? "Preparation failed"
-                : blocked
-                  ? "Preparation unresolved"
-                  : "Ready for preparation"}
+                : stale
+                  ? "Prepared transaction stale"
+                  : blocked
+                    ? "Preparation unresolved"
+                    : "Ready for preparation"}
           </Badge>
         </div>
         <CardTitle className="text-xl font-bold tracking-tight">
@@ -63,7 +66,9 @@ export function ExecutionReviewSection({
         <CardDescription className="text-xs leading-relaxed max-w-2xl">
           {failed
             ? "The durable run records a terminal TOKENIZE preparation refusal."
-            : "The durable run—not the browser—identified TOKENIZE as the next legal operation."}
+            : stale
+              ? "The prepared transaction expired before execution. Refreshing the transaction is required before wallet submission."
+              : "The durable run—not the browser—identified TOKENIZE as the next legal operation."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -122,6 +127,22 @@ export function ExecutionReviewSection({
                 )}
               </span>
             </span>
+          </div>
+        )}
+
+        {stale && (
+          <div role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-foreground space-y-2">
+            <span className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <span>
+                The prepared transaction expired before execution (reason: <code className="font-semibold">{execution.staleReason ?? "PRICE_REPORT_EXPIRED"}</code>). No transaction was submitted to the network and no funds were moved.
+              </span>
+            </span>
+            {execution.reprepareEligible && (
+              <p className="text-xs text-muted-foreground">
+                This run is eligible for repreparation upon explicit operator request.
+              </p>
+            )}
           </div>
         )}
 

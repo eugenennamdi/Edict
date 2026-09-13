@@ -21,6 +21,7 @@ import type {
 import { projectPublicRun } from "../run-api/projection";
 import { createTrustedSepoliaRpcClient } from "../rpc/client";
 import type { RpcTransport } from "../rpc/types";
+import { markPreparedStaleV4 } from "../execution/v4-transitions";
 import {
   ExecutionV4Orchestrator,
   OrchestrationError,
@@ -2437,6 +2438,50 @@ describe("ExecutionV4Orchestrator", () => {
       expect(json).not.toContain("authorizedCaps");
       expect(json).not.toContain("events");
       expect(json).not.toContain("privateKey");
+    });
+
+    it("projects PREPARED_STALE V4 runs with staleReason and reprepareEligibility", async () => {
+      const h = createHarness();
+      const runV2 = await createPreparedV2Run(h);
+      const v4Run = await h.v4.promotePreparedRunToV4(
+        runV2.id,
+        runV2.revision,
+      );
+      const staleRun = await markPreparedStaleV4({
+        run: v4Run,
+        kind: "TOKENIZE",
+        foundation: {
+          attemptId: v4Run.operations[0].activePreparationAttemptId!,
+          freshnessPolicyVersion: "edict-freshness-v1",
+        },
+        nonceEvidence: {
+          evidenceVersion: "1.0",
+          policyVersion: "edict-freshness-v1",
+          authority: "TRUSTED_SERVER_RPC",
+          rpcMethod: "eth_getTransactionCount",
+          blockTag: "pending",
+          chainId: "11155111",
+          requiredSigner: v4Run.requiredSigner.walletAddress,
+          preparedNonce: v4Run.operations[0].preparationAttempts[0].immutableIdentity!.nonce,
+          observedPendingNonce: v4Run.operations[0].preparationAttempts[0].immutableIdentity!.nonce,
+          status: "FRESH",
+          observedAt: "2026-09-13T16:51:39.422Z",
+        },
+        staleReason: "PRICE_REPORT_EXPIRED",
+        id: "event-stale",
+        at: "2026-09-13T16:51:39.422Z",
+      });
+
+      const publicProj = await projectPublicRun(staleRun);
+
+      expect(publicProj.schemaVersion).toBe("4.0");
+      expect(publicProj.operations[0].stage).toBe("PREPARED_STALE");
+      expect(publicProj.execution).toMatchObject({
+        preparationStatus: "PREPARED_STALE",
+        staleReason: "PRICE_REPORT_EXPIRED",
+        reprepareEligible: true,
+        transactionReview: null,
+      });
     });
   });
 

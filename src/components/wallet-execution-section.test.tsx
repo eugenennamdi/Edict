@@ -151,4 +151,95 @@ describe("wallet execution UI composition", () => {
       inProgress: false,
     });
   });
+
+  it("renders clear stale explanation and refresh action when operation is PREPARED_STALE and pre-authorization", () => {
+    const run = {
+      id: "87ab958c-57e8-4dc3-8652-8fab7c477434",
+      schemaVersion: "4.0",
+      manifestHash: `sha256:${"1".repeat(64)}`,
+      planHash: `sha256:${"2".repeat(64)}`,
+      environment: "sandbox",
+      chainId: "11155111",
+      requiredSigner: { role: "tokenizer", walletAddress: "0x1111111111111111111111111111111111111111" },
+      phase: "TOKENIZATION",
+      status: "AWAITING_WALLET",
+      terminalOutcome: null,
+      approved: true,
+      execution: {
+        projectionVersion: "1.0",
+        nextOperation: { id: "op-1", kind: "TOKENIZE", sequence: 1, name: "Create tokenization" },
+        preparationStatus: "PREPARED_STALE",
+        staleReason: "PRICE_REPORT_EXPIRED",
+        reprepareEligible: true,
+        transactionReview: null,
+      },
+      operations: [
+        { id: "op-1", kind: "TOKENIZE", stage: "PREPARED_STALE", preparedTxId: "0xb949b8b9", blockchainTxHash: null, brickkenStatus: null, timeout: false },
+        { id: "op-2", kind: "WHITELIST", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
+        { id: "op-3", kind: "MINT", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
+      ],
+      receiptEligible: false,
+      createdAt: "2026-09-13T16:43:42.832Z",
+      updatedAt: "2026-09-13T16:51:39.422Z",
+      revision: 6,
+    } as unknown as PublicRunProjection;
+
+    const html = renderToStaticMarkup(createElement(WalletExecutionSection, {
+      run,
+      onRefresh: async () => undefined,
+    }));
+
+    // Must remain visible and render the stale explanation
+    expect(html).toContain("Prepared transaction expired");
+    expect(html).toContain("PRICE_REPORT_EXPIRED");
+    // Must explicitly confirm non-submission and no funds moved
+    expect(html).toContain("No transaction was submitted to the network and no funds were moved.");
+    // Must explicitly confirm non-authorization
+    expect(html).toContain("No wallet prompt authorization was granted.");
+    // Pre-authorization must offer explicit refresh / reprepare action
+    expect(html).toContain("Refresh prepared transaction");
+    expect(html).toContain("A fresh preparation will produce a new Brickken transaction ID");
+  });
+
+  it("suppresses repreparation action when post-authorization or txHash is recorded", () => {
+    const run = {
+      id: "87ab958c-57e8-4dc3-8652-8fab7c477434",
+      schemaVersion: "4.0",
+      manifestHash: `sha256:${"1".repeat(64)}`,
+      planHash: `sha256:${"2".repeat(64)}`,
+      environment: "sandbox",
+      chainId: "11155111",
+      requiredSigner: { role: "tokenizer", walletAddress: "0x1111111111111111111111111111111111111111" },
+      phase: "TOKENIZATION",
+      status: "AWAITING_WALLET",
+      terminalOutcome: null,
+      approved: true,
+      execution: {
+        projectionVersion: "1.0",
+        nextOperation: { id: "op-1", kind: "TOKENIZE", sequence: 1, name: "Create tokenization" },
+        preparationStatus: "PREPARED_STALE",
+        staleReason: "PRICE_REPORT_EXPIRED",
+        reprepareEligible: false,
+        transactionReview: null,
+      },
+      operations: [
+        { id: "op-1", kind: "TOKENIZE", stage: "PREPARED_STALE", preparedTxId: "0xb949b8b9", blockchainTxHash: `0x${"a".repeat(64)}`, brickkenStatus: null, timeout: false },
+        { id: "op-2", kind: "WHITELIST", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
+        { id: "op-3", kind: "MINT", stage: "NOT_STARTED", preparedTxId: null, blockchainTxHash: null, brickkenStatus: null, timeout: false },
+      ],
+      receiptEligible: false,
+      createdAt: "2026-09-13T16:43:42.832Z",
+      updatedAt: "2026-09-13T16:51:39.422Z",
+      revision: 6,
+    } as unknown as PublicRunProjection;
+
+    const html = renderToStaticMarkup(createElement(WalletExecutionSection, {
+      run,
+      onRefresh: async () => undefined,
+    }));
+
+    // Repreparation action must NOT be rendered when post-authorization
+    expect(html).not.toContain("Refresh prepared transaction");
+    expect(html).toContain("Repreparation is not permitted for this run");
+  });
 });

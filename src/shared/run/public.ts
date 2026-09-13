@@ -76,6 +76,7 @@ const executionPreparationSchema = z.strictObject({
     "READY_FOR_PREPARATION",
     "PREPARATION_PENDING",
     "PREPARED_FOR_REVIEW",
+    "PREPARED_STALE",
     "PREPARATION_UNCONFIRMED",
     "PREPARATION_FAILED",
   ]),
@@ -90,6 +91,8 @@ const executionPreparationSchema = z.strictObject({
     "PREPARATION_REFUSED",
     "PREPARATION_UNCONFIRMED",
   ]).nullable().optional(),
+  staleReason: z.enum(["NONCE_MISMATCH", "PRICE_REPORT_EXPIRED"]).nullable().optional(),
+  reprepareEligible: z.boolean().nullable().optional(),
   transactionReview: preparedTransactionReviewV1Schema.nullable(),
 });
 
@@ -105,6 +108,7 @@ export type PublicExecutionPreparation = Readonly<{
     | "READY_FOR_PREPARATION"
     | "PREPARATION_PENDING"
     | "PREPARED_FOR_REVIEW"
+    | "PREPARED_STALE"
     | "PREPARATION_UNCONFIRMED"
     | "PREPARATION_FAILED";
   preparationFailureCode?:
@@ -118,6 +122,8 @@ export type PublicExecutionPreparation = Readonly<{
     | "PREPARATION_REFUSED"
     | "PREPARATION_UNCONFIRMED"
     | null;
+  staleReason?: "NONCE_MISMATCH" | "PRICE_REPORT_EXPIRED" | null;
+  reprepareEligible?: boolean | null;
   transactionReview: PreparedTransactionReviewV1 | null;
 }>;
 
@@ -200,7 +206,9 @@ function assertExecutionProjection(run: PublicRunProjection): void {
         ? "PREPARATION_PENDING"
         : tokenization.stage === "PREPARED" && run.status === "AWAITING_WALLET"
           ? "PREPARED_FOR_REVIEW"
-          : tokenization.stage === "PREPARE_UNKNOWN" && run.status === "RECONCILIATION_REQUIRED"
+          : tokenization.stage === "PREPARED_STALE" && run.status === "AWAITING_WALLET"
+            ? "PREPARED_STALE"
+            : tokenization.stage === "PREPARE_UNKNOWN" && run.status === "RECONCILIATION_REQUIRED"
             ? "PREPARATION_UNCONFIRMED"
             : (tokenization.stage === "REJECTED" || tokenization.stage === "PREPARE_UNKNOWN") &&
                 run.status === "FAILED" && run.terminalOutcome === "FAILED" &&

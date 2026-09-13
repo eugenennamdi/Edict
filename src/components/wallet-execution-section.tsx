@@ -48,6 +48,7 @@ export function WalletExecutionSection({
   readonly onRefresh: () => Promise<void>;
 }) {
   const prepared = run.approved && run.status === "AWAITING_WALLET" && run.operations[0].stage === "PREPARED";
+  const isStale = run.approved && run.status === "AWAITING_WALLET" && run.operations[0].stage === "PREPARED_STALE";
   const needsPromotion = prepared && run.schemaVersion !== "4.0";
   const canCheckReadiness = prepared && run.schemaVersion === "4.0";
   const hasTrackableHash = run.schemaVersion === "4.0" &&
@@ -55,7 +56,9 @@ export function WalletExecutionSection({
     run.terminalOutcome === null;
   const durableReconciliation = run.status === "RECONCILIATION_REQUIRED";
   const canTrack = hasTrackableHash && !durableReconciliation;
-  const visible = prepared || hasTrackableHash;
+  const isPreAuthorization = run.operations[0].blockchainTxHash === null;
+  const reprepareEligible = isStale && isPreAuthorization && (run.execution?.reprepareEligible ?? true);
+  const visible = prepared || hasTrackableHash || isStale;
   const [providers, setProviders] = useState<readonly DiscoveredWallet[]>([]);
   const [model, setModel] = useState<WalletExecutionUiModel>(initialWalletExecutionUiModel);
   const [serverReadyRevision, setServerReadyRevision] = useState<number | null>(null);
@@ -199,7 +202,9 @@ export function WalletExecutionSection({
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
           <Badge variant="outline">Browser wallet boundary</Badge>
-          <Badge variant={state === "HASH_RECORDED" ? "success" : "secondary"}>{label(state)}</Badge>
+          <Badge variant={isStale ? "destructive" : state === "HASH_RECORDED" ? "success" : "secondary"}>
+            {isStale ? "Prepared transaction expired" : label(state)}
+          </Badge>
         </div>
         <CardTitle className="flex items-center gap-2 text-lg"><WalletCards className="h-4 w-4" />Wallet execution</CardTitle>
         <CardDescription>
@@ -207,6 +212,44 @@ export function WalletExecutionSection({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {isStale && (
+          <div className="space-y-3">
+            <div role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-foreground space-y-2">
+              <div className="flex items-start gap-2 font-medium">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <span>Prepared transaction expired / stale</span>
+              </div>
+              <p className="leading-relaxed">
+                {run.execution?.staleReason === "PRICE_REPORT_EXPIRED" || (!run.execution?.staleReason && run.operations[0].stage === "PREPARED_STALE")
+                  ? "The Brickken offchain price report expired before wallet authorization could be granted (reason: PRICE_REPORT_EXPIRED)."
+                  : run.execution?.staleReason === "NONCE_MISMATCH"
+                    ? "The signer account pending nonce changed on-chain before wallet execution (reason: NONCE_MISMATCH)."
+                    : `The prepared transaction expired or became stale (reason: ${run.execution?.staleReason ?? "PRICE_REPORT_EXPIRED"}).`}
+              </p>
+              <p className="leading-relaxed font-semibold text-muted-foreground">
+                No transaction was submitted to the network and no funds were moved. No wallet prompt authorization was granted.
+              </p>
+            </div>
+
+            {reprepareEligible ? (
+              <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs space-y-2">
+                <p className="leading-relaxed text-muted-foreground">
+                  This run is pre-authorization and has never broadcast to the network. An operator can explicitly refresh / reprepare the transaction to obtain a fresh price report from Brickken.
+                </p>
+                <Button size="sm" onClick={() => void onRefresh()}>
+                  Refresh prepared transaction
+                </Button>
+                <p className="text-[11px] text-muted-foreground">
+                  Notice: A fresh preparation will produce a new Brickken transaction ID, new calldata, and require an updated calldata commitment before execution.
+                </p>
+              </div>
+            ) : (
+              <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
+                Repreparation is not permitted for this run because wallet prompt authorization was released or a transaction hash exists.
+              </div>
+            )}
+          </div>
+        )}
         {needsPromotion && (
           <Button size="sm" disabled={activationAction !== null} onClick={() => void mutateActivation("promote")}>
             {activationAction === "promote" ? "Promoting durable run…" : "Promote to execution state"}
