@@ -10,13 +10,39 @@ import {
 
 export function creationRequest(form: Pick<FormData, "get">) {
   const text = (name: string) => String(form.get(name) ?? "");
-  return { manifest: {
-    schemaVersion: "1.0", environment: "sandbox", chainId: "11155111",
-    tokenizer: { email: text("tokenizerEmail"), walletAddress: text("tokenizerWallet") },
-    asset: { name: text("assetName"), symbol: text("symbol"), tokenType: "RWA_TOKEN",
-      supplyCap: text("supplyCap"), documentationUrl: text("documentationUrl") },
-    investor: { email: text("investorEmail"), walletAddress: text("investorWallet"), mintAmount: text("mintAmount") },
-  } };
+  const tokenizerEmail = text("tokenizerEmail");
+  const investorEmail = text("investorEmail");
+  const investorWallet = text("investorWallet");
+  const mintAmount = text("mintAmount");
+  const hasInvestor = investorEmail !== "" || investorWallet !== "" || mintAmount !== "";
+
+  return {
+    manifest: {
+      schemaVersion: "1.0",
+      environment: "sandbox",
+      chainId: "11155111",
+      tokenizer: {
+        ...(tokenizerEmail !== "" ? { email: tokenizerEmail } : {}),
+        walletAddress: text("tokenizerWallet"),
+      },
+      asset: {
+        name: text("assetName"),
+        symbol: text("symbol"),
+        tokenType: "RWA_TOKEN",
+        supplyCap: text("supplyCap"),
+        documentationUrl: text("documentationUrl"),
+      },
+      ...(hasInvestor
+        ? {
+            investor: {
+              email: investorEmail,
+              walletAddress: investorWallet,
+              mintAmount,
+            },
+          }
+        : {}),
+    },
+  };
 }
 
 export type PlanningView = {

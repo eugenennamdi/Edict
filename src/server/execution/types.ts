@@ -76,7 +76,7 @@ export interface ExecutionManifestSnapshot {
   readonly environment: "sandbox";
   readonly chainId: "11155111";
   readonly tokenizer: {
-    readonly email: string;
+    readonly email?: string;
     readonly walletAddress: string;
   };
   readonly asset: {
@@ -86,7 +86,7 @@ export interface ExecutionManifestSnapshot {
     readonly supplyCap: string;
     readonly documentationUrl: string;
   };
-  readonly investor: {
+  readonly investor?: {
     readonly email: string;
     readonly walletAddress: string;
     readonly mintAmount: string;

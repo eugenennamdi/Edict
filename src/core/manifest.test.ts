@@ -219,4 +219,68 @@ describe("validateAssetManifestV1", () => {
       expect(JSON.stringify(result.errors)).not.toContain("Zod");
     }
   });
+
+  it("validates, normalizes, and deeply freezes a minimal 5-field tokenize-only manifest", () => {
+    const raw = {
+      schemaVersion: "1.0",
+      environment: "sandbox",
+      chainId: "11155111",
+      tokenizer: {
+        walletAddress: " 0x1111111111111111111111111111111111111111 ",
+      },
+      asset: {
+        name: "  Café   Receivables  ",
+        symbol: " ed1 ",
+        tokenType: "RWA_TOKEN",
+        supplyCap: "00001000",
+        documentationUrl: "https://docs.example.com/asset",
+      },
+    };
+
+    const result = validateAssetManifestV1(raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value).toEqual({
+      schemaVersion: "1.0",
+      environment: "sandbox",
+      chainId: "11155111",
+      tokenizer: {
+        walletAddress: TOKENIZER_ADDRESS,
+      },
+      asset: {
+        name: "Café Receivables",
+        symbol: "ED1",
+        tokenType: "RWA_TOKEN",
+        supplyCap: "1000",
+        documentationUrl: "https://docs.example.com/asset",
+      },
+    });
+    expect(result.value.investor).toBeUndefined();
+    expect(result.value.tokenizer.email).toBeUndefined();
+    expect(Object.isFrozen(result.value)).toBe(true);
+    expect(Object.isFrozen(result.value.tokenizer)).toBe(true);
+    expect(Object.isFrozen(result.value.asset)).toBe(true);
+  });
+
+  it("does not trigger allocation errors when investor is omitted", () => {
+    const raw = {
+      schemaVersion: "1.0",
+      environment: "sandbox",
+      chainId: "11155111",
+      tokenizer: {
+        walletAddress: TOKENIZER_ADDRESS,
+      },
+      asset: {
+        name: "Café Receivables",
+        symbol: "ED1",
+        tokenType: "RWA_TOKEN",
+        supplyCap: "1000",
+        documentationUrl: "https://docs.example.com/asset",
+      },
+    };
+
+    const result = validateAssetManifestV1(raw);
+    expect(result.ok).toBe(true);
+  });
 });

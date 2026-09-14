@@ -39,11 +39,13 @@ function AuthorityFacts({ view }: { readonly view: PlanningView }) {
         <span className="text-muted-foreground font-medium">Required tokenizer signer</span>
         <code className="block break-all text-[11px] text-foreground">{view.run.requiredSigner.walletAddress}</code>
       </div>
-      <div className="rounded-lg border bg-muted/30 p-3 space-y-1 min-w-0">
-        <span className="text-muted-foreground font-medium">Future allocation · not executed</span>
-        <code className="block break-all text-[11px] text-foreground">{view.manifest.investor.walletAddress}</code>
-        <p className="font-mono text-[11px] text-muted-foreground">{view.manifest.investor.mintAmount} tokens</p>
-      </div>
+      {view.manifest.investor && (
+        <div className="rounded-lg border bg-muted/30 p-3 space-y-1 min-w-0">
+          <span className="text-muted-foreground font-medium">Future allocation · not executed</span>
+          <code className="block break-all text-[11px] text-foreground">{view.manifest.investor.walletAddress}</code>
+          <p className="font-mono text-[11px] text-muted-foreground">{view.manifest.investor.mintAmount} tokens</p>
+        </div>
+      )}
       <div className="rounded-lg border bg-muted/30 p-3 space-y-1 sm:col-span-2 min-w-0">
         <span className="text-muted-foreground font-medium">Immutable plan hash</span>
         <code className="block break-all text-[11px] text-foreground">{view.run.planHash}</code>

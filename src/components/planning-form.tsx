@@ -14,9 +14,7 @@ import {
   Tag,
   Coins,
   Link2,
-  Mail,
   KeyRound,
-  Wallet,
   ArrowRight,
   AlertCircle,
   Loader2,
@@ -33,13 +31,7 @@ const sections = [
     id: "authority",
     number: "02",
     title: "Signing Authority",
-    description: "Identify the tokenizer and the cryptographic signing address for this run.",
-  },
-  {
-    id: "allocation",
-    number: "03",
-    title: "Future allocation · unavailable",
-    description: "Reference information only. Investor access and minting are unavailable and are excluded from this approval and execution.",
+    description: "Identify the cryptographic signing address for this tokenization run.",
   },
 ] as const;
 
@@ -50,17 +42,11 @@ function fieldIcon(name: FieldName) {
     case "symbol":
       return <Tag className="h-4 w-4" />;
     case "supplyCap":
-    case "mintAmount":
       return <Coins className="h-4 w-4" />;
     case "documentationUrl":
       return <Link2 className="h-4 w-4" />;
-    case "tokenizerEmail":
-    case "investorEmail":
-      return <Mail className="h-4 w-4" />;
     case "tokenizerWallet":
       return <KeyRound className="h-4 w-4" />;
-    case "investorWallet":
-      return <Wallet className="h-4 w-4" />;
   }
 }
 
@@ -101,7 +87,7 @@ export function MandateForm({
           <span className="text-muted-foreground/60">-</span>
           <span className="text-muted-foreground font-medium">Specification Stage</span>
         </div>
-        <span className="text-xs text-muted-foreground font-mono">All 9 fields required</span>
+        <span className="text-xs text-muted-foreground font-mono">All 5 fields required</span>
       </div>
 
       {sections.map((section) => (
@@ -200,12 +186,26 @@ export function MandateForm({
         </Card>
       ))}
 
+      <Card id="section-allocation" className="shadow-xs border-dashed bg-muted/20">
+        <CardHeader className="pb-4">
+          <div className="flex items-center gap-2.5">
+            <Badge variant="outline" className="font-mono text-xs font-semibold px-2 py-0.5">
+              03
+            </Badge>
+            <CardTitle className="text-base font-semibold">Initial allocation · optional</CardTitle>
+          </div>
+          <CardDescription className="text-xs pt-1">
+            Investor access and token minting are excluded from this mandate. In this build, Edict executes token creation only. Allocation to recipients can be performed after tokenization once issuance capabilities are enabled.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+
       <Card className="bg-muted/40 border-dashed">
         <CardContent className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="space-y-1">
             <p className="text-sm font-semibold">Ready to record mandate</p>
             <p className="text-xs text-muted-foreground max-w-md leading-relaxed">
-              Generating a plan verifies parameters against runtime schemas and computes an immutable 7-operation execution graph. No wallet signature is triggered during planning.
+              Generating a plan verifies parameters against runtime schemas and computes an immutable 2-operation execution graph. No wallet signature is triggered during planning.
             </p>
           </div>
           <Button

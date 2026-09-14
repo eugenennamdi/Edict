@@ -168,6 +168,7 @@ export class ExecutionOrchestrator {
         documentationUrl: manifest.asset.documentationUrl,
       });
     } else if (kind === "WHITELIST") {
+      if (!manifest.investor) throw new IllegalStateTransitionError();
       result = await this.#deps.brickken.prepareWhitelist({
         signerAddress: current.requiredSigner.walletAddress,
         tokenSymbol: manifest.asset.symbol,
@@ -175,6 +176,7 @@ export class ExecutionOrchestrator {
         investorEmail: manifest.investor.email,
       });
     } else {
+      if (!manifest.investor) throw new IllegalStateTransitionError();
       const whitelist = current.operations[1];
       if (whitelist.stage !== "READ_BACK_VERIFIED" || whitelist.preparedTxId === null) {
         throw new IllegalStateTransitionError();
@@ -369,6 +371,7 @@ export class ExecutionOrchestrator {
         normalizeObservedChain(tokenizer.value.chainId) === current.chainId;
       read = "TOKEN_INFO+TOKENIZER_INFO";
     } else if (kind === "WHITELIST") {
+      if (!manifest.investor) throw new OrchestrationError("READ_BACK_FAILED");
       const whitelist = await this.#deps.brickken.getWhitelistStatus({
         tokenSymbol: manifest.asset.symbol,
         address: manifest.investor.walletAddress,
@@ -381,6 +384,7 @@ export class ExecutionOrchestrator {
         sameAddress(whitelist.value.address, manifest.investor.walletAddress);
       read = "WHITELIST_STATUS";
     } else {
+      if (!manifest.investor) throw new OrchestrationError("READ_BACK_FAILED");
       const [tokenizer, balance] = await Promise.all([
         this.#deps.brickken.getTokenizerInfo({ tokenSymbol: manifest.asset.symbol }),
         this.#deps.brickken.getBalanceAndWhitelist({

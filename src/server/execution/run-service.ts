@@ -39,7 +39,7 @@ function snapshotManifest(manifest: NormalizedAssetManifestV1): ExecutionManifes
     environment: manifest.environment,
     chainId: manifest.chainId,
     tokenizer: {
-      email: manifest.tokenizer.email,
+      ...(manifest.tokenizer.email ? { email: manifest.tokenizer.email } : {}),
       walletAddress: manifest.tokenizer.walletAddress,
     },
     asset: {
@@ -49,11 +49,15 @@ function snapshotManifest(manifest: NormalizedAssetManifestV1): ExecutionManifes
       supplyCap: manifest.asset.supplyCap,
       documentationUrl: manifest.asset.documentationUrl,
     },
-    investor: {
-      email: manifest.investor.email,
-      walletAddress: manifest.investor.walletAddress,
-      mintAmount: manifest.investor.mintAmount,
-    },
+    ...(manifest.investor
+      ? {
+          investor: {
+            email: manifest.investor.email,
+            walletAddress: manifest.investor.walletAddress,
+            mintAmount: manifest.investor.mintAmount,
+          },
+        }
+      : {}),
   });
 }
 

@@ -53,12 +53,53 @@ describe("approval readiness UI", () => {
     expect(html).toContain("Café Receivables · ED1");
     expect(html).toContain(current.run.planHash);
     expect(html).toContain(current.run.requiredSigner.walletAddress);
-    expect(html).toContain(current.manifest.investor.walletAddress);
+    expect(html).toContain(current.manifest.investor!.walletAddress);
     expect(html).toContain("25 tokens");
     expect(html).toContain("Ethereum Sepolia");
     expect(html).toContain("Approving this plan does not submit an on-chain transaction");
     expect(html).toContain("Use legacy injected provider");
     expect(html).not.toContain("Approve this plan");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("renders cleanly when manifest omits investor and tokenizer email", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const rawTokenizeOnly = {
+      schemaVersion: "1.0",
+      environment: "sandbox",
+      chainId: "11155111",
+      tokenizer: {
+        walletAddress: "0x1111111111111111111111111111111111111111",
+      },
+      asset: {
+        name: "Test Asset",
+        symbol: "TST",
+        tokenType: "RWA_TOKEN",
+        supplyCap: "1000",
+        documentationUrl: "https://example.com/doc",
+      },
+    };
+    const validated = validateAssetManifestV1(rawTokenizeOnly);
+    if (!validated.ok) throw new Error("Validation failed");
+    const plan = await buildExecutionPlanV1(validated.value, "TOKENIZE_ONLY");
+    const current = await view();
+    const tokenizeOnlyView: PlanningView = {
+      ...current,
+      manifest: validated.value,
+      plan,
+      run: {
+        ...current.run,
+        manifestHash: plan.manifestHash,
+        planHash: plan.planHash,
+      },
+    };
+    const html = renderToStaticMarkup(createElement(ApprovalReadinessSection, { view: tokenizeOnlyView }));
+    expect(html).toContain("Approve mandate");
+    expect(html).toContain("Test Asset · TST");
+    expect(html).toContain(plan.planHash);
+    expect(html).toContain("0x1111111111111111111111111111111111111111");
+    expect(html).not.toContain("Future allocation · not executed");
     expect(fetch).not.toHaveBeenCalled();
   });
 

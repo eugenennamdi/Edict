@@ -130,6 +130,37 @@ describe("run planning workspace", () => {
     expect(validateAssetManifestV1(creationRequest(input).manifest).ok).toBe(true);
   });
 
+  it("constructs a 5-field tokenize-only mandate request without investor or tokenizer email", () => {
+    const data = new FormData();
+    data.set("assetName", "Café Receivables");
+    data.set("symbol", "ED1");
+    data.set("supplyCap", "1000");
+    data.set("documentationUrl", "https://docs.example.com/asset");
+    data.set("tokenizerWallet", "0x1111111111111111111111111111111111111111");
+
+    const req = creationRequest(data);
+    expect(req.manifest).toEqual({
+      schemaVersion: "1.0",
+      environment: "sandbox",
+      chainId: "11155111",
+      tokenizer: {
+        walletAddress: "0x1111111111111111111111111111111111111111",
+      },
+      asset: {
+        name: "Café Receivables",
+        symbol: "ED1",
+        tokenType: "RWA_TOKEN",
+        supplyCap: "1000",
+        documentationUrl: "https://docs.example.com/asset",
+      },
+    });
+    const validated = validateAssetManifestV1(req.manifest);
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+    expect(validated.value.investor).toBeUndefined();
+    expect(validated.value.tokenizer.email).toBeUndefined();
+  });
+
   it("uses the strict server public projection and unchanged golden hashes", async () => {
     const body = await projection();
     const view = readProjection(body);
@@ -476,8 +507,10 @@ describe("run planning workspace", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(html).toContain("Tokenization Planning Workspace");
     expect(html).toContain("Create execution plan");
-    for (const [name] of form()) expect(html).toContain(`for="${name}"`);
-    expect(html.match(/<input /g)).toHaveLength(9);
+    const activeNames = ["assetName", "symbol", "supplyCap", "documentationUrl", "tokenizerWallet"];
+    for (const name of activeNames) expect(html).toContain(`for="${name}"`);
+    expect(html.match(/<input /g)).toHaveLength(5);
+    expect(html).toContain("Initial allocation · optional");
   });
 
   it("renders safe valid and malformed durable route shells without server-side effects", async () => {

@@ -63,7 +63,7 @@ const manifestSchema = z.object({
   schemaVersion: z.literal("1.0"),
   environment: z.literal("sandbox"),
   chainId: z.literal("11155111"),
-  tokenizer: z.object({ email: identifier, walletAddress: wallet }).strict(),
+  tokenizer: z.object({ email: identifier.optional(), walletAddress: wallet }).strict(),
   asset: z.object({
     name: identifier,
     symbol: z.string().regex(/^[A-Z0-9]{3,5}$/),
@@ -75,7 +75,7 @@ const manifestSchema = z.object({
     email: identifier,
     walletAddress: wallet,
     mintAmount: positiveIntegerString,
-  }).strict(),
+  }).strict().optional(),
 }).strict();
 
 const planSchema = z.object({

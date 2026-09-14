@@ -112,7 +112,7 @@ export function DraftSummary({
               Provisional Preview
             </Badge>
             <Badge variant={ready ? "success" : "secondary"} className="text-[11px]">
-              {ready ? "Ready to record" : `${filled}/9 fields`}
+              {ready ? "Ready to record" : `${filled}/5 fields`}
             </Badge>
           </div>
           <CardTitle className="text-lg font-semibold pt-1">Draft Preview</CardTitle>
@@ -124,9 +124,9 @@ export function DraftSummary({
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>Mandate completeness</span>
-              <span className="font-mono font-medium text-foreground">{Math.round((filled / 9) * 100)}%</span>
+              <span className="font-mono font-medium text-foreground">{Math.round((filled / 5) * 100)}%</span>
             </div>
-            <Progress value={filled} max={9} indicatorClassName={ready ? "bg-emerald-600 dark:bg-emerald-500" : "bg-primary"} />
+            <Progress value={filled} max={5} indicatorClassName={ready ? "bg-emerald-600 dark:bg-emerald-500" : "bg-primary"} />
           </div>
 
           <Separator />
@@ -147,7 +147,6 @@ export function DraftSummary({
             <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
               02 · Signing Authority
             </span>
-            <Row label="Tokenizer">{draft.tokenizerEmail}</Row>
             <Row label="Signer" mono>{draft.tokenizerWallet ? `${draft.tokenizerWallet.slice(0, 8)}…${draft.tokenizerWallet.slice(-6)}` : ""}</Row>
           </div>
 
@@ -157,9 +156,9 @@ export function DraftSummary({
             <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
               03 · Allocation
             </span>
-            <Row label="Investor">{draft.investorEmail}</Row>
-            <Row label="Recipient" mono>{draft.investorWallet ? `${draft.investorWallet.slice(0, 8)}…${draft.investorWallet.slice(-6)}` : ""}</Row>
-            <Row label="Mint amount" mono>{draft.mintAmount ? `${draft.mintAmount} tokens` : ""}</Row>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Optional after token creation. Excluded from this mandate.
+            </p>
           </div>
 
           <div className="rounded-lg bg-muted/40 p-2.5 border flex items-center justify-between text-xs text-muted-foreground font-mono">
@@ -208,20 +207,23 @@ export function RecordedManifest({ view }: { view: PlanningView }) {
             <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
               02 · Signing Authority
             </span>
-            <Row label="Tokenizer email">{m.tokenizer.email}</Row>
+            {m.tokenizer.email && <Row label="Tokenizer email">{m.tokenizer.email}</Row>}
             <CopyValue label="Required signer" value={run.requiredSigner.walletAddress} compact />
           </div>
 
-          <Separator />
-
-          <div className="space-y-2">
-            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
-              03 · Future allocation · unavailable
-            </span>
-            <Row label="Investor email">{m.investor.email}</Row>
-            <CopyValue label="Recipient address" value={m.investor.walletAddress} compact />
-            <Row label="Mint amount" mono>{m.investor.mintAmount} tokens</Row>
-          </div>
+          {m.investor && (
+            <>
+              <Separator />
+              <div className="space-y-2">
+                <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
+                  03 · Future allocation · unavailable
+                </span>
+                <Row label="Investor email">{m.investor.email}</Row>
+                <CopyValue label="Recipient address" value={m.investor.walletAddress} compact />
+                <Row label="Mint amount" mono>{m.investor.mintAmount} tokens</Row>
+              </div>
+            </>
+          )}
 
           <div className="rounded-lg bg-muted/40 p-2.5 border flex items-center justify-between text-xs text-muted-foreground font-mono">
             <span>{m.asset.tokenType}</span>
