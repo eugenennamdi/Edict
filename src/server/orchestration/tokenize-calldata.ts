@@ -21,8 +21,11 @@ export function canonicalTokenizeCall(run: ExecutionRun, data: string) {
     const intent = run.manifest;
     const signer = run.requiredSigner.walletAddress;
     const feeIsZero = report[1] === 0n;
-    const permitIsEmpty = permit[0] === 0n && permit[1] === zeroAddress &&
-      permit[2] === zeroAddress && permit[3] === 0n && permit[4] === 0 &&
+    // ponytail: Brickken sandbox populates signer and factory addresses in permit even when fee is 0 and signatures are zeroed
+    const permitIsEmpty = permit[0] === 0n &&
+      (permit[1] === zeroAddress || permit[1].toLowerCase() === signer.toLowerCase()) &&
+      (permit[2] === zeroAddress || permit[2].toLowerCase() === REVIEWED_SEPOLIA_FACTORY.toLowerCase()) &&
+      permit[3] === 0n && permit[4] === 0 &&
       permit[5] === zeroHash && permit[6] === zeroHash;
     const permitIsBound = permit[0] >= report[4] &&
       permit[1].toLowerCase() === signer &&

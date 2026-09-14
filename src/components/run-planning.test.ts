@@ -510,7 +510,7 @@ describe("run planning workspace", () => {
     const activeNames = ["assetName", "symbol", "supplyCap", "documentationUrl", "tokenizerWallet"];
     for (const name of activeNames) expect(html).toContain(`for="${name}"`);
     expect(html.match(/<input /g)).toHaveLength(5);
-    expect(html).toContain("Initial allocation · optional");
+    expect(html).toContain("Initial Allocation · Optional");
   });
 
   it("renders safe valid and malformed durable route shells without server-side effects", async () => {

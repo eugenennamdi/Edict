@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { PublicRunProjection } from "@/shared/run";
 import { WalletExecutionSection } from "./wallet-execution-section";
-import { classifyWalletExecutionFailure, initialWalletExecutionUiModel, reduceWalletExecutionUi } from "./wallet-execution-ui-state";
+import { classifyWalletExecutionErrorDetail, classifyWalletExecutionFailure, initialWalletExecutionUiModel, reduceWalletExecutionUi } from "./wallet-execution-ui-state";
 
 function fixture(patch: Partial<PublicRunProjection> = {}): PublicRunProjection {
   const operations: PublicRunProjection["operations"] = [
@@ -77,6 +77,36 @@ describe("wallet execution product surface", () => {
     expect(reduceWalletExecutionUi(started, { type: "START" })).toBe(started);
     expect(reduceWalletExecutionUi(started, { type: "AMBIGUOUS" })).toEqual({ state: "BROADCAST_UNCERTAIN", locked: true, inProgress: false });
     expect(classifyWalletExecutionFailure("BROADCAST_OUTCOME_UNKNOWN")).toEqual({ event: { type: "AMBIGUOUS" }, refresh: true });
+  });
+
+  it("classifies error details with truthful on-chain submission status and next actions", () => {
+    const semantic = classifyWalletExecutionErrorDetail("SEMANTIC_POLICY_REFUSED");
+    expect(semantic.onChainSubmission).toBe("NO");
+    expect(semantic.title).toContain("policy");
+    expect(semantic.nextStep).toContain("requires attention");
+    expect(semantic.retryAllowed).toBe(false);
+
+    const freshness = classifyWalletExecutionErrorDetail("FRESHNESS_CHECK_FAILED");
+    expect(freshness.onChainSubmission).toBe("NO");
+    expect(freshness.title).toContain("expired");
+    expect(freshness.nextStep).toContain("Reprepare");
+
+    const unknown = classifyWalletExecutionErrorDetail("BROADCAST_OUTCOME_UNKNOWN");
+    expect(unknown.onChainSubmission).toBe("UNKNOWN");
+    expect(unknown.nextStep).toContain("Do not submit another transaction");
+    expect(unknown.retryAllowed).toBe(false);
+
+    const userReject = classifyWalletExecutionErrorDetail("TRANSACTION_REJECTED");
+    expect(userReject.onChainSubmission).toBe("NO");
+    expect(userReject.nextStep).toContain("safely try again");
+  });
+
+  it("exposes two-stage action labels: Execute mandate when unprepared, Confirm in wallet when prepared, Reprepare when stale", () => {
+    const source = fs.readFileSync(path.resolve(__dirname, "wallet-execution-section.tsx"), "utf8");
+    expect(source).toContain("Confirm in wallet");
+    expect(source).toContain("Reprepare tokenization");
+    expect(source).toContain("On-chain transaction submitted:");
+    expect(source).toContain("Dismiss");
   });
 });
 

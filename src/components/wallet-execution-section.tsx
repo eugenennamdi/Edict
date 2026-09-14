@@ -12,7 +12,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { AlertTriangle, CheckCircle2, WalletCards } from "lucide-react";
-import { classifyWalletExecutionFailure, initialWalletExecutionUiModel, reduceWalletExecutionUi, type WalletExecutionUiModel } from "./wallet-execution-ui-state";
+import {
+  classifyWalletExecutionErrorDetail,
+  classifyWalletExecutionFailure,
+  initialWalletExecutionUiModel,
+  reduceWalletExecutionUi,
+  type WalletExecutionErrorDetail,
+  type WalletExecutionUiModel,
+} from "./wallet-execution-ui-state";
 
 function productStatus(run: PublicRunProjection): string {
   if (run.status === "RECONCILIATION_REQUIRED") return "Needs attention";
@@ -36,11 +43,16 @@ export function WalletExecutionSection({ run, onRefresh }: {
   const [providers, setProviders] = useState<readonly DiscoveredWallet[]>([]);
   const [model, setModel] = useState<WalletExecutionUiModel>(initialWalletExecutionUiModel);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [errorDetail, setErrorDetail] = useState<WalletExecutionErrorDetail | null>(null);
   const [executing, setExecuting] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const [trackingTick, setTrackingTick] = useState(0);
   const session = useRef<SelectedWalletSession | null>(null);
   const discovery = useRef<InjectedWalletDiscovery | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
   const busy = useRef(false);
   const trackingPolls = useRef(0);
 
@@ -51,9 +63,19 @@ export function WalletExecutionSection({ run, onRefresh }: {
     const update = () => {
       const list = value.list();
       setProviders(list);
-      if (!session.current) setModel((current) => reduceWalletExecutionUi(current, {
-        type: "LOCAL_STATE", state: list.length > 0 ? "PROVIDER_SELECTION" : "WALLET_REQUIRED",
-      }));
+      if (!session.current) {
+        const candidate = (selectedIdRef.current ? list.find((p) => p.selectionId === selectedIdRef.current) : null) ??
+          (list.length === 1 && list[0].status === "AVAILABLE" ? list[0] : null);
+        if (candidate && candidate.status === "AVAILABLE") {
+          session.current = value.selectFromUserAction(candidate.selectionId);
+          setSelectedId(candidate.selectionId);
+          setModel((current) => reduceWalletExecutionUi(current, { type: "LOCAL_STATE", state: "READY" }));
+        } else {
+          setModel((current) => reduceWalletExecutionUi(current, {
+            type: "LOCAL_STATE", state: list.length > 0 ? "PROVIDER_SELECTION" : "WALLET_REQUIRED",
+          }));
+        }
+      }
     };
     const unsubscribe = value.subscribe(update);
     value.start();
@@ -89,8 +111,27 @@ export function WalletExecutionSection({ run, onRefresh }: {
     session.current?.dispose();
     session.current = discovery.current.selectFromUserAction(selectionId);
     setSelectedId(selectionId);
-    setMessage(null);
+    setErrorDetail(null);
     setModel((current) => reduceWalletExecutionUi(current, { type: "LOCAL_STATE", state: "READY" }));
+  }
+
+  async function prepare() {
+    if (busy.current || preparing || model.locked || !canExecute) return;
+    busy.current = true;
+    setPreparing(true);
+    setErrorDetail(null);
+    try {
+      const gateway = createWalletExecutionHttpGateway();
+      await gateway.reprepare(run.id, run.revision);
+      await onRefresh();
+    } catch (error) {
+      const code = error instanceof WalletBoundaryError ? error.code : "UNKNOWN";
+      setErrorDetail(classifyWalletExecutionErrorDetail(code));
+      await onRefresh().catch(() => undefined);
+    } finally {
+      busy.current = false;
+      setPreparing(false);
+    }
   }
 
   async function execute() {
@@ -98,7 +139,7 @@ export function WalletExecutionSection({ run, onRefresh }: {
     if (!selected || busy.current || model.locked || !canExecute) return;
     busy.current = true;
     setExecuting(true);
-    setMessage(null);
+    setErrorDetail(null);
     setModel((current) => reduceWalletExecutionUi(current, { type: "START" }));
     try {
       await executeSendAuthorizedEnvelopeFromUserAction({
@@ -109,15 +150,10 @@ export function WalletExecutionSection({ run, onRefresh }: {
       setModel((current) => reduceWalletExecutionUi(current, { type: "HASH_RECORDED" }));
       await onRefresh();
     } catch (error) {
-      const failure = classifyWalletExecutionFailure(error instanceof WalletBoundaryError ? error.code : "UNKNOWN");
+      const code = error instanceof WalletBoundaryError ? error.code : "UNKNOWN";
+      const failure = classifyWalletExecutionFailure(code);
       setModel((current) => reduceWalletExecutionUi(current, failure.event));
-      const ambiguous = failure.event.type === "AMBIGUOUS" ||
-        failure.event.type === "DURABLE_RECONCILIATION";
-      setMessage(
-        ambiguous
-          ? "The wallet may have submitted the transaction. Edict will not submit another transaction. Review technical details."
-          : "Edict could not safely continue. No confirmed wallet transaction was recorded; refresh this record before trying again.",
-      );
+      setErrorDetail(classifyWalletExecutionErrorDetail(code));
       if (failure.refresh) await onRefresh().catch(() => undefined);
     } finally {
       busy.current = false;
@@ -153,9 +189,35 @@ export function WalletExecutionSection({ run, onRefresh }: {
               disabled={provider.status !== "AVAILABLE"} onClick={() => void select(provider.selectionId)}>Use {provider.displayName}</Button>)}
           </div>
         )}
-        {canExecute && selectedId !== null && <Button size="sm" disabled={model.locked || executing} onClick={() => void execute()}>
-          {executing || model.state === "PROMPT_IN_PROGRESS" ? "Opening wallet…" : "Execute mandate"}
-        </Button>}
+        {canExecute && selectedId !== null && (
+          <div className="space-y-2">
+            {operation.stage === "PREPARED" && (
+              <p className="text-xs text-muted-foreground">
+                Transaction prepared and verified. Click below to open your wallet and confirm the on-chain transaction.
+              </p>
+            )}
+            {operation.stage === "PREPARED_STALE" && (
+              <p className="text-xs text-muted-foreground">
+                The transaction price report has expired on-chain. Click below to reprepare with Brickken before confirming.
+              </p>
+            )}
+            <Button
+              size="sm"
+              disabled={model.locked || executing || preparing}
+              onClick={() => void (operation.stage === "PREPARED" ? execute() : prepare())}
+            >
+              {executing || model.state === "PROMPT_IN_PROGRESS"
+                ? "Opening wallet…"
+                : preparing
+                ? "Preparing with Brickken…"
+                : operation.stage === "PREPARED"
+                ? "Confirm in wallet"
+                : operation.stage === "PREPARED_STALE"
+                ? "Reprepare tokenization"
+                : "Execute mandate"}
+            </Button>
+          </div>
+        )}
         {canTrack && <div role="status" className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs">
           Transaction submitted. Edict is verifying it automatically; no further submission will occur.
         </div>}
@@ -175,7 +237,42 @@ export function WalletExecutionSection({ run, onRefresh }: {
             ? "The transaction was submitted, but Edict detected an execution mismatch. Edict will not submit another transaction."
             : "We couldn't confirm the preparation with Brickken. No wallet transaction was requested. This execution needs attention."}
         </div>}
-        {message && <div role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">{message}</div>}
+        {errorDetail && (
+          <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3.5 text-xs space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <strong className="text-sm font-semibold flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                {errorDetail.title}
+              </strong>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs hover:bg-amber-500/20"
+                onClick={() => setErrorDetail(null)}
+              >
+                Dismiss
+              </Button>
+            </div>
+            <p className="text-muted-foreground">{errorDetail.description}</p>
+            <div className="rounded border border-border/40 bg-background/60 p-2.5 space-y-1">
+              <p>
+                <span className="font-medium text-foreground">On-chain transaction submitted: </span>
+                <span className="font-semibold">
+                  {errorDetail.onChainSubmission === "NO"
+                    ? "NO (no funds or gas were spent)"
+                    : errorDetail.onChainSubmission === "YES"
+                    ? "YES"
+                    : "UNKNOWN (verification required)"}
+                </span>
+              </p>
+              <p>
+                <span className="font-medium text-foreground">Next action: </span>
+                <span>{errorDetail.nextStep}</span>
+              </p>
+            </div>
+          </div>
+        )}
         <details className="rounded-lg border border-border/60 p-3 text-xs">
           <summary className="cursor-pointer font-medium">Technical details</summary>
           <dl className="mt-3 grid gap-1 text-muted-foreground">

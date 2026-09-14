@@ -56,6 +56,23 @@ describe("canonical mandate calldata", () => {
     await expect(validateTokenizeProtocol(run, data, rpcFixture())).resolves.toBeUndefined();
   });
 
+  it("accepts zero-fee permit with signer and factory addresses (Brickken sandbox format)", async () => {
+    const run = await runFixture();
+    const signer = run.requiredSigner.walletAddress as `0x${string}`;
+    const withSigner = mutate(2, 1, signer);
+    const withSignerAndFactory = encodeFunctionData({
+      abi: TOKENIZE_ABI,
+      functionName: "newTokenization",
+      args: decodeFunctionData({ abi: TOKENIZE_ABI, data: withSigner as `0x${string}` }).args.map((entry, t) =>
+        t === 2 ? entry.map((old, i) => (i === 2 ? "0x23b04b6410d72fa66a77a9e0146df6634ad4c462" : old)) : entry
+      ) as never,
+    });
+    expect(canonicalTokenizeCall(run, withSignerAndFactory).calldata).toBe(withSignerAndFactory.toLowerCase());
+    // Reject unrelated address in permit
+    const withWrongSpender = mutate(2, 2, "0x9999999999999999999999999999999999999999");
+    expect(() => canonicalTokenizeCall(run, withWrongSpender)).toThrow();
+  });
+
   it("rejects expired and safety-buffer reports", async () => {
     const run = await runFixture();
     for (const deadline of [1n, BigInt("0x66e44000") + 299n]) {

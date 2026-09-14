@@ -467,7 +467,7 @@ export default function RunPlanningWorkspace({
                     acceptDurableRun={workspace.acceptDurableRun}
                   />
                   <WalletExecutionSection
-                    key={`${view.run.id}:${view.run.revision}`}
+                    key={view.run.id}
                     run={view.run}
                     onRefresh={async () => { await workspace.refresh(); }}
                   />

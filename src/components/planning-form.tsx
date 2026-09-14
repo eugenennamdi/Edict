@@ -192,7 +192,7 @@ export function MandateForm({
             <Badge variant="outline" className="font-mono text-xs font-semibold px-2 py-0.5">
               03
             </Badge>
-            <CardTitle className="text-base font-semibold">Initial allocation · optional</CardTitle>
+            <CardTitle className="text-base font-semibold">Initial Allocation · Optional</CardTitle>
           </div>
           <CardDescription className="text-xs pt-1">
             Investor access and token minting are excluded from this mandate. In this build, Edict executes token creation only. Allocation to recipients can be performed after tokenization once issuance capabilities are enabled.
