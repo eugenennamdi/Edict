@@ -1,3 +1,4 @@
+import { activePlanScope, assertCurrentMandate, assertExecutableRun } from "./capabilities";
 import {
   buildExecutionPlanV1,
   hashAssetManifestV1,
@@ -65,6 +66,7 @@ function snapshotPlan(plan: {
   planHash: string;
 }): ExecutionPlanSnapshot {
   return jsonClone({
+    executionScope: "TOKENIZE_ONLY",
     planVersion: plan.planVersion,
     manifestHash: plan.manifestHash,
     environment: plan.environment,
@@ -109,8 +111,9 @@ export class ExecutionRunService {
   }
 
   async createRun(manifest: NormalizedAssetManifestV1): Promise<ExecutionRun> {
+    assertCurrentMandate(manifest);
     const { hash: manifestHash } = await hashAssetManifestV1(manifest);
-    const plan = await buildExecutionPlanV1(manifest);
+    const plan = await buildExecutionPlanV1(manifest, activePlanScope());
     const createdAt = this.#clock.nowIso();
     const run: ExecutionRun = {
       schemaVersion: "2.0",
@@ -153,6 +156,7 @@ export class ExecutionRunService {
     expectedRevision: number,
     input: { planHash: string; approvedByWallet: string; proof: ApprovalProofV1 },
   ): Promise<ExecutionRun> {
+    await assertExecutableRun(await this.#repository.getById(runId));
     return this.#apply(runId, expectedRevision, (_at, id) => ({
       type: "APPROVE_PLAN",
       id,

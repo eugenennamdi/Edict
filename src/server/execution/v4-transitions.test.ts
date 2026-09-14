@@ -312,6 +312,8 @@ describe("ExecutionRunV4 foundation", () => {
     expect(v2.schemaVersion).toBe("2.0");
     expect(v4.schemaVersion).toBe("4.0");
     expect(v4.operations[0].preparationAttempts).toHaveLength(1);
+    expect(v4.operations[0].preparationAttempts[0]?.calldataCommitment)
+      .toBe(await sha256Utf8(UNSIGNED.data));
     const decoded = decodeExecutionRunV1(encodeExecutionRunV1(v4));
     expect(decoded.schemaVersion).toBe("4.0");
     if (decoded.schemaVersion !== "4.0") throw new Error("expected V4");

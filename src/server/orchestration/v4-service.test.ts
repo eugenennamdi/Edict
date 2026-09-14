@@ -2708,7 +2708,7 @@ describe("ExecutionV4Orchestrator", () => {
       });
     }
 
-    it("returns NOT_FOUND without revision churn when tx is not observed on RPC", async () => {
+    it("reserves a durable poll even when tx is not observed on RPC", async () => {
       const h = createHarness();
       const broadcastRun = await setupBroadcastRun(h);
 
@@ -2720,7 +2720,7 @@ describe("ExecutionV4Orchestrator", () => {
       );
 
       expect(result.rpcEvaluation?.presence).toBe("NOT_FOUND");
-      expect(result.run.revision).toBe(broadcastRun.revision); // Zero churn
+      expect(result.run.revision).toBe(broadcastRun.revision + 1); // Durable reservation
       expect(result.run.operations[0].stage).toBe("BROADCAST_HASH_PERSISTED");
     });
 
@@ -2814,7 +2814,7 @@ describe("ExecutionV4Orchestrator", () => {
         result.run.id,
         result.run.revision,
       );
-      expect(repeated.run.revision).toBe(result.run.revision);
+      expect(repeated.run.revision).toBe(result.run.revision + 1);
     });
 
     it("handles status contradiction during tracking and marks RECONCILIATION_REQUIRED", async () => {
@@ -3054,7 +3054,8 @@ describe("ExecutionV4Orchestrator", () => {
     it("uses server-owned account email for read-back even when the manifest email differs", async () => {
       const h = createHarness({ readBack: true });
       const run = await setupFinalizedCorrelatedRun(h, "rejected");
-      expect(run.phase).toBe("WHITELIST");
+      expect(run.phase).toBe("TOKENIZATION");
+      expect(run.status).toBe("SUCCEEDED");
       expect(run.operations[0].stage).toBe("READ_BACK_VERIFIED");
       expect(run.tokenIdentity).toMatchObject({
         tokenAddress: TOKEN_ADDRESS,
@@ -3143,5 +3144,99 @@ describe("ExecutionV4Orchestrator", () => {
       expect(durable.tokenIdentity).toBeNull();
       expect(durable.operations[0].stage).toBe("BRICKKEN_CORRELATED");
     });
+  });
+});
+
+describe("pre-live audit regressions", () => {
+  function restart(h: ReturnType<typeof createHarness>) {
+    return new ExecutionV4Orchestrator({ repository: h.repository, clock: h.clock, ids: h.ids,
+      rpc: createTrustedSepoliaRpcClient(h.fakeRpcTransport), semanticAuthorization: h.semanticAuth });
+  }
+  async function promptFixture(h: ReturnType<typeof createHarness>) {
+    const v2 = await createPreparedV2Run(h);
+    const v4 = await h.v4.promotePreparedRunToV4(v2.id, v2.revision);
+    return h.v4.recordWalletPrompt(v4.id, v4.revision);
+  }
+
+  it.each(["nonce", "balance", "base fee", "expired report", "unavailable RPC", "chain", "semantic policy"])("rechecks %s after interruption at WALLET_PROMPT_RECORDED", async (changed) => {
+    const h = createHarness();
+    const prompt = await promptFixture(h);
+    if (changed === "nonce") h.fakeRpcTransport.on("eth_getTransactionCount", () => "0x6");
+    if (changed === "balance") h.fakeRpcTransport.on("eth_getBalance", () => "0x0");
+    if (changed === "chain") h.fakeRpcTransport.on("eth_chainId", () => "0x1");
+    if (changed === "unavailable RPC") h.fakeRpcTransport.on("eth_getBalance", () => { throw new Error("offline"); });
+    if (changed === "semantic policy") h.semanticAuth.allow = false;
+    if (["base fee", "expired report"].includes(changed)) h.fakeRpcTransport.on("eth_getBlockByNumber", () => ({
+      number: "0x10", hash: BLOCK_HASH, parentHash: FINALIZED_BLOCK_HASH,
+      timestamp: changed === "expired report" ? "0x77359401" : "0x66e44000",
+      baseFeePerGas: changed === "base fee" ? "0xffffffffffff" : "0x10",
+    }));
+    await expect(restart(h).releaseSendAuthority(prompt.id, prompt.revision)).rejects.toThrow();
+    const durable = await h.repository.getById(prompt.id) as ExecutionRunV4;
+    expect(durable.operations[0].walletPromptAuthorization?.authorityReleasedAt ?? null).toBeNull();
+    expect(durable.events.filter((e) => e.type === "AUTHORIZE_PROVIDER_INVOCATION")).toHaveLength(0);
+  });
+
+  it("fresh resumed evidence has one authority winner and is persisted anew", async () => {
+    const h = createHarness();
+    const prompt = await promptFixture(h);
+    const results = await Promise.allSettled([
+      restart(h).releaseSendAuthority(prompt.id, prompt.revision),
+      restart(h).releaseSendAuthority(prompt.id, prompt.revision),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const durable = await h.repository.getById(prompt.id) as ExecutionRunV4;
+    expect(durable.events.filter((e) => e.type === "AUTHORIZE_PROVIDER_INVOCATION")).toHaveLength(1);
+    expect(durable.operations[0].preparationAttempts[0].freshnessEvaluatedAt)
+      .not.toBe(prompt.operations[0].preparationAttempts[0].freshnessEvaluatedAt);
+  });
+
+  it("allows only one replacement external dispatch, including concurrent stale cycles", async () => {
+    const prepare = vi.fn().mockResolvedValue({ ok: true, value: { txId: "replacement-tx", transaction: {
+      normalizedChainId: "11155111", from: TOKENIZER_ADDRESS, to: TO, data: VALID_TOKENIZE_CALLDATA,
+      rawUnsigned: { ...UNSIGNED_TOKENIZE_TX, nonce: "0x6" },
+    } } });
+    const h = createHarness({ brickkenPrepare: { prepareTokenization: prepare,
+      prepareWhitelist: vi.fn(), prepareMint: vi.fn() } });
+    const v2 = await createPreparedV2Run(h);
+    const first = await h.v4.promotePreparedRunToV4(v2.id, v2.revision);
+    expect(first.operations[0].preparationAttempts).toHaveLength(1);
+    h.fakeRpcTransport.on("eth_getTransactionCount", () => "0x6");
+    const stale = (await h.v4.evaluateAndApplyPreparedFreshness(first.id, first.revision)).run;
+    const results = await Promise.allSettled([h.v4.reprepareOperation(stale.id, stale.revision), h.v4.reprepareOperation(stale.id, stale.revision)]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    const replacement = await h.repository.getById(first.id) as ExecutionRunV4;
+    expect(replacement.operations[0].preparationAttempts).toHaveLength(2);
+    h.fakeRpcTransport.on("eth_getTransactionCount", () => "0x7");
+    const staleAgain = (await h.v4.evaluateAndApplyPreparedFreshness(first.id, replacement.revision)).run;
+    const blocked = await Promise.allSettled([h.v4.reprepareOperation(first.id, staleAgain.revision), h.v4.reprepareOperation(first.id, staleAgain.revision)]);
+    expect(blocked.every((r) => r.status === "rejected")).toBe(true);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect((await projectPublicRun(staleAgain)).execution?.reprepareEligible).toBe(false);
+  });
+
+  it("tracking budget survives restarts, revisions, missing transactions and concurrency", async () => {
+    const h = createHarness();
+    const prompt = await promptFixture(h);
+    const released = await h.v4.releaseSendAuthority(prompt.id, prompt.revision);
+    let current = await h.v4.ingestBroadcastHash(prompt.id, { expectedRevision: released.run.revision,
+      invocationAttemptId: released.envelope.invocationAttemptId,
+      walletIntentHash: released.envelope.walletIntentHash, txHash: TX_HASH });
+    h.fakeRpcTransport.on("eth_getTransactionByHash", () => null);
+    const original = current.operations[0];
+    for (let count = 0; count < 30; count++) {
+      h.clock.nowIso(); h.clock.nowIso();
+      const races = await Promise.allSettled([restart(h).trackExecution(current.id, current.revision), restart(h).trackExecution(current.id, current.revision)]);
+      expect(races.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      current = await h.repository.getById(current.id) as ExecutionRunV4;
+    }
+    expect(current.events.filter((e) => e.type === "TRACK_EXECUTION_RESERVED")).toHaveLength(30);
+    expect(current.operations[0]).toEqual(original);
+    const calls = h.fakeRpcTransport.calls.length;
+    await expect(restart(h).trackExecution(current.id, current.revision)).rejects.toMatchObject({ code: "TRACKING_BUDGET_EXHAUSTED" });
+    expect(h.fakeRpcTransport.calls).toHaveLength(calls);
+    expect(h.correlationSender.calls).toHaveLength(0);
+    expect((await projectPublicRun(current)).trackingRemaining).toBe(0);
   });
 });

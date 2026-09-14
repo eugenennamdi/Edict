@@ -1,8 +1,8 @@
 import "server-only";
+import { isExecutablePlan } from "./capabilities";
 
 import { canonicalizeJson, hashCanonicalJson, sha256Utf8 } from "@/core";
 import {
-  createServerBoundedFeeAuthorizationV1,
   evaluateFeeAuthorizationV1,
   hashWalletExecutionIntentV1,
   immutableExecutionIdentityV1Schema,
@@ -10,6 +10,7 @@ import {
   type SemanticAuthorizationV1,
   type WalletExecutionIntentV1,
 } from "@/shared/wallet/execution-authorization";
+import { createServerBoundedFeeAuthorizationV1 } from "../orchestration/fee-authorization-policy";
 import { projectPreparedTransactionV1 } from "@/shared/wallet/transaction";
 import { IllegalStateTransitionError } from "./errors";
 import { jsonClone } from "./infrastructure";
@@ -167,6 +168,7 @@ export async function calculatePreparationFingerprintV1(input: {
   readonly preparedRunRevision: number;
   readonly immutableIdentity: PreparationAttemptV1["immutableIdentity"];
   readonly feeAuthorization: PreparationAttemptV1["feeAuthorization"];
+  readonly calldataCommitment?: string;
 }): Promise<`sha256:${string}`> {
   if (input.immutableIdentity === null || input.feeAuthorization === null) {
     throw new IllegalStateTransitionError();
@@ -183,6 +185,9 @@ export async function calculatePreparationFingerprintV1(input: {
     txId: input.txId,
     preparedAt: input.preparedAt,
     immutableIdentity: input.immutableIdentity,
+    ...(input.calldataCommitment === undefined
+      ? {}
+      : { calldataCommitment: input.calldataCommitment }),
     feeAuthorization: input.feeAuthorization,
   })).hash as `sha256:${string}`;
 }
@@ -222,6 +227,7 @@ async function preparedAttempt(input: {
     maxPriorityFeePerGas: request.maxPriorityFeePerGas,
     preparedAccessList: request.accessList ?? [],
   });
+  const calldataCommitment = await sha256Utf8(immutableIdentity.data);
   const preparationFingerprint = await calculatePreparationFingerprintV1({
     run: input.run,
     kind: input.kind,
@@ -230,6 +236,7 @@ async function preparedAttempt(input: {
     preparedAt: input.preparedAt,
     preparedRunRevision: input.run.revision,
     immutableIdentity,
+    calldataCommitment,
     feeAuthorization,
   });
   return {
@@ -239,6 +246,7 @@ async function preparedAttempt(input: {
     txId: input.txId,
     unsignedTransaction: clone(input.unsignedTransaction),
     preparationFingerprint,
+    calldataCommitment,
     immutableIdentity,
     feeAuthorization,
     preparedAt: input.preparedAt,
@@ -363,6 +371,7 @@ export function beginReprepareV4(input: {
   const operation = run.operations[indexFor(input.kind)];
   const prior = activeAttempt(operation);
   if (
+    operation.preparationAttempts.length >= 2 ||
     operation.stage !== "PREPARED_STALE" || prior.state !== "STALE" ||
     operation.walletPromptAuthorization !== null || operation.blockchainTxHash !== null ||
     operation.preparationAttempts.some((attempt) => attempt.attemptId === input.attemptId)
@@ -374,6 +383,7 @@ export function beginReprepareV4(input: {
     txId: null,
     unsignedTransaction: null,
     preparationFingerprint: null,
+    calldataCommitment: null,
     immutableIdentity: null,
     feeAuthorization: null,
     preparedAt: null,
@@ -1036,6 +1046,8 @@ export function recordTokenIdentityFromReadBackV4(input: {
   const tokenIdentity: TokenIdentityV1 = tokenIdentityV1Schema.parse({
     identityVersion: "1.0",
     ...readBack,
+    escrowAddress: eventEvidence.escrowAddress,
+    tokenizationId: eventEvidence.tokenizationId,
   });
   const nextOperation: WriteOperationV4 = {
     ...operation,
@@ -1045,8 +1057,8 @@ export function recordTokenIdentityFromReadBackV4(input: {
   return appendEvent(
     replaceOperation({
       ...run,
-      phase: "WHITELIST",
-      status: "PREPARING",
+      phase: isExecutablePlan(run.plan) ? "TOKENIZATION" : "WHITELIST",
+      status: isExecutablePlan(run.plan) ? "SUCCEEDED" : "PREPARING",
       tokenIdentity,
     }, "TOKENIZE", nextOperation),
     { id: input.id, at: readBack.verifiedAt, type: "RECORD_TOKEN_IDENTITY_FROM_READ_BACK" },

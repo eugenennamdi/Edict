@@ -79,6 +79,7 @@ const manifestSchema = z.object({
 }).strict();
 
 const planSchema = z.object({
+  executionScope: z.literal("TOKENIZE_ONLY").optional(),
   planVersion: z.literal("1.0"),
   manifestHash: hash,
   environment: z.literal("sandbox"),
@@ -466,8 +467,17 @@ function parseSnapshot(value: unknown): ExecutionRun {
           txId: active.txId,
           preparedAt: active.preparedAt,
           immutableIdentity: active.immutableIdentity,
+          ...(active.calldataCommitment === undefined
+            ? {}
+            : { calldataCommitment: active.calldataCommitment }),
           feeAuthorization: active.feeAuthorization,
         })
+      ) return true;
+      if (
+        active?.calldataCommitment !== undefined &&
+        active.calldataCommitment !== null &&
+        active.immutableIdentity !== null &&
+        active.calldataCommitment !== sha256Text(active.immutableIdentity.data)
       ) return true;
       const prompt = operation.walletPromptAuthorization;
       if (

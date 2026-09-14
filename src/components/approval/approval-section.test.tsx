@@ -49,7 +49,7 @@ describe("approval readiness UI", () => {
     vi.stubGlobal("fetch", fetch);
     const current = await view();
     const html = renderToStaticMarkup(createElement(ApprovalReadinessSection, { view: current }));
-    expect(html).toContain("Plan approval readiness");
+    expect(html).toContain("Approve mandate");
     expect(html).toContain("Café Receivables · ED1");
     expect(html).toContain(current.run.planHash);
     expect(html).toContain(current.run.requiredSigner.walletAddress);
@@ -82,7 +82,7 @@ describe("approval readiness UI", () => {
     };
     const html = renderToStaticMarkup(createElement(ApprovalReadinessSection, { view: approved }));
     expect(html).toContain("Plan approval recorded");
-    expect(html).toContain("Wallet confirmation and transaction submission remain unavailable");
+    expect(html).toContain("You can now execute the mandate");
     expect(html).not.toContain("Select wallet");
     expect(html).not.toContain("Allow account access");
     expect(html).not.toContain("Check wallet again");

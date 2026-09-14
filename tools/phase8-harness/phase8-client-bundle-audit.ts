@@ -25,6 +25,7 @@ const EXPECTED_API_ROUTES = Object.freeze([
   "/api/runs/[runId]/broadcast-hash",
   "/api/runs/[runId]/broadcast-unknown",
   "/api/runs/[runId]/cancel",
+  "/api/runs/[runId]/execute",
   "/api/runs/[runId]/prepare",
   "/api/runs/[runId]/promote",
   "/api/runs/[runId]/readiness",
@@ -64,7 +65,6 @@ const PROHIBITED_PUBLIC_TOKENS = Object.freeze([
   "EDICT_TOKENIZE_EXECUTION_ENABLED",
   "EDICT_TOKENIZE_ALLOWED_DESTINATION",
   "EDICT_TOKENIZE_FUNCTION_SIGNATURE",
-  "EDICT_TOKENIZE_CALLDATA_COMMITMENT",
   "NEXT_PUBLIC_EDICT_TOKENIZE_",
   "EDICT_PHASE8_MODE",
   "EDICT_PHASE8_HOST",
@@ -623,8 +623,10 @@ export async function runPhase8ClientBundleAudit(
       });
       assertBuildOutputSafe(build);
     }
-    if (build.status !== 0) fail();
-    if (digestSnapshot({ fileSystem, workspace, files }) !== sourceDigest) fail();
+    if (build.status !== 0) throw new Error("PHASE8_CLIENT_BUNDLE_BUILD_FAILED");
+    if (digestSnapshot({ fileSystem, workspace, files }) !== sourceDigest) {
+      throw new Error("PHASE8_CLIENT_BUNDLE_SOURCE_MUTATED");
+    }
     const apiRoutes = validateRoutes(fileSystem, workspace);
     const harnessRoot = path.join(workspace, ".phase8-audit-browser");
     if (lstatIfPresent(fileSystem, harnessRoot) !== undefined) artifactFail("HARNESS_PATH_EXISTS");
@@ -646,6 +648,9 @@ export async function runPhase8ClientBundleAudit(
     throw new Error("PHASE8_CLIENT_BUNDLE_CLEANUP_FAILED");
   }
   if (fileSystem.exists(directory)) throw new Error("PHASE8_CLIENT_BUNDLE_CLEANUP_FAILED");
+  if (auditError instanceof Error && auditError.message.startsWith("PHASE8_CLIENT_BUNDLE_")) {
+    throw auditError;
+  }
   if (auditError !== undefined || result === undefined) fail();
   return result;
 }

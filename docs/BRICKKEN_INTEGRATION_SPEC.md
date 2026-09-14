@@ -91,7 +91,7 @@ The sanitized adapter projection was:
 
 **VERIFIED** — The API exposes three execution modes. For `client-broadcast`, the user signs and broadcasts, then the client confirms exactly one `{ txId, txHash }` pair to Brickken; this mode works for Dapp methods. Resubmitting the same pair is idempotent. [Send Transactions](https://docs.brickken.com/api-reference/endpoint/send)
 
-**DECISION** — Edict intends to use `client-broadcast` for all three on-chain operations. Phase 10 makes only explicit TOKENIZE preparation/review available behind a separate deny-by-default server gate; production wallet semantic authorization remains deny-all. A preparation request is a semantic Brickken write effect even though it uses `execute:false`, so mount/recovery never invokes it and ambiguous results are never retried automatically. The controlled authenticated preparation checks above were refused or unconfirmed; no browser broadcast or live RPC comparison occurred.
+**DECISION** — Edict currently executes only TOKENIZE with `client-broadcast`; WHITELIST and MINT are disabled pending semantic verification. TOKENIZE requires the private emergency kill switch, a canonical ABI decode/re-encode match, current reviewed factory/implementation checks and fresh read-only RPC evidence. A preparation request remains a semantic Brickken write effect even with `execute:false`, so mount/recovery never invokes it and ambiguous results are never retried automatically.
 
 **VERIFIED** — A prepared response contains `transactions` (unsigned transaction objects), `txId` (Brickken's internal prepared-batch identifier, not a blockchain hash), and optional `info`. [Prepare Transactions](https://docs.brickken.com/api-reference/endpoint/create)
 
@@ -218,6 +218,10 @@ The sanitized adapter projection was:
 
 **OPEN QUESTION** — Brickken does not publish finality depth, typical confirmation latency, prepared-transaction expiry, nonce reservation behavior, or a prepare idempotency key for Dapp methods in the reviewed official sources. When `newTokenization` and `whitelist` credits are decremented (prepare vs send) is also unpublished.
 
+**READ-ONLY PRODUCTIZATION AUDIT — 2026-09-13** — Neither the reviewed official material nor `brickken-sdk@0.2.1` exposes a Dapp preparation idempotency key, request-fingerprint lookup, or other locator that works after the entire prepare response and `txId` are lost. Such an attempt remains a bounded **Needs attention** exception and is never redispatched automatically.
+
+**READ-ONLY BATCHING AUDIT — 2026-09-13** — The reviewed SDK models `newTokenization`, `whitelist`, and `mintToken` as separate Dapp preparation methods. `client-broadcast` accepts one transaction for the correlated `txId`; no verified Dapp multicall/batch method is exposed. `newTokenization` documents `preMints` plus `initialHolders`, and `mintToken.needWhitelist` indicates mint may also whitelist, so two-write flows may be possible. Edict does not enable either collapse until Brickken confirms the exact sandbox wire shape, resulting transaction count, investor whitelist state, allocation state, and read-back semantics.
+
 **VERIFIED** — The SDK documents a per-wallet outstanding-prepare quota that returns `429` with `Too many outstanding prepared transactions for this wallet`. [`brickken-sdk@0.2.1` README](https://docs.brickken.com/sdk/introduction)
 
 ## Official SDK versus direct REST
@@ -257,7 +261,7 @@ The sanitized adapter projection was:
 - **OPEN QUESTION** — Confirm `newTokenization.url` behaviour when omitted, plus the exact nested active-license error fields and prose; Phase 10C retained only the safe top-level envelope and semantic category.
 - **OPEN QUESTION** — Confirm whether the accepted `tokenSymbol` lower bound is two or three characters on live sandbox. Current docs say 2–5; Edict V1 still sends 3–5.
 - **OPEN QUESTION** — Confirm prepared transaction expiry, finality expectations, per-tier quotas, and whether `newTokenization`/`whitelist` prepare consumes a credit before send.
-- **OPEN QUESTION — activation blocker, 2026-09-12** — Establish from an authoritative Brickken registry, deployment record, or reviewed contract artifact the exact Sepolia destination and canonical ABI function signature used by prepared `newTokenization`. The pinned SDK exposes the REST method mapping but not that deployment ABI/registry, and the official response example retained here has placeholder/truncated transaction values. It cannot authorize a live send.
+- **RESOLVED FOR RE-AUDIT, 2026-09-14** — The reviewed Sepolia factory is `0x23B04b6410D72Fa66A77a9e0146DF6634Ad4C462`, its canonical selector is `0xf3d02cfd`, and its canonical tuple signature is recorded in the wallet execution specification. Authority still fails closed if the current ERC-1967 implementation differs from the reviewed implementation.
 - **OPEN QUESTION** — Confirm whether API-key Dapp transaction-status polling always requires the key, including after client broadcast. Edict will send the key regardless.
 - **OPEN QUESTION** — Confirm live unsigned-transaction encoding (string fees vs BigNumber objects) and whether `executionMode: "client-broadcast"` is accepted on Dapp prepare despite its absence from the prepare OpenAPI properties.
 - **OPEN QUESTION** — Confirm sandbox acceptance of `needKyc: false` on whitelist/mint despite its absence from the dedicated OpenAPI properties.

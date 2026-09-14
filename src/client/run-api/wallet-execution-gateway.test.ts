@@ -65,13 +65,13 @@ describe("wallet execution HTTP gateway", () => {
     },
   );
 
-  it("posts one exact authorization request and accepts only the strict envelope response", async () => {
+  it("posts one product-level execute request and accepts only the strict envelope response", async () => {
     const transport = vi.fn(async () => json({ ok: true, envelope }));
     const gateway = createWalletExecutionHttpGateway(transport);
-    await expect(gateway.authorize(RUN_ID, 8)).resolves.toEqual(envelope);
+    await expect(gateway.execute(RUN_ID, 8)).resolves.toEqual(envelope);
     expect(transport).toHaveBeenCalledTimes(1);
     expect(transport).toHaveBeenCalledWith(
-      `/api/runs/${RUN_ID}/wallet-authorization`,
+      `/api/runs/${RUN_ID}/execute`,
       expect.objectContaining({
         method: "POST",
         credentials: "same-origin",
@@ -92,7 +92,7 @@ describe("wallet execution HTTP gateway", () => {
   ] as const)("maps status %s and its strict body to %s", async (status, body, expected) => {
     const transport = vi.fn(async () => json(body, status));
     const gateway = createWalletExecutionHttpGateway(transport);
-    await expect(gateway.authorize(RUN_ID, 8)).rejects.toSatisfy(
+    await expect(gateway.execute(RUN_ID, 8)).rejects.toSatisfy(
       (error: unknown) => errorCode(error) === expected,
     );
     expect(transport).toHaveBeenCalledTimes(1);
@@ -101,7 +101,7 @@ describe("wallet execution HTTP gateway", () => {
   it("classifies authorization transport failure as unknown and never retries", async () => {
     const transport = vi.fn(async () => { throw new TypeError("network details must not escape"); });
     const gateway = createWalletExecutionHttpGateway(transport);
-    await expect(gateway.authorize(RUN_ID, 8)).rejects.toMatchObject({
+    await expect(gateway.execute(RUN_ID, 8)).rejects.toMatchObject({
       code: "AUTHORIZATION_RESPONSE_UNKNOWN",
       message: "AUTHORIZATION_RESPONSE_UNKNOWN",
     });
@@ -116,7 +116,7 @@ describe("wallet execution HTTP gateway", () => {
     ["malformed envelope", () => json({ ok: true, envelope: { ...envelope, walletIntentHash: "bad" } })],
   ] as const)("rejects %s as a bounded malformed response", async (_label, response) => {
     const gateway = createWalletExecutionHttpGateway(async () => response());
-    await expect(gateway.authorize(RUN_ID, 8)).rejects.toMatchObject({ code: "MALFORMED_RESPONSE" });
+    await expect(gateway.execute(RUN_ID, 8)).rejects.toMatchObject({ code: "MALFORMED_RESPONSE" });
   });
 
   it("rejects a mixed-case hash at the gateway boundary without a request", async () => {

@@ -1,4 +1,5 @@
 import "server-only";
+import { isExecutablePlan } from "../execution/capabilities";
 
 import { buildExecutionPlanV1, canonicalizeJson, validateAssetManifestV1 } from "@/core";
 import {
@@ -19,7 +20,7 @@ async function validatedArtifacts(run: ExecutionRun) {
     throw new Error("PUBLIC_RUN_PROJECTION_INVALID");
   }
   const manifest = manifestResult.value;
-  const plan = await buildExecutionPlanV1(manifest);
+  const plan = await buildExecutionPlanV1(manifest, run.plan.executionScope === "TOKENIZE_ONLY" ? "TOKENIZE_ONLY" : "LEGACY_FULL");
   if (plan.manifestHash !== run.manifestHash || plan.planHash !== run.planHash) {
     throw new Error("PUBLIC_RUN_PROJECTION_INVALID");
   }
@@ -43,6 +44,24 @@ async function projectedRun(run: ExecutionRun): Promise<PublicRunProjection> {
   return parsePublicRunMutationResponse({
     ok: true,
     run: {
+      executablePlan: isExecutablePlan(run.plan),
+      executeEligible: isExecutablePlan(run.plan) && run.approval !== null &&
+        run.phase === "TOKENIZATION" && run.terminalOutcome === null &&
+        ["PREPARING", "AWAITING_WALLET"].includes(run.status) &&
+        run.operations[0].blockchainTxHash === null && (
+          ["NOT_STARTED", "PREPARED"].includes(run.operations[0].stage) ||
+          (run.operations[0].stage === "PREPARED_STALE" && execution?.reprepareEligible === true) ||
+          (run.schemaVersion === "4.0" && run.operations[0].stage === "WALLET_PROMPT_RECORDED" &&
+            run.operations[0].walletPromptAuthorization?.providerInvocation === "PROVEN_NOT_INVOKED")
+        ),
+      trackingRemaining: Math.max(0, 30 - run.events.filter((event) => event.type === "TRACK_EXECUTION_RESERVED").length),
+      tokenizationResult: run.schemaVersion === "4.0" && run.tokenIdentity !== null ? {
+        tokenAddress: run.tokenIdentity.tokenAddress,
+        escrowAddress: run.tokenIdentity.escrowAddress ?? null,
+        tokenizationId: run.tokenIdentity.tokenizationId ?? null,
+        transactionHash: run.tokenIdentity.tokenizationTxHash,
+        verifiedAt: run.tokenIdentity.verifiedAt, verificationStatus: "VERIFIED",
+      } : null,
       id: run.id,
       schemaVersion: run.schemaVersion,
       manifestHash: run.manifestHash,

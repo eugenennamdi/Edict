@@ -660,7 +660,7 @@ describe("Phase 8 public metadata and trusted evidence", () => {
 });
 
 describe("Phase 8 production isolation", () => {
-  it("keeps the production route inventory at exactly twelve", () => {
+  it("keeps the production route inventory at exactly thirteen", () => {
     const root = path.resolve(__dirname, "../..");
     const routes: string[] = [];
     const visit = (directory: string) => {
@@ -671,7 +671,7 @@ describe("Phase 8 production isolation", () => {
       }
     };
     visit(path.join(root, "src/app"));
-    expect(routes.sort()).toHaveLength(12);
+    expect(routes.sort()).toHaveLength(13);
     expect(routes.every((route) => route.startsWith("src/app/api/runs/"))).toBe(true);
   });
 

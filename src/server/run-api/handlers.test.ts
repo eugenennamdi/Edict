@@ -1,5 +1,5 @@
+import { syntheticTokenizeProtocolRpc } from "../execution/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
-import { sha256Utf8 } from "@/core";
 import { createValidRawManifest, TOKENIZER_ADDRESS } from "@/core/test-fixtures";
 import type { BrickkenServerAdapter, PreparedOperation } from "../brickken/types";
 import { BrickkenAdapterError } from "../brickken/errors";
@@ -18,7 +18,6 @@ import {
   ExecutionV4Orchestrator,
   OrchestrationError,
   TOKENIZE_ALLOWED_DESTINATION,
-  TOKENIZE_CALLDATA_COMMITMENT,
   TOKENIZE_EXECUTION_GATE,
   TOKENIZE_FUNCTION_SIGNATURE,
   REVIEWED_SEPOLIA_FACTORY,
@@ -109,11 +108,6 @@ describe("run API HTTP boundaries", () => {
     expect(body.plan.operations.map((operation: { id: string }) => operation.id)).toEqual([
       "tokenize",
       "confirm-tokenization",
-      "whitelist-investor",
-      "confirm-whitelist",
-      "mint",
-      "confirm-mint",
-      "verify-deployment",
     ]);
     expect(body.run.revision).toBe(1);
     expect(text).not.toContain("publicSignature");
@@ -493,7 +487,7 @@ describe("V4 browser wallet run routes", () => {
     let sequence = 0;
     const walletExecution = new ExecutionV4Orchestrator({
       repository,
-      clock: { nowIso: () => `2026-09-12T13:00:0${sequence++}.000Z` },
+      clock: { nowIso: () => new Date(Date.UTC(2026, 8, 12, 13, 0, sequence++)).toISOString() },
       ids: {
         runId: () => runId,
         operationId: () => `wallet-operation-${sequence++}`,
@@ -504,9 +498,10 @@ describe("V4 browser wallet run routes", () => {
         [TOKENIZE_EXECUTION_GATE]: "1",
         [TOKENIZE_ALLOWED_DESTINATION]: REVIEWED_SEPOLIA_FACTORY,
         [TOKENIZE_FUNCTION_SIGNATURE]: signature,
-        [TOKENIZE_CALLDATA_COMMITMENT]: await sha256Utf8(data),
       }),
       rpc: createTrustedSepoliaRpcClient({ request: async (method, params) => {
+          const protocol = syntheticTokenizeProtocolRpc(method, params);
+          if (protocol !== undefined) return protocol;
         if (method === "eth_chainId") return "0xaa36a7";
         if (method === "eth_getTransactionCount") return "0x5";
         if (method === "eth_getBalance") return "0x1000000000000000";

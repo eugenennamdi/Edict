@@ -71,15 +71,15 @@ describe("buildExecutionPlanV1", () => {
   it("makes confirmation, read-back, standalone whitelist, and final verification explicit", async () => {
     const plan = await buildExecutionPlanV1(validManifest());
     expect(plan.operations[1].intent.reads).toEqual(["TOKEN_INFO", "TOKENIZER_INFO"]);
-    expect(plan.operations[3].intent.reads).toEqual(["WHITELIST_STATUS"]);
-    expect(plan.operations[4].intent.whitelistPolicy).toBe(
+    expect(plan.operations[3]!.intent.reads).toEqual(["WHITELIST_STATUS"]);
+    expect(plan.operations[4]!.intent.whitelistPolicy).toBe(
       "REQUIRE_CONFIRMED_STANDALONE_WHITELIST",
     );
-    expect(plan.operations[5].intent.reads).toEqual(["BALANCE_AND_WHITELIST"]);
-    expect(plan.operations[5].intent.expected.balancePolicy).toBe(
+    expect(plan.operations[5]!.intent.reads).toEqual(["BALANCE_AND_WHITELIST"]);
+    expect(plan.operations[5]!.intent.expected.balancePolicy).toBe(
       "EQUALS_MINT_AMOUNT_FOR_NEW_INVESTOR",
     );
-    expect(plan.operations[6].intent.requires).toEqual([
+    expect(plan.operations[6]!.intent.requires).toEqual([
       "TOKENIZATION_CONFIRMED",
       "TOKEN_READ_BACK_MATCHED",
       "WHITELIST_CONFIRMED",
@@ -108,7 +108,7 @@ describe("buildExecutionPlanV1", () => {
     const plan = await buildExecutionPlanV1(manifest);
     expect(plan.operations[0].intent.asset).not.toBe(manifest.asset);
     expect(plan.operations[0].intent.tokenizer).not.toBe(manifest.tokenizer);
-    expect(plan.operations[2].intent.investor).not.toBe(manifest.investor);
+    expect(plan.operations[2]!.intent.investor).not.toBe(manifest.investor);
     expectDeepFrozen(plan);
 
     expect(Reflect.set(plan, "planVersion", "2.0")).toBe(false);

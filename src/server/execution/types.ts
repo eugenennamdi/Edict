@@ -94,6 +94,7 @@ export interface ExecutionManifestSnapshot {
 }
 
 export interface ExecutionPlanSnapshot {
+  readonly executionScope?: "TOKENIZE_ONLY";
   readonly planVersion: "1.0";
   readonly manifestHash: string;
   readonly environment: "sandbox";
@@ -168,6 +169,8 @@ export interface PreparationAttemptV1 {
   readonly txId: string | null;
   readonly unsignedTransaction: Record<string, unknown> | null;
   readonly preparationFingerprint: string | null;
+  /** Server-derived from immutableIdentity.data; absent only on historical V4 snapshots. */
+  readonly calldataCommitment?: string | null;
   readonly immutableIdentity: ImmutableExecutionIdentityV1 | null;
   readonly feeAuthorization: FeeAuthorizationV1 | null;
   readonly preparedAt: IsoUtcTimestamp | null;
@@ -257,6 +260,8 @@ export interface BrickkenStatusEvidenceV1 {
 }
 
 export interface TokenIdentityV1 {
+  readonly escrowAddress?: string;
+  readonly tokenizationId?: string;
   readonly identityVersion: "1.0";
   readonly chainId: "11155111";
   readonly tokenAddress: string;

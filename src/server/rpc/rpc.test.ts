@@ -1,3 +1,4 @@
+import "server-only";
 import { validateAssetManifestV1 } from "@/core";
 import { TOKENIZER_ADDRESS, createValidRawManifest } from "@/core/test-fixtures";
 import { describe, expect, it } from "vitest";
@@ -114,16 +115,16 @@ async function createPreparedTestRun(): Promise<ExecutionRunV4> {
 }
 
 describe("Trusted Sepolia RPC client & contracts", () => {
-  it("1. verifies correct Sepolia chain (11155111 / 0xaa36a7) and caches session verification", async () => {
+  it("1. verifies correct Sepolia chain (11155111 / 0xaa36a7) and rechecks chain verification", async () => {
     const transport = new FakeRpcTransport().on("eth_chainId", () => "0xaa36a7");
     const client = createTrustedSepoliaRpcClient(transport);
 
     await client.verifyChain();
     expect(client.chainId).toBe("11155111");
 
-    // Second call should reuse verified session and not re-issue eth_chainId
+    // Authority preflight must reverify the current chain.
     await client.verifyChain();
-    expect(transport.calls.filter((c) => c.method === "eth_chainId").length).toBe(1);
+    expect(transport.calls.filter((c) => c.method === "eth_chainId").length).toBe(2);
   });
 
   it("2. rejects wrong chain on verification", async () => {

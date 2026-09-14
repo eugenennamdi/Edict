@@ -10,7 +10,7 @@
 
 **DECISION** — No wallet is selected, privileged or verified. EIP-6963 display metadata is self-asserted. A result applies only to the exact selected provider instance, operator-recorded wallet version, run, operation and wallet-request hash. It does not certify a wallet brand, another version, WalletConnect, another operation or another prepared transaction.
 
-**DECISION** — Production semantic authorization remains deny-all. Phase 10 added preparation, and the later browser-wallet checkpoint added three V4-only authority/result routes, bringing the production inventory to exactly nine routes. Deny-all prevents a usable send envelope; confirmation, polling, finality, Brickken correlation, read-back and receipt endpoints remain absent. Captured values must not become destination/selector policy without sanitized authenticated evidence, independent ABI/contract identification, human review, a separate commit and dedicated tests.
+**DECISION — superseding current state, 2026-09-14** — TOKENIZE semantic authorization is available behind the private global emergency kill switch and exact reviewed factory/ABI policy. Execute Mandate, broadcast-result ingestion and automatic bounded tracking are production routes. WHITELIST/MINT remain disabled. The Phase 8 harness remains an offline adversarial and client-bundle boundary check; it does not authorize, prompt or broadcast a transaction.
 
 ## First operator step
 

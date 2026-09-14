@@ -1,3 +1,4 @@
+import { syntheticTokenizeProtocolRpc } from "../execution/test-fixtures";
 import { sha256Utf8, validateAssetManifestV1 } from "@/core";
 import { TOKENIZER_ADDRESS, createValidRawManifest } from "@/core/test-fixtures";
 import { describe, expect, it } from "vitest";
@@ -13,7 +14,6 @@ import {
 } from "../execution/v4-transitions";
 import {
   TOKENIZE_ALLOWED_DESTINATION,
-  TOKENIZE_CALLDATA_COMMITMENT,
   TOKENIZE_EXECUTION_GATE,
   TOKENIZE_FUNCTION_SIGNATURE,
   TokenizeOnlySemanticAuthorizationEvaluator,
@@ -77,13 +77,11 @@ async function fixture() {
     attemptId: "attempt-1",
     freshnessPolicyVersion: "edict-freshness-v1",
   });
-  const commitment = await sha256Utf8(DATA);
   const policy: TokenizeSemanticAuthorizationPolicy = Object.freeze({
-    policyVersion: "edict-tokenize-semantic-v1",
+    policyVersion: "edict-tokenize-semantic-v2",
     allowedDestination: DESTINATION,
     reviewedFunctionSignature: SIGNATURE,
     allowedSelector: SELECTOR,
-    allowedCalldataCommitment: commitment,
     brickkenMethod: "newTokenization",
     executionMode: "client-broadcast",
   });
@@ -133,6 +131,7 @@ async function withAttempt(
         preparedAt: attempt.preparedAt,
         preparedRunRevision: attempt.preparedRunRevision,
         immutableIdentity: attempt.immutableIdentity,
+        calldataCommitment: attempt.calldataCommitment ?? undefined,
         feeAuthorization: attempt.feeAuthorization,
       }),
     };
@@ -183,14 +182,12 @@ describe("TOKENIZE semantic activation config", () => {
       [TOKENIZE_EXECUTION_GATE]: "1",
       [TOKENIZE_ALLOWED_DESTINATION]: policy.allowedDestination,
       [TOKENIZE_FUNCTION_SIGNATURE]: policy.reviewedFunctionSignature,
-      [TOKENIZE_CALLDATA_COMMITMENT]: policy.allowedCalldataCommitment,
     });
     expect(config).toEqual({ enabled: true, policy });
     expect(createProductionSemanticAuthorizationEvaluator({
       [TOKENIZE_EXECUTION_GATE]: "1",
       [TOKENIZE_ALLOWED_DESTINATION]: policy.allowedDestination,
       [TOKENIZE_FUNCTION_SIGNATURE]: policy.reviewedFunctionSignature,
-      [TOKENIZE_CALLDATA_COMMITMENT]: policy.allowedCalldataCommitment,
     })).toBeInstanceOf(TokenizeOnlySemanticAuthorizationEvaluator);
   });
 
@@ -208,18 +205,15 @@ describe("TOKENIZE semantic activation config", () => {
       NEXT_PUBLIC_EDICT_TOKENIZE_EXECUTION_ENABLED: "1",
     })).toThrow(TokenizePolicyConfigurationError);
 
-    const { policy } = await fixture();
     expect(readTokenizeSemanticAuthorizationPolicy({
       [TOKENIZE_EXECUTION_GATE]: "1",
       [TOKENIZE_ALLOWED_DESTINATION]: OTHER,
       [TOKENIZE_FUNCTION_SIGNATURE]: REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
-      [TOKENIZE_CALLDATA_COMMITMENT]: policy.allowedCalldataCommitment,
     })).toEqual({ enabled: false, reason: "POLICY_CONFIG_INVALID" });
     expect(readTokenizeSemanticAuthorizationPolicy({
       [TOKENIZE_EXECUTION_GATE]: "1",
       [TOKENIZE_ALLOWED_DESTINATION]: REVIEWED_SEPOLIA_FACTORY,
       [TOKENIZE_FUNCTION_SIGNATURE]: "other(bytes)",
-      [TOKENIZE_CALLDATA_COMMITMENT]: policy.allowedCalldataCommitment,
     })).toEqual({ enabled: false, reason: "POLICY_CONFIG_INVALID" });
   });
 });
@@ -231,12 +225,12 @@ describe("TOKENIZE-only semantic authorization", () => {
     expect(result).toMatchObject({
       authorized: true,
       semanticAuthorization: {
-        policyVersion: "edict-tokenize-semantic-v1",
+        policyVersion: "edict-tokenize-semantic-v2",
         brickkenMethod: "newTokenization",
         executionMode: "client-broadcast",
         destinationPolicy: { reviewedDestination: DESTINATION },
         selectorPolicy: { reviewedSelector: policy.allowedSelector },
-        calldataCommitment: policy.allowedCalldataCommitment,
+        calldataCommitment: await sha256Utf8(DATA),
       },
     });
     expect(result.authorized && result.semanticAuthorization.authorizationId)
@@ -249,7 +243,7 @@ describe("TOKENIZE-only semantic authorization", () => {
     const orchestrator = new ExecutionV4Orchestrator({
       repository,
       semanticAuthorization: evaluator,
-      clock: { nowIso: () => `2026-09-12T13:00:0${event++}.000Z` },
+      clock: { nowIso: () => new Date(Date.UTC(2026, 8, 12, 13, 0, event++)).toISOString() },
       ids: {
         runId: () => prepared.id,
         operationId: () => `operation-full-${event++}`,
@@ -258,6 +252,8 @@ describe("TOKENIZE-only semantic authorization", () => {
       },
       rpc: createTrustedSepoliaRpcClient({
         request: async (method, params) => {
+          const protocol = syntheticTokenizeProtocolRpc(method, params);
+          if (protocol !== undefined) return protocol;
           if (method === "eth_chainId") return "0xaa36a7";
           if (method === "eth_getTransactionCount") return "0x5";
           if (method === "eth_getBalance") return "0x1000000000000000";
@@ -369,11 +365,10 @@ describe("TOKENIZE-only semantic authorization", () => {
       authorized: false,
       reason: "SELECTOR_NOT_ALLOWED",
     });
-    const wrongCalldata = new TokenizeOnlySemanticAuthorizationEvaluator({
-      ...policy,
-      allowedCalldataCommitment: `sha256:${"0".repeat(64)}`,
-    });
-    await expect(decision(wrongCalldata, run)).resolves.toEqual({
+    const wrongCommitmentRun = await withAttempt(run, {
+      calldataCommitment: `sha256:${"0".repeat(64)}`,
+    }, true);
+    await expect(decision(evaluator, wrongCommitmentRun)).resolves.toEqual({
       authorized: false,
       reason: "CALLDATA_COMMITMENT_MISMATCH",
     });
@@ -404,6 +399,7 @@ describe("TOKENIZE-only semantic authorization", () => {
       txId: "brickken-tx-2",
       unsignedTransaction: nextUnsigned,
       immutableIdentity: { ...prior.immutableIdentity!, nonce: "0x6" },
+      calldataCommitment: prior.calldataCommitment,
       preparedAt: "2026-09-12T14:00:00.000Z",
       preparedRunRevision: run.revision + 2,
       preparationFingerprint: null,
@@ -429,6 +425,7 @@ describe("TOKENIZE-only semantic authorization", () => {
         preparedAt: nextAttempt.preparedAt!,
         preparedRunRevision: nextAttempt.preparedRunRevision!,
         immutableIdentity: nextAttempt.immutableIdentity,
+        calldataCommitment: nextAttempt.calldataCommitment ?? undefined,
         feeAuthorization: nextAttempt.feeAuthorization,
       }),
     };

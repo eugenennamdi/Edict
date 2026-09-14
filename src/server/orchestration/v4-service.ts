@@ -1,4 +1,6 @@
 import "server-only";
+import { assertExecutablePlan } from "../execution/capabilities";
+import { validateTokenizeProtocol } from "./tokenize-calldata";
 
 import { buildExecutionPlanV1, canonicalizeJson, hashCanonicalJson, validateAssetManifestV1 } from "@/core";
 import {
@@ -95,6 +97,7 @@ export type BroadcastUnknownReason =
   | "HASH_PERSISTENCE_UNCONFIRMED";
 
 export interface SemanticAuthorizationEvaluator {
+  readonly requiresProtocolValidation?: boolean;
   readonly isProductionDenyAll?: boolean;
   evaluate(input: {
     readonly run: ExecutionRunV4;
@@ -285,7 +288,7 @@ function getActiveAttempt(operation: WriteOperationV4): PreparationAttemptV1 {
 async function validatedRunPlan(run: ExecutionRun) {
   const manifest = validateAssetManifestV1(run.manifest);
   if (!manifest.ok) throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
-  const plan = await buildExecutionPlanV1(manifest.value);
+  const plan = await buildExecutionPlanV1(manifest.value, run.plan.executionScope === "TOKENIZE_ONLY" ? "TOKENIZE_ONLY" : "LEGACY_FULL");
   if (plan.manifestHash !== run.manifestHash || plan.planHash !== run.planHash) {
     throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
   }
@@ -337,6 +340,18 @@ export class ExecutionV4Orchestrator {
     this.#readBack = deps.brickkenReadBack;
   }
 
+  async #validateProtocol(run: ExecutionRun, unsigned: Record<string, unknown>): Promise<void> {
+    assertExecutablePlan(run.plan);
+    await validatedRunPlan(run);
+    const tx = projectPreparedTransactionV1(unsigned);
+    if (tx.chainId !== "0xaa36a7" || tx.walletRequest.from !== run.requiredSigner.walletAddress ||
+      tx.walletRequest.to !== REVIEWED_SEPOLIA_FACTORY || tx.walletRequest.value !== "0x0") {
+      throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
+    }
+    try { await validateTokenizeProtocol(run, tx.walletRequest.data!, this.#deps.rpc); }
+    catch { throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED"); }
+  }
+
   async promotePreparedRunToV4(
     runId: string,
     expectedRevision: number,
@@ -367,6 +382,9 @@ export class ExecutionV4Orchestrator {
       return current;
     }
 
+    if (this.#semanticAuth.requiresProtocolValidation) {
+      await this.#validateProtocol(current, op.unsignedTransaction);
+    }
     const v4Foundation: V4PreparationFoundationInput = foundation ?? {
       attemptId: this.#deps.ids.operationId(),
       freshnessPolicyVersion: "edict-freshness-v1",
@@ -473,6 +491,9 @@ export class ExecutionV4Orchestrator {
     assertRevision(current, expectedRevision);
     assertV4(current);
     const { kind } = deriveActiveOperation(current);
+    if (this.#semanticAuth.requiresProtocolValidation) {
+      await this.#validateProtocol(current, unsignedTransaction);
+    }
     const nextRun = await recordRepreparedV4({
       run: current,
       kind,
@@ -531,6 +552,7 @@ export class ExecutionV4Orchestrator {
       throw new IllegalStateTransitionError();
     }
 
+    assertExecutablePlan(current.plan);
     const { manifest } = await validatedRunPlan(current);
 
     // CAS 1: transition to REPREPARE_INTENT
@@ -623,14 +645,15 @@ export class ExecutionV4Orchestrator {
     }
 
     const { kind, operation: op } = deriveActiveOperation(current);
-    if (op.stage !== "PREPARED") {
+    if (!["PREPARED", "WALLET_PROMPT_RECORDED"].includes(op.stage)) {
       return Object.freeze({
         authorized: false,
         reason: "OPERATION_NOT_PREPARED",
       });
     }
 
-    if (op.walletPromptAuthorization !== null) {
+    if (op.walletPromptAuthorization !== null &&
+      op.walletPromptAuthorization.providerInvocation !== "PROVEN_NOT_INVOKED") {
       return Object.freeze({
         authorized: false,
         reason: "WALLET_PROMPT_ALREADY_RECORDED",
@@ -650,7 +673,7 @@ export class ExecutionV4Orchestrator {
       });
     }
 
-    const freshness = await evaluatePreparedFreshness({
+    let freshness = await evaluatePreparedFreshness({
       client: this.#deps.rpc,
       run: current,
       kind,
@@ -667,6 +690,10 @@ export class ExecutionV4Orchestrator {
       });
     }
 
+    if (this.#semanticAuth.requiresProtocolValidation) {
+      try { await this.#validateProtocol(current, active.unsignedTransaction!); }
+      catch { return { authorized: false, reason: "AUTHORIZATION_DENIED", detail: "PROTOCOL_VALIDATION_FAILED" }; }
+    }
     const semanticResult = await this.#semanticAuth.evaluate({
       run: current,
       kind,
@@ -682,6 +709,11 @@ export class ExecutionV4Orchestrator {
       });
     }
 
+    // Protocol reads can take time. Sample nonce, funds, fee and price lifetime
+    // again after those reads; these are the evidence persisted by final CAS.
+    freshness = await evaluatePreparedFreshness({ client: this.#deps.rpc, run: current, kind,
+      policyVersion: "edict-freshness-v1", observedAt: this.#deps.clock.nowIso() });
+    if (!freshness.eligible) return { authorized: false, reason: "FRESHNESS_CHECK_FAILED", freshness, detail: freshness.outcome };
     return Object.freeze({
       authorized: true,
       semanticAuthorization: semanticResult.semanticAuthorization,
@@ -750,7 +782,7 @@ export class ExecutionV4Orchestrator {
     runId: string,
     expectedRevision: number,
   ): Promise<{ envelope: SendAuthorizedEnvelopeV1; run: ExecutionRunV4 }> {
-    // In production, semantic authorization is strictly DENY-ALL. Refuse immediately.
+    // Operator kill switch / invalid deployment policy refuses authority.
     if (this.#semanticAuth.isProductionDenyAll) {
       throw new OrchestrationError("AUTHORIZATION_DENIED");
     }
@@ -764,10 +796,12 @@ export class ExecutionV4Orchestrator {
     let current = await this.#deps.repository.getById(runId);
     assertRevision(current, expectedRevision);
     assertV4(current);
+    assertExecutablePlan(current.plan);
 
     let currentRevision = expectedRevision;
     const activeOp = deriveActiveOperation(current);
     const { kind } = activeOp;
+    if (kind !== "TOKENIZE") throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
     let op = activeOp.operation;
 
     // Sequential CAS: if still in PREPARED, record prompt authorization (CAS 1)
@@ -833,6 +867,37 @@ export class ExecutionV4Orchestrator {
     ) {
       throw new IllegalStateTransitionError();
     }
+
+    // Both fresh and crash-resumed prompts re-evaluate all current evidence.
+    // Nothing externally sensitive is inherited from the original prompt CAS.
+    const releasePreflight = await this.preflightWalletAuthorization(runId, currentRevision);
+    if (!releasePreflight.authorized) {
+      const f = releasePreflight.freshness;
+      if (f?.nonceEvidence && ["STALE_NONCE", "PRICE_REPORT_EXPIRED", "PRICE_REPORT_TOO_CLOSE_TO_EXPIRY"].includes(f.outcome)) {
+        const active = getActiveAttempt(op);
+        const noPrompt = {
+          ...current,
+          operations: [ { ...current.operations[0], stage: "PREPARED", walletPromptAuthorization: null, walletPromptAt: null }, current.operations[1], current.operations[2] ],
+        } as ExecutionRunV4;
+        const stale = await markPreparedStaleV4({ run: noPrompt, kind,
+          foundation: { attemptId: active.attemptId, freshnessPolicyVersion: active.freshnessPolicyVersion },
+          nonceEvidence: f.nonceEvidence, staleReason: f.outcome === "STALE_NONCE" ? "NONCE_MISMATCH" : "PRICE_REPORT_EXPIRED",
+          id: this.#deps.ids.eventId(), at: this.#deps.clock.nowIso() });
+        await this.#deps.repository.update(runId, currentRevision, stale);
+      }
+      throw new OrchestrationError(releasePreflight.reason === "AUTHORIZATION_DENIED" ? "AUTHORIZATION_POLICY_REFUSED" : "FRESHNESS_CHECK_FAILED");
+    }
+    // Rebind the intent and durable nonce evidence to this final evaluation.
+    // This transient projection is never written as PREPARED. One final CAS
+    // stores the refreshed evidence and the sole authority winner together.
+    const active = getActiveAttempt(op);
+    current = await recordWalletPromptAuthorizationV4({
+      run: { ...current, operations: [{ ...current.operations[0], stage: "PREPARED", walletPromptAuthorization: null }, current.operations[1], current.operations[2]] } as ExecutionRunV4,
+      kind, foundation: { attemptId: active.attemptId, freshnessPolicyVersion: active.freshnessPolicyVersion },
+      nonceEvidence: releasePreflight.freshness.nonceEvidence,
+      semanticAuthorization: releasePreflight.semanticAuthorization,
+      id: this.#deps.ids.eventId(), at: releasePreflight.freshness.nonceEvidence!.observedAt,
+    });
 
     // SERVER-GENERATED unique bounded invocationAttemptId
     const invocationAttemptId =
@@ -1766,6 +1831,23 @@ export class ExecutionV4Orchestrator {
     if (initialOp.blockchainTxHash === null) {
       throw new IllegalStateTransitionError();
     }
+
+    if (current.terminalOutcome !== null || current.status === "RECONCILIATION_REQUIRED" ||
+      initialOp.stage === "READ_BACK_VERIFIED") throw new IllegalStateTransitionError();
+    const trackingEvents = current.events.filter((event) => event.type === "TRACK_EXECUTION_RESERVED");
+    const now = this.#deps.clock.nowIso();
+    const last = trackingEvents.at(-1);
+    if (trackingEvents.length >= 30 || (last && Date.parse(now) - Date.parse(last.at) < 2000)) {
+      throw new OrchestrationError("TRACKING_BUDGET_EXHAUSTED");
+    }
+    // Reserve before RPC, including failed/missing-transaction polls. Revision
+    // CAS makes reloads, concurrent requests and process restarts share a budget.
+    current = await this.#deps.repository.update(runId, current.revision, {
+      ...current, updatedAt: now, events: [...current.events, {
+        id: this.#deps.ids.eventId(), sequence: current.events.length + 1,
+        type: "TRACK_EXECUTION_RESERVED", at: now, actor: "SERVER", operationKind: "TOKENIZE",
+      }],
+    }) as ExecutionRunV4;
 
     let rpcEvaluation: TransactionComparisonEvaluation | undefined;
     let receiptEvaluation: ReceiptFinalityEvaluation | undefined;

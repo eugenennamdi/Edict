@@ -38,8 +38,8 @@ const sections = [
   {
     id: "allocation",
     number: "03",
-    title: "Investor Allocation",
-    description: "Specify the initial whitelisted investor and planned mint allocation.",
+    title: "Future allocation · unavailable",
+    description: "Reference information only. Investor access and minting are unavailable and are excluded from this approval and execution.",
   },
 ] as const;
 

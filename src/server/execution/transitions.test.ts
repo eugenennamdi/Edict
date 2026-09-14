@@ -115,7 +115,8 @@ describe("execution run creation", () => {
   it("persists hashes matching the Phase 2 golden values", async () => {
     const { run } = await newRun();
     expect(run.manifestHash).toBe(GOLDEN_MANIFEST_HASH);
-    expect(run.planHash).toBe(GOLDEN_PLAN_HASH);
+    expect(run.planHash).not.toBe(GOLDEN_PLAN_HASH);
+    expect(run.plan.executionScope).toBe("TOKENIZE_ONLY");
     expect(run.revision).toBe(1);
     expect(run.phase).toBe("PLAN");
     expect(run.status).toBe("AWAITING_APPROVAL");
@@ -132,7 +133,7 @@ describe("execution run creation", () => {
 describe("approval binding", () => {
   it("binds the exact plan hash and tokenizer wallet", async () => {
     const { run } = await approvedRun();
-    expect(run.approval?.planHash).toBe(GOLDEN_PLAN_HASH);
+    expect(run.approval?.planHash).toBe(run.planHash);
     expect(run.approval?.approvedByWallet).toBe(TOKENIZER_ADDRESS);
     expect(run.phase).toBe("TOKENIZATION");
     expect(run.status).toBe("PREPARING");

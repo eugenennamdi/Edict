@@ -159,7 +159,7 @@ const executionPlanBodyV1Schema = z.strictObject({
     role: z.literal("tokenizer"),
     walletAddress: z.string().regex(/^0x[0-9a-f]{40}$/),
   }),
-  operations: z.tuple([
+  operations: z.union([z.tuple([tokenizeOperationSchema, confirmTokenizationOperationSchema]), z.tuple([
     tokenizeOperationSchema,
     confirmTokenizationOperationSchema,
     whitelistOperationSchema,
@@ -167,7 +167,7 @@ const executionPlanBodyV1Schema = z.strictObject({
     mintOperationSchema,
     confirmMintOperationSchema,
     verifyDeploymentOperationSchema,
-  ]),
+  ])]),
 });
 
 const executionPlanV1Schema = executionPlanBodyV1Schema.extend({
@@ -215,6 +215,7 @@ export function validateExecutionPlanV1(input: unknown): ExecutionPlanValidation
 
 export async function buildExecutionPlanV1(
   manifest: NormalizedAssetManifestV1,
+  scope: "TOKENIZE_ONLY" | "LEGACY_FULL" = "LEGACY_FULL",
 ): Promise<ExecutionPlanV1> {
   const snapshot = getTrustedManifestSnapshot(manifest);
   if (!snapshot) {
@@ -377,7 +378,7 @@ export async function buildExecutionPlanV1(
     ] as const,
   };
 
-  const bodyResult = executionPlanBodyV1Schema.safeParse(candidateBody);
+  const bodyResult = executionPlanBodyV1Schema.safeParse({ ...candidateBody, operations: scope === "TOKENIZE_ONLY" ? candidateBody.operations.slice(0, 2) : candidateBody.operations });
   if (!bodyResult.success) {
     throw new ExecutionPlanBuildError("INTERNAL_PLAN_INVARIANT");
   }

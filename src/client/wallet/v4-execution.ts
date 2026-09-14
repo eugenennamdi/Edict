@@ -87,7 +87,7 @@ export async function executeSendAuthorizedEnvelopeFromUserAction(input: {
 
   let rawEnvelope: SendAuthorizedEnvelopeV1;
   try {
-    rawEnvelope = await input.gateway.authorize(input.runId, input.expectedRevision);
+    rawEnvelope = await input.gateway.execute(input.runId, input.expectedRevision);
   } catch (error) {
     if (!(error instanceof WalletExecutionGatewayError)) {
       throw new WalletBoundaryError("AUTHORIZATION_REQUEST_REFUSED");

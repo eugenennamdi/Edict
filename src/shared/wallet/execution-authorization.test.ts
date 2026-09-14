@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   createInitialFeeAuthorizationV1,
-  createServerBoundedFeeAuthorizationV1,
   evaluateFeeAuthorizationV1,
   feeAuthorizationV1Schema,
   hashWalletExecutionIntentV1,
   validateWalletExecutionIntentV1,
   type WalletExecutionIntentV1,
 } from "./execution-authorization";
+import { createServerBoundedFeeAuthorizationV1 } from "@/server/orchestration/fee-authorization-policy";
 
 const FROM = "0x1111111111111111111111111111111111111111";
 const TO = "0x4444444444444444444444444444444444444444";

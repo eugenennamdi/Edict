@@ -128,6 +128,15 @@ export type PublicExecutionPreparation = Readonly<{
 }>;
 
 export const publicRunProjectionSchema = z.strictObject({
+  executablePlan: z.boolean().optional(),
+  executeEligible: z.boolean().optional(),
+  trackingRemaining: z.number().int().min(0).max(30).optional(),
+  tokenizationResult: z.strictObject({
+    tokenAddress: walletSchema, escrowAddress: walletSchema.nullable(),
+    tokenizationId: z.string().regex(/^[1-9][0-9]*$/).nullable(),
+    transactionHash: transactionHashSchema, verifiedAt: isoUtcSchema,
+    verificationStatus: z.literal("VERIFIED"),
+  }).nullable().optional(),
   id: publicRunIdSchema,
   schemaVersion: z.enum(["1.0", "2.0", "3.0", "4.0"]),
   manifestHash: digestSchema,
@@ -205,7 +214,7 @@ function assertExecutionProjection(run: PublicRunProjection): void {
       : (tokenization.stage === "PREPARE_INTENT" || tokenization.stage === "REPREPARE_INTENT") &&
           run.status === "PREPARING"
         ? "PREPARATION_PENDING"
-        : tokenization.stage === "PREPARED" && run.status === "AWAITING_WALLET"
+        : ["PREPARED", "WALLET_PROMPT_RECORDED"].includes(tokenization.stage) && run.status === "AWAITING_WALLET"
           ? "PREPARED_FOR_REVIEW"
           : tokenization.stage === "PREPARED_STALE" && run.status === "AWAITING_WALLET"
             ? "PREPARED_STALE"

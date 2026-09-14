@@ -12,79 +12,47 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { AlertTriangle, CheckCircle2, WalletCards } from "lucide-react";
-import {
-  classifyWalletExecutionFailure,
-  initialWalletExecutionUiModel,
-  reduceWalletExecutionUi,
-  type WalletExecutionUiModel,
-  type WalletExecutionViewState,
-} from "./wallet-execution-ui-state";
+import { classifyWalletExecutionFailure, initialWalletExecutionUiModel, reduceWalletExecutionUi, type WalletExecutionUiModel } from "./wallet-execution-ui-state";
 
-function label(state: WalletExecutionViewState): string {
-  const labels: Record<WalletExecutionViewState, string> = {
-    WALLET_REQUIRED: "Wallet required",
-    PROVIDER_SELECTION: "Select a wallet provider",
-    ACCOUNT_ACCESS_REQUIRED: "Grant account access",
-    WRONG_CHAIN: "Switch to Ethereum Sepolia",
-    REQUIRED_SIGNER_UNAVAILABLE: "Required signer unavailable",
-    READY: "Ready for wallet prompt",
-    AUTHORIZATION_UNAVAILABLE: "Execution authorization unavailable",
-    AUTHORIZATION_POLICY_REFUSED: "TOKENIZE authorization refused",
-    FRESHNESS_CHECK_FAILED: "Freshness unconfirmed",
-    DURABLE_REFRESH_REQUIRED: "Durable refresh required",
-    PROMPT_IN_PROGRESS: "Wallet prompt in progress",
-    HASH_RECORDED: "Transaction hash recorded",
-    BROADCAST_UNCERTAIN: "Broadcast outcome uncertain",
-    RECONCILIATION_REQUIRED: "Reconciliation required",
-  };
-  return labels[state];
+function productStatus(run: PublicRunProjection): string {
+  if (run.status === "RECONCILIATION_REQUIRED") return "Needs attention";
+  if (run.status === "FAILED" || run.terminalOutcome !== null) return "Failed";
+  if (run.operations[0].stage === "READ_BACK_VERIFIED") return "Tokenized asset created";
+  if (run.operations[0].blockchainTxHash !== null) return "Verifying";
+  return "Ready to execute";
 }
 
-export function WalletExecutionSection({
-  run,
-  onRefresh,
-}: {
+export function WalletExecutionSection({ run, onRefresh }: {
   readonly run: PublicRunProjection;
   readonly onRefresh: () => Promise<void>;
 }) {
-  const prepared = run.approved && run.status === "AWAITING_WALLET" && run.operations[0].stage === "PREPARED";
-  const isStale = run.approved && run.status === "AWAITING_WALLET" && run.operations[0].stage === "PREPARED_STALE";
-  const needsPromotion = prepared && run.schemaVersion !== "4.0";
-  const canCheckReadiness = prepared && run.schemaVersion === "4.0";
-  const hasTrackableHash = run.schemaVersion === "4.0" &&
-    run.operations[0].blockchainTxHash !== null && run.phase === "TOKENIZATION" &&
-    run.terminalOutcome === null;
-  const durableReconciliation = run.status === "RECONCILIATION_REQUIRED";
-  const canTrack = hasTrackableHash && !durableReconciliation;
-  const isPreAuthorization = run.operations[0].blockchainTxHash === null;
-  const reprepareEligible = isStale && isPreAuthorization && (run.execution?.reprepareEligible ?? true);
-  const visible = prepared || hasTrackableHash || isStale;
+  const operation = run.operations[0];
+  const hasHash = operation.blockchainTxHash !== null;
+  const needsAttention = run.status === "RECONCILIATION_REQUIRED";
+  const canExecute = run.executeEligible ?? (run.executablePlan !== false && run.approved && run.phase === "TOKENIZATION" && run.terminalOutcome === null &&
+    run.execution?.reprepareEligible !== false && !hasHash && ["NOT_STARTED", "PREPARED", "PREPARED_STALE"].includes(operation.stage));
+  const canTrack = (run.trackingRemaining ?? 30) > 0 && hasHash && run.terminalOutcome === null && !needsAttention && operation.stage !== "READ_BACK_VERIFIED";
+  const visible = run.approved && (run.phase === "TOKENIZATION" || !!run.tokenizationResult || operation.stage === "READ_BACK_VERIFIED");
   const [providers, setProviders] = useState<readonly DiscoveredWallet[]>([]);
   const [model, setModel] = useState<WalletExecutionUiModel>(initialWalletExecutionUiModel);
-  const [serverReadyRevision, setServerReadyRevision] = useState<number | null>(null);
-  const [activationAction, setActivationAction] = useState<"promote" | "readiness" | "track" | "reprepare" | null>(null);
-  const [activationError, setActivationError] = useState<Readonly<{
-    revision: number;
-    message: string;
-  }> | null>(null);
-  const state = model.state;
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [executing, setExecuting] = useState(false);
+  const [trackingTick, setTrackingTick] = useState(0);
   const session = useRef<SelectedWalletSession | null>(null);
   const discovery = useRef<InjectedWalletDiscovery | null>(null);
   const busy = useRef(false);
+  const trackingPolls = useRef(0);
 
   useEffect(() => {
-    if (!canCheckReadiness || serverReadyRevision !== run.revision) return;
-    const value = new InjectedWalletDiscovery({
-      events: window,
-    });
+    if (!canExecute) return;
+    const value = new InjectedWalletDiscovery({ events: window });
     discovery.current = value;
     const update = () => {
       const list = value.list();
       setProviders(list);
       if (!session.current) setModel((current) => reduceWalletExecutionUi(current, {
-        type: "LOCAL_STATE",
-        state: list.length > 0 ? "PROVIDER_SELECTION" : "WALLET_REQUIRED",
+        type: "LOCAL_STATE", state: list.length > 0 ? "PROVIDER_SELECTION" : "WALLET_REQUIRED",
       }));
     };
     const unsubscribe = value.subscribe(update);
@@ -97,259 +65,125 @@ export function WalletExecutionSection({
       value.dispose();
       discovery.current = null;
     };
-  }, [canCheckReadiness, serverReadyRevision, run.id, run.revision]);
+  }, [canExecute, run.id]);
+
+  useEffect(() => {
+    if (!canTrack || trackingPolls.current >= 30) return;
+    let cancelled = false;
+    const delay = Math.min(2_000 * (2 ** Math.min(trackingPolls.current, 4)), 30_000);
+    const timer = window.setTimeout(() => {
+      trackingPolls.current += 1;
+      void createWalletExecutionHttpGateway().track(run.id, run.revision)
+        .then(() => cancelled ? undefined : onRefresh())
+        .catch(async () => {
+          if (!cancelled) { await onRefresh().catch(() => undefined); setTrackingTick((current) => current + 1); }
+        });
+    }, delay);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [canTrack, onRefresh, run.id, run.revision, trackingTick]);
 
   if (!visible) return null;
-
-  async function mutateActivation(action: "promote" | "readiness" | "track" | "reprepare") {
-    if (busy.current || activationAction !== null) return;
-    busy.current = true;
-    setActivationAction(action);
-    setActivationError(null);
-    try {
-      const gateway = createWalletExecutionHttpGateway();
-      const result = action === "promote"
-        ? await gateway.promote(run.id, run.revision)
-        : action === "readiness"
-          ? await gateway.readiness(run.id, run.revision)
-          : action === "reprepare"
-            ? await gateway.reprepare(run.id, run.revision)
-            : await gateway.track(run.id, run.revision);
-      if (action === "readiness" && result.schemaVersion === "4.0" &&
-        result.operations[0].stage === "PREPARED" && result.revision === run.revision) {
-        setServerReadyRevision(run.revision);
-      } else {
-        await onRefresh();
-      }
-    } catch {
-      setServerReadyRevision(null);
-      setActivationError({
-        revision: run.revision,
-        message: "The server did not confirm this action. Refresh the durable record before trying again.",
-      });
-      if (action === "reprepare") await onRefresh().catch(() => undefined);
-    } finally {
-      busy.current = false;
-      setActivationAction(null);
-    }
-  }
-
-  async function inspect(selected: SelectedWalletSession) {
-    const readiness = await selected.inspect(run.requiredSigner.walletAddress);
-    setModel((current) => reduceWalletExecutionUi(current, { type: "LOCAL_STATE", state:
-      readiness.state === "READY"
-        ? "READY"
-        : readiness.state === "UNAUTHORIZED"
-          ? "ACCOUNT_ACCESS_REQUIRED"
-          : readiness.state === "WRONG_CHAIN"
-            ? "WRONG_CHAIN"
-            : "REQUIRED_SIGNER_UNAVAILABLE" }));
-  }
 
   async function select(selectionId: string) {
     if (busy.current || model.locked || !discovery.current) return;
     session.current?.dispose();
-    const selected = discovery.current.selectFromUserAction(selectionId);
-    session.current = selected;
+    session.current = discovery.current.selectFromUserAction(selectionId);
     setSelectedId(selectionId);
-    await inspect(selected).catch(() => setModel((current) => reduceWalletExecutionUi(current, {
-      type: "LOCAL_STATE",
-      state: "WALLET_REQUIRED",
-    })));
-  }
-
-  async function connect() {
-    const selected = session.current;
-    if (!selected || busy.current || model.locked) return;
-    await selected.requestAccountsFromUserAction(run.requiredSigner.walletAddress)
-      .then(() => inspect(selected))
-      .catch(() => setModel((current) => reduceWalletExecutionUi(current, { type: "LOCAL_STATE", state: "REQUIRED_SIGNER_UNAVAILABLE" })));
-  }
-
-  async function switchNetwork() {
-    const selected = session.current;
-    if (!selected || busy.current || model.locked) return;
-    await selected.switchToSepoliaFromUserAction(run.requiredSigner.walletAddress)
-      .then(() => inspect(selected))
-      .catch(() => setModel((current) => reduceWalletExecutionUi(current, { type: "LOCAL_STATE", state: "WRONG_CHAIN" })));
+    setMessage(null);
+    setModel((current) => reduceWalletExecutionUi(current, { type: "LOCAL_STATE", state: "READY" }));
   }
 
   async function execute() {
     const selected = session.current;
-    if (!selected || busy.current || model.locked || state !== "READY") return;
+    if (!selected || busy.current || model.locked || !canExecute) return;
     busy.current = true;
+    setExecuting(true);
+    setMessage(null);
     setModel((current) => reduceWalletExecutionUi(current, { type: "START" }));
     try {
       await executeSendAuthorizedEnvelopeFromUserAction({
-        runId: run.id,
-        expectedRevision: run.revision,
+        runId: run.id, expectedRevision: run.revision,
         requiredSigner: run.requiredSigner.walletAddress,
-        wallet: selected,
-        gateway: createWalletExecutionHttpGateway(),
+        wallet: selected, gateway: createWalletExecutionHttpGateway(),
       });
       setModel((current) => reduceWalletExecutionUi(current, { type: "HASH_RECORDED" }));
       await onRefresh();
     } catch (error) {
-      const failure = classifyWalletExecutionFailure(
-        error instanceof WalletBoundaryError ? error.code : "UNKNOWN",
-      );
+      const failure = classifyWalletExecutionFailure(error instanceof WalletBoundaryError ? error.code : "UNKNOWN");
       setModel((current) => reduceWalletExecutionUi(current, failure.event));
+      const ambiguous = failure.event.type === "AMBIGUOUS" ||
+        failure.event.type === "DURABLE_RECONCILIATION";
+      setMessage(
+        ambiguous
+          ? "The wallet may have submitted the transaction. Edict will not submit another transaction. Review technical details."
+          : "Edict could not safely continue. No confirmed wallet transaction was recorded; refresh this record before trying again.",
+      );
       if (failure.refresh) await onRefresh().catch(() => undefined);
     } finally {
       busy.current = false;
+      setExecuting(false);
     }
   }
 
   return (
-    <Card className="border-border/80 shadow-xs" aria-busy={state === "PROMPT_IN_PROGRESS"}>
+    <Card className="border-border/80 shadow-xs" aria-busy={executing || model.state === "PROMPT_IN_PROGRESS"}>
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
-          <Badge variant="outline">Browser wallet boundary</Badge>
-          <Badge variant={isStale ? "destructive" : state === "HASH_RECORDED" ? "success" : "secondary"}>
-            {isStale ? "Prepared transaction expired" : label(state)}
-          </Badge>
+          <Badge variant="outline">Ethereum Sepolia</Badge>
+          <Badge variant={needsAttention ? "destructive" : hasHash ? "success" : "secondary"}>{productStatus(run)}</Badge>
         </div>
-        <CardTitle className="flex items-center gap-2 text-lg"><WalletCards className="h-4 w-4" />Wallet execution</CardTitle>
-        <CardDescription>
-          The server owns transaction authority. This browser can consume only one exact, server-issued request.
-        </CardDescription>
+        <CardTitle className="flex items-center gap-2 text-lg"><WalletCards className="h-4 w-4" />Execute mandate</CardTitle>
+        <CardDescription>Edict prepares, validates, and verifies the tokenization. You only confirm the exact transaction in your wallet.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {isStale && (
-          <div className="space-y-3">
-            <div role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-foreground space-y-2">
-              <div className="flex items-start gap-2 font-medium">
-                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
-                <span>Prepared transaction expired / stale</span>
-              </div>
-              <p className="leading-relaxed">
-                {run.execution?.staleReason === "PRICE_REPORT_EXPIRED" || (!run.execution?.staleReason && run.operations[0].stage === "PREPARED_STALE")
-                  ? "The Brickken offchain price report expired before wallet authorization could be granted (reason: PRICE_REPORT_EXPIRED)."
-                  : run.execution?.staleReason === "NONCE_MISMATCH"
-                    ? "The signer account pending nonce changed on-chain before wallet execution (reason: NONCE_MISMATCH)."
-                    : `The prepared transaction expired or became stale (reason: ${run.execution?.staleReason ?? "PRICE_REPORT_EXPIRED"}).`}
-              </p>
-              <p className="leading-relaxed font-semibold text-muted-foreground">
-                No transaction was submitted to the network and no funds were moved. No wallet prompt authorization was granted.
-              </p>
-            </div>
-
-            {reprepareEligible ? (
-              <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs space-y-2">
-                <p className="leading-relaxed text-muted-foreground">
-                  This run is pre-authorization and has never broadcast to the network. An operator can explicitly refresh / reprepare the transaction to obtain a fresh price report from Brickken.
-                </p>
-                <Button
-                  size="sm"
-                  disabled={activationAction !== null}
-                  onClick={() => void mutateActivation("reprepare")}
-                >
-                  {activationAction === "reprepare"
-                    ? "Refreshing prepared transaction…"
-                    : "Refresh prepared transaction"}
-                </Button>
-                <p className="text-[11px] text-muted-foreground">
-                  Notice: A fresh preparation will produce a new Brickken transaction ID, new calldata, and require an updated calldata commitment before execution.
-                </p>
-              </div>
-            ) : (
-              <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
-                Repreparation is not permitted for this run because wallet prompt authorization was released or a transaction hash exists.
-              </div>
-            )}
+        <div className="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs space-y-1">
+          <p><strong>Purpose:</strong> Create the approved tokenized asset</p>
+          <p><strong>Required signer:</strong> <span className="font-mono break-all">{run.requiredSigner.walletAddress}</span></p>
+          <p><strong>Network:</strong> Ethereum Sepolia</p>
+          <p><strong>Destination:</strong> Reviewed Brickken tokenization contract</p>
+          <p><strong>Estimated fee:</strong> Computed from Brickken&apos;s prepared transaction before the wallet opens</p>
+          <p><strong>Maximum fee:</strong> Server-capped per preparation, always below the 0.1 ETH policy ceiling</p>
+          {selectedId && <p><strong>Wallet:</strong> {providers.find((provider) => provider.selectionId === selectedId)?.displayName ?? "Selected browser wallet"}</p>}
+        </div>
+        {run.execution?.reprepareEligible === false && <p role="status">The replacement preparation is no longer usable. Create a new mandate to continue.</p>}
+        {canExecute && providers.length === 0 && <p className="text-xs text-muted-foreground">Install or enable a browser wallet to execute this mandate.</p>}
+        {canExecute && providers.length > 0 && selectedId === null && (
+          <div className="space-y-2"><p className="text-xs font-medium">Choose the wallet holding the required signer.</p>
+            {providers.map((provider) => <Button key={provider.selectionId} type="button" variant="outline" size="sm"
+              disabled={provider.status !== "AVAILABLE"} onClick={() => void select(provider.selectionId)}>Use {provider.displayName}</Button>)}
           </div>
         )}
-        {needsPromotion && (
-          <Button size="sm" disabled={activationAction !== null} onClick={() => void mutateActivation("promote")}>
-            {activationAction === "promote" ? "Promoting durable run…" : "Promote to execution state"}
-          </Button>
-        )}
-        {canCheckReadiness && serverReadyRevision !== run.revision && (
-          <Button size="sm" disabled={activationAction !== null} onClick={() => void mutateActivation("readiness")}>
-            {activationAction === "readiness" ? "Checking server readiness…" : "Check server readiness"}
-          </Button>
-        )}
-        {canTrack && (
-          <Button size="sm" disabled={activationAction !== null} onClick={() => void mutateActivation("track")}>
-            {activationAction === "track" ? "Tracking once…" : "Track transaction status"}
-          </Button>
-        )}
-        {durableReconciliation && (
-          <div role="alert" className="flex gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs">
-            <AlertTriangle className="h-4 w-4 shrink-0" />The durable run requires reconciliation. Edict will not authorize, resend, or replace this transaction.
-          </div>
-        )}
-        {activationError?.revision === run.revision && (
-          <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs">
-            {activationError.message}
-          </div>
-        )}
-        {providers.length > 0 && selectedId === null && (
-          <div className="space-y-2">
-            {providers.map((provider) => (
-              <Button
-                key={provider.selectionId}
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={provider.status !== "AVAILABLE"}
-                onClick={() => void select(provider.selectionId)}
-              >
-                Select {provider.displayName}
-              </Button>
-            ))}
-          </div>
-        )}
-        {selectedId && (
-          <div className="space-y-1.5 rounded-lg border border-border/60 bg-muted/30 p-2.5 text-xs">
-            <p className="font-medium text-foreground">
-              Selected provider: {providers.find((p) => p.selectionId === selectedId)?.displayName ?? selectedId}
-              {providers.find((p) => p.selectionId === selectedId)?.rdns && (
-                <span className="ml-1 text-muted-foreground font-normal">({providers.find((p) => p.selectionId === selectedId)?.rdns})</span>
-              )}
-            </p>
-            <p className="text-[11px] text-muted-foreground leading-relaxed">
-              <strong>EIP-1559 Type 0x2 Requirement:</strong> Edict prepares and authorizes exact EIP-1559 transactions. Standard EIP-1193 providers expose no pre-send capability check guaranteeing the wallet will preserve Type 0x2 without downscaling to legacy Type 0x0. Edict post-broadcast verification detects and rejects fee-model mutations.
-            </p>
-          </div>
-        )}
-        {state === "ACCOUNT_ACCESS_REQUIRED" && <Button size="sm" onClick={() => void connect()}>Grant account access</Button>}
-        {state === "WRONG_CHAIN" && <Button size="sm" onClick={() => void switchNetwork()}>Switch to Ethereum Sepolia</Button>}
-        {state === "READY" && (
-          <Button size="sm" onClick={() => void execute()}>
-            Request server authorization and open wallet
-          </Button>
-        )}
-        {state === "AUTHORIZATION_UNAVAILABLE" && (
-          <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
-            Production execution remains deny-all. No wallet transaction request was made.
-          </div>
-        )}
-        {state === "AUTHORIZATION_POLICY_REFUSED" && (
-          <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
-            This TOKENIZE run is not authorized for wallet submission. No wallet transaction request was made.
-          </div>
-        )}
-        {state === "FRESHNESS_CHECK_FAILED" && (
-          <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
-            Server freshness check could not be completed. No wallet transaction request was made.
-          </div>
-        )}
-        {state === "DURABLE_REFRESH_REQUIRED" && (
-          <div role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
-            Authorization outcome or durable revision changed. Edict refreshed the run and will not retry authorization automatically.
-          </div>
-        )}
-        {["BROADCAST_UNCERTAIN", "RECONCILIATION_REQUIRED"].includes(state) && (
-          <div role="alert" className="flex gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs">
-            <AlertTriangle className="h-4 w-4 shrink-0" />The transaction may have been broadcast. Edict will not retry it; reconciliation is required.
-          </div>
-        )}
-        {state === "HASH_RECORDED" && (
-          <div role="status" className="flex gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs">
-            <CheckCircle2 className="h-4 w-4 shrink-0" />The canonical transaction hash is durable.
-          </div>
-        )}
+        {canExecute && selectedId !== null && <Button size="sm" disabled={model.locked || executing} onClick={() => void execute()}>
+          {executing || model.state === "PROMPT_IN_PROGRESS" ? "Opening wallet…" : "Execute mandate"}
+        </Button>}
+        {canTrack && <div role="status" className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs">
+          Transaction submitted. Edict is verifying it automatically; no further submission will occur.
+        </div>}
+        {operation.stage === "READ_BACK_VERIFIED" && <div role="status" className="flex gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />Tokenized asset created and verified.
+        </div>}
+        {run.tokenizationResult && <dl className="text-xs space-y-2 break-all">
+          <div><dt>Token address</dt><dd>{run.tokenizationResult.tokenAddress}</dd></div>
+          <div><dt>Escrow</dt><dd>{run.tokenizationResult.escrowAddress ?? "Not recorded in this historical run"}</dd></div>
+          <div><dt>Tokenization ID</dt><dd>{run.tokenizationResult.tokenizationId ?? "Not recorded in this historical run"}</dd></div>
+          <div><dt>Transaction</dt><dd>{run.tokenizationResult.transactionHash}</dd></div>
+          <div><dt>Verification</dt><dd>{run.tokenizationResult.verificationStatus}</dd></div>
+        </dl>}
+        {run.trackingRemaining === 0 && operation.stage !== "READ_BACK_VERIFIED" && <p role="status">Automatic verification is paused after reaching its tracking limit. This execution needs attention.</p>}
+        {needsAttention && <div role="alert" className="flex gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs">
+          <AlertTriangle className="h-4 w-4 shrink-0" />{hasHash
+            ? "The transaction was submitted, but Edict detected an execution mismatch. Edict will not submit another transaction."
+            : "We couldn't confirm the preparation with Brickken. No wallet transaction was requested. This execution needs attention."}
+        </div>}
+        {message && <div role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">{message}</div>}
+        <details className="rounded-lg border border-border/60 p-3 text-xs">
+          <summary className="cursor-pointer font-medium">Technical details</summary>
+          <dl className="mt-3 grid gap-1 text-muted-foreground">
+            <div><dt className="inline font-medium">Durable status: </dt><dd className="inline">{run.status}</dd></div>
+            <div><dt className="inline font-medium">TOKENIZE stage: </dt><dd className="inline">{operation.stage}</dd></div>
+            {operation.blockchainTxHash && <div><dt className="inline font-medium">Transaction: </dt><dd className="inline font-mono break-all">{operation.blockchainTxHash}</dd></div>}
+          </dl>
+        </details>
       </CardContent>
     </Card>
   );

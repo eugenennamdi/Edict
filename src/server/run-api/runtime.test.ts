@@ -5,7 +5,6 @@ import {
   DenyAllSemanticAuthorizationEvaluator,
   OrchestrationError,
   TOKENIZE_ALLOWED_DESTINATION,
-  TOKENIZE_CALLDATA_COMMITMENT,
   TOKENIZE_EXECUTION_GATE,
   TOKENIZE_FUNCTION_SIGNATURE,
   REVIEWED_SEPOLIA_FACTORY,
@@ -23,7 +22,6 @@ describe("Production RunApiRuntime composition", () => {
     delete process.env.EDICT_TOKENIZE_EXECUTION_ENABLED;
     delete process.env.EDICT_TOKENIZE_ALLOWED_DESTINATION;
     delete process.env.EDICT_TOKENIZE_FUNCTION_SIGNATURE;
-    delete process.env.EDICT_TOKENIZE_CALLDATA_COMMITMENT;
     delete process.env.NEXT_PUBLIC_EDICT_TOKENIZE_EXECUTION_ENABLED;
   });
 
@@ -65,7 +63,6 @@ describe("Production RunApiRuntime composition", () => {
     process.env[TOKENIZE_EXECUTION_GATE] = "1";
     process.env[TOKENIZE_ALLOWED_DESTINATION] = REVIEWED_SEPOLIA_FACTORY;
     process.env[TOKENIZE_FUNCTION_SIGNATURE] = REVIEWED_TOKENIZE_FUNCTION_SIGNATURE;
-    process.env[TOKENIZE_CALLDATA_COMMITMENT] = `sha256:${"1".repeat(64)}`;
     expect(createRuntimeSemanticAuthorization()).toBeInstanceOf(
       TokenizeOnlySemanticAuthorizationEvaluator,
     );
@@ -78,18 +75,13 @@ describe("Production RunApiRuntime composition", () => {
     ));
   });
 
-  it("refuses malformed commitment as policy-config invalid, not gate deny-all", async () => {
+  it("does not require a transaction-specific environment commitment", () => {
     process.env[TOKENIZE_EXECUTION_GATE] = "1";
     process.env[TOKENIZE_ALLOWED_DESTINATION] = REVIEWED_SEPOLIA_FACTORY;
     process.env[TOKENIZE_FUNCTION_SIGNATURE] = REVIEWED_TOKENIZE_FUNCTION_SIGNATURE;
-    process.env[TOKENIZE_CALLDATA_COMMITMENT] = "sha256:not-64-hex";
     const evaluator = createRuntimeSemanticAuthorization();
-    expect(evaluator).toBeInstanceOf(DenyAllSemanticAuthorizationEvaluator);
+    expect(evaluator).toBeInstanceOf(TokenizeOnlySemanticAuthorizationEvaluator);
     expect(evaluator.isProductionDenyAll).toBe(false);
-    const runtime = createRunApiRuntime();
-    await expect(
-      runtime.walletExecution!.releaseSendAuthority("11111111-1111-4111-8111-111111111111", 1),
-    ).rejects.toMatchObject({ code: "AUTHORIZATION_POLICY_REFUSED" });
   });
 
   it("reads TOKENIZE policy from getServerEnv rather than dynamic process.env index access", () => {
@@ -97,7 +89,7 @@ describe("Production RunApiRuntime composition", () => {
     expect(source).toContain("env.EDICT_TOKENIZE_EXECUTION_ENABLED");
     expect(source).toContain("env.EDICT_TOKENIZE_ALLOWED_DESTINATION");
     expect(source).toContain("env.EDICT_TOKENIZE_FUNCTION_SIGNATURE");
-    expect(source).toContain("env.EDICT_TOKENIZE_CALLDATA_COMMITMENT");
+    expect(source).not.toContain("EDICT_TOKENIZE_CALLDATA_COMMITMENT");
     expect(source).not.toMatch(/createProductionSemanticAuthorizationEvaluator\(\s*process\.env\s*\)/);
     expect(source).not.toMatch(/=\s*process\.env\s*,/);
   });
@@ -107,7 +99,6 @@ describe("Production RunApiRuntime composition", () => {
       [TOKENIZE_EXECUTION_GATE]: "1",
       [TOKENIZE_ALLOWED_DESTINATION]: REVIEWED_SEPOLIA_FACTORY,
       [TOKENIZE_FUNCTION_SIGNATURE]: REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
-      [TOKENIZE_CALLDATA_COMMITMENT]: `sha256:${"1".repeat(64)}`,
     });
     expect(evaluator).toBeInstanceOf(TokenizeOnlySemanticAuthorizationEvaluator);
     expect(evaluator.isProductionDenyAll).toBe(false);
@@ -123,7 +114,6 @@ describe("Production RunApiRuntime composition", () => {
       "NEXT_PUBLIC_EDICT_TOKENIZE_EXECUTION_ENABLED",
       "NEXT_PUBLIC_EDICT_TOKENIZE_ALLOWED_DESTINATION",
       "NEXT_PUBLIC_EDICT_TOKENIZE_FUNCTION_SIGNATURE",
-      "NEXT_PUBLIC_EDICT_TOKENIZE_CALLDATA_COMMITMENT",
     ]) {
       process.env[key] = "must-not-be-public";
       expect(() => createRunApiRuntime()).toThrow(/server-only/);

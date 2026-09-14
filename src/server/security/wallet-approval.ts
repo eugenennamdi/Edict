@@ -1,4 +1,5 @@
 import "server-only";
+import { assertExecutableRun } from "../execution/capabilities";
 
 import { hashTypedData, recoverTypedDataAddress, type Hex } from "viem";
 import { z } from "zod";
@@ -101,6 +102,7 @@ export class WalletApprovalService {
   }
 
   async issueChallenge(run: ExecutionRun, expectedRevision: number): Promise<ApprovalChallenge> {
+    await assertExecutableRun(run);
     assertRunBinding(run, expectedRevision);
     const issuedAt = this.#deps.clock.nowEpochSeconds();
     const payload = challengePayloadSchema.parse({
@@ -136,6 +138,7 @@ export class WalletApprovalService {
     signature: string,
     verifiedAt: string,
   ): Promise<ApprovalProofV1> {
+    await assertExecutableRun(run);
     assertRunBinding(run, expectedRevision);
     const parsedSignature = signatureSchema.safeParse(signature);
     if (!parsedSignature.success) throw new SecurityTokenError();

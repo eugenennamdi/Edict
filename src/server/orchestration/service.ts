@@ -45,7 +45,7 @@ function assertRevision(run: ExecutionRun, expectedRevision: number): void {
 async function validatedRunPlan(run: ExecutionRun) {
   const manifest = validateAssetManifestV1(run.manifest);
   if (!manifest.ok) throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
-  const plan = await buildExecutionPlanV1(manifest.value);
+  const plan = await buildExecutionPlanV1(manifest.value, run.plan.executionScope === "TOKENIZE_ONLY" ? "TOKENIZE_ONLY" : "LEGACY_FULL");
   if (plan.manifestHash !== run.manifestHash || plan.planHash !== run.planHash) {
     throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
   }

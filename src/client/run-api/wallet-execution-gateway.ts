@@ -57,6 +57,7 @@ export type BrowserBroadcastUnknownReason =
   | "HASH_PERSISTENCE_UNCONFIRMED";
 
 export interface WalletExecutionHttpGateway {
+  execute(runId: string, expectedRevision: number): Promise<SendAuthorizedEnvelopeV1>;
   promote(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
   readiness(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
   reprepare(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
@@ -199,6 +200,19 @@ export function createWalletExecutionHttpGateway(
   transport: WalletExecutionHttpTransport = (path, options) => fetch(path, options),
 ): WalletExecutionHttpGateway {
   return Object.freeze({
+    async execute(runId: string, expectedRevision: number) {
+      const parsedRunId = publicRunIdSchema.safeParse(runId);
+      const revision = revisionSchema.safeParse(expectedRevision);
+      if (!parsedRunId.success || !revision.success) {
+        throw new WalletExecutionGatewayError("MALFORMED_REQUEST");
+      }
+      return envelopeFromResponse(await post(
+        transport,
+        `/api/runs/${parsedRunId.data}/execute`,
+        { expectedRevision: revision.data },
+        true,
+      ));
+    },
     async promote(runId: string, expectedRevision: number) {
       return mutateRevision(transport, runId, expectedRevision, "promote");
     },

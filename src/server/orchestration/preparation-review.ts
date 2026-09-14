@@ -1,4 +1,5 @@
 import "server-only";
+import { isExecutablePlan } from "../execution/capabilities";
 
 import {
   createPreparedTransactionReviewV1,
@@ -27,6 +28,7 @@ function exactApprovedTokenization(run: ExecutionRun): WriteOperation | null {
 export function nextPreparationOperation(run: ExecutionRun): WriteOperation {
   const operation = exactApprovedTokenization(run);
   if (
+    !isExecutablePlan(run.plan) ||
     operation === null ||
     run.terminalOutcome !== null ||
     run.status !== "PREPARING" ||
@@ -112,7 +114,7 @@ export async function deriveExecutionPreparationProjection(
     (operation.stage === "PREPARE_INTENT" || operation.stage === "REPREPARE_INTENT")
   ) {
     preparationStatus = "PREPARATION_PENDING";
-  } else if (run.status === "AWAITING_WALLET" && operation.stage === "PREPARED") {
+  } else if (run.status === "AWAITING_WALLET" && ["PREPARED", "WALLET_PROMPT_RECORDED"].includes(operation.stage)) {
     preparationStatus = "PREPARED_FOR_REVIEW";
     transactionReview = await preparedReview(run, operation);
   } else if (run.status === "AWAITING_WALLET" && operation.stage === "PREPARED_STALE") {
@@ -128,7 +130,8 @@ export async function deriveExecutionPreparationProjection(
     const hasAuth = "walletPromptAuthorization" in operation &&
       (operation as { walletPromptAuthorization?: unknown }).walletPromptAuthorization !== null;
     const hasHash = operation.blockchainTxHash !== null;
-    reprepareEligible = !hasAuth && !hasHash;
+    reprepareEligible = !hasAuth && !hasHash && "preparationAttempts" in operation &&
+      Array.isArray(operation.preparationAttempts) && operation.preparationAttempts.length < 2;
   } else if (
     run.status === "RECONCILIATION_REQUIRED" &&
     operation.stage === "PREPARE_UNKNOWN"

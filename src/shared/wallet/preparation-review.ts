@@ -1,4 +1,4 @@
-import { canonicalizeJson, hashCanonicalJson } from "@/core";
+import { canonicalizeJson, hashCanonicalJson, sha256Utf8 } from "@/core";
 import { z } from "zod";
 import { walletTransactionRequestV1Schema, type WalletTransactionRequestV1 } from "./transaction";
 
@@ -42,6 +42,7 @@ export interface PreparedTransactionReviewV1
   readonly walletConfirmation: "NOT_REQUESTED";
   readonly integrity: {
     readonly algorithm: "SHA-256";
+    readonly calldataCommitment: `sha256:${string}`;
     readonly preparedTransactionFingerprint: `sha256:${string}`;
   };
 }
@@ -77,6 +78,7 @@ export const preparedTransactionReviewV1Schema = z.strictObject({
   walletConfirmation: z.literal("NOT_REQUESTED"),
   integrity: z.strictObject({
     algorithm: z.literal("SHA-256"),
+    calldataCommitment: digestSchema,
     preparedTransactionFingerprint: digestSchema,
   }),
 });
@@ -114,11 +116,15 @@ export async function createPreparedTransactionReviewV1(
 ): Promise<PreparedTransactionReviewV1> {
   const parsed = preparedTransactionReviewV1Schema.omit({ integrity: true }).parse(input);
   const frozen = deepFreeze(parsed) as Omit<PreparedTransactionReviewV1, "integrity">;
-  const { hash } = await hashCanonicalJson(identityFromReview(frozen));
+  const [{ hash }, calldataCommitment] = await Promise.all([
+    hashCanonicalJson(identityFromReview(frozen)),
+    sha256Utf8(frozen.walletRequest.data ?? ""),
+  ]);
   return deepFreeze({
     ...frozen,
     integrity: {
       algorithm: "SHA-256" as const,
+      calldataCommitment,
       preparedTransactionFingerprint: hash,
     },
   });
@@ -150,7 +156,8 @@ export async function validatePreparedTransactionReviewV1(
   });
   if (
     rebuilt.integrity.preparedTransactionFingerprint !==
-    parsed.integrity.preparedTransactionFingerprint
+      parsed.integrity.preparedTransactionFingerprint ||
+    rebuilt.integrity.calldataCommitment !== parsed.integrity.calldataCommitment
   ) {
     throw new Error("PREPARED_TRANSACTION_FINGERPRINT_MISMATCH");
   }
