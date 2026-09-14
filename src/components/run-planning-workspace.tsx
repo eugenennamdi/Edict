@@ -15,13 +15,13 @@ import {
 import { MandateForm } from "./planning-form";
 import { ApprovalReadinessSection } from "./approval/approval-section";
 import { WalletExecutionSection } from "./wallet-execution-section";
+import { GlobalWalletProvider, WalletHeaderControl, ConnectWalletModal } from "@/components/wallet";
 import {
   DraftSummary,
   PlanDocument,
   RecordedManifest,
   RecordDetails,
 } from "./planning-artifacts";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -127,48 +127,34 @@ export default function RunPlanningWorkspace({
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col font-sans antialiased selection:bg-primary selection:text-primary-foreground">
-      <a
-        className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 z-50 px-4 py-2 bg-primary text-primary-foreground rounded-md shadow-md text-sm font-medium"
-        href="#workspace"
-      >
-        Skip to workspace
-      </a>
+    <GlobalWalletProvider>
+      <div className="min-h-screen bg-background text-foreground flex flex-col font-sans antialiased selection:bg-primary selection:text-primary-foreground">
+        <a
+          className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 z-50 px-4 py-2 bg-primary text-primary-foreground rounded-md shadow-md text-sm font-medium"
+          href="#workspace"
+        >
+          Skip to workspace
+        </a>
 
-      {/* Institutional Top Chrome Header */}
-      <header className="sticky top-0 z-40 w-full border-b border-border/80 bg-background/80 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Image
-              src="/logo.png"
-              alt="Edict"
-              width={64}
-              height={24}
-              className="h-6 w-auto object-contain dark:invert"
-            />
-            <span className="text-xs text-muted-foreground hidden sm:inline border-l border-border/60 pl-3">
-              Tokenization, as code.
-            </span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-secondary/80 border border-border/70 text-xs">
+        {/* Institutional Top Chrome Header */}
+        <header className="sticky top-0 z-40 w-full border-b border-border/80 bg-background/80 backdrop-blur-md">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
+            <div className="flex items-center gap-3">
               <Image
-                src="/ethereum-logo.svg"
-                alt="Ethereum"
-                width={9}
-                height={14}
-                className="h-3.5 w-auto shrink-0"
+                src="/logo.png"
+                alt="Edict"
+                width={64}
+                height={24}
+                className="h-6 w-auto object-contain dark:invert"
               />
-              <span className="font-medium text-foreground text-[11px] sm:text-xs">Ethereum Sepolia</span>
-              <Separator orientation="vertical" className="h-3 bg-border" />
-              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 font-medium">
-                Sandbox
-              </Badge>
+              <span className="text-xs text-muted-foreground hidden sm:inline border-l border-border/60 pl-3">
+                Tokenization, as code.
+              </span>
             </div>
+
+            <WalletHeaderControl />
           </div>
-        </div>
-      </header>
+        </header>
 
       {/* Main Workspace */}
       <main id="workspace" className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full space-y-6">
@@ -573,6 +559,8 @@ export default function RunPlanningWorkspace({
           </div>
         </div>
       </footer>
+      <ConnectWalletModal />
     </div>
+  </GlobalWalletProvider>
   );
 }

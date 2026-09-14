@@ -9,6 +9,7 @@ import {
   type ApprovalReadinessState,
   type ApprovalReadinessTarget,
 } from "./approval-controller";
+import { useGlobalWallet } from "@/client/wallet/global-wallet-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -107,6 +108,7 @@ function ActiveReadiness({ view, target, acceptDurableRun }: {
   const controller = useRef<ReturnType<typeof createBrowserApprovalReadinessController> | null>(null);
   const approveButton = useRef<HTMLButtonElement>(null);
   const approvalMessage = useRef<HTMLDivElement>(null);
+  const globalWallet = useGlobalWallet();
   const [state, setState] = useState(() => initialApprovalReadinessState(target));
 
   useEffect(() => {
@@ -126,6 +128,12 @@ function ActiveReadiness({ view, target, acceptDurableRun }: {
   useEffect(() => {
     controller.current?.updateTarget(target);
   }, [target]);
+
+  useEffect(() => {
+    if (globalWallet.selectedProvider && controller.current) {
+      controller.current.chooseProvider(globalWallet.selectedProvider.selectionId);
+    }
+  }, [globalWallet.selectedProvider]);
 
   const selected = state.selectedProviderId !== null;
   const chosen = state.candidateSelectionId !== null;

@@ -2,12 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createWalletExecutionHttpGateway } from "@/client/run-api/wallet-execution-gateway";
-import { InjectedWalletDiscovery } from "@/client/wallet/discovery";
+import { useGlobalWallet } from "@/client/wallet/global-wallet-context";
 import { WalletBoundaryError } from "@/client/wallet/errors";
-import type { SelectedWalletSession } from "@/client/wallet/session";
 import { executeSendAuthorizedEnvelopeFromUserAction } from "@/client/wallet/v4-execution";
 import type { PublicRunProjection } from "@/shared/run";
-import type { DiscoveredWallet } from "@/shared/wallet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,6 +19,12 @@ import {
   type WalletExecutionUiModel,
 } from "./wallet-execution-ui-state";
 
+function shortenAddress(address: string | null): string {
+  if (!address) return "";
+  if (address.length <= 10) return address;
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
 function productStatus(run: PublicRunProjection): string {
   if (run.status === "RECONCILIATION_REQUIRED") return "Needs attention";
   if (run.status === "FAILED" || run.terminalOutcome !== null) return "Failed";
@@ -33,6 +37,7 @@ export function WalletExecutionSection({ run, onRefresh }: {
   readonly run: PublicRunProjection;
   readonly onRefresh: () => Promise<void>;
 }) {
+  const wallet = useGlobalWallet();
   const operation = run.operations[0];
   const hasHash = operation.blockchainTxHash !== null;
   const needsAttention = run.status === "RECONCILIATION_REQUIRED";
@@ -40,54 +45,17 @@ export function WalletExecutionSection({ run, onRefresh }: {
     run.execution?.reprepareEligible !== false && !hasHash && ["NOT_STARTED", "PREPARED", "PREPARED_STALE"].includes(operation.stage));
   const canTrack = (run.trackingRemaining ?? 30) > 0 && hasHash && run.terminalOutcome === null && !needsAttention && operation.stage !== "READ_BACK_VERIFIED";
   const visible = run.approved && (run.phase === "TOKENIZATION" || !!run.tokenizationResult || operation.stage === "READ_BACK_VERIFIED");
-  const [providers, setProviders] = useState<readonly DiscoveredWallet[]>([]);
   const [model, setModel] = useState<WalletExecutionUiModel>(initialWalletExecutionUiModel);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<WalletExecutionErrorDetail | null>(null);
   const [executing, setExecuting] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [trackingTick, setTrackingTick] = useState(0);
-  const session = useRef<SelectedWalletSession | null>(null);
-  const discovery = useRef<InjectedWalletDiscovery | null>(null);
-  const selectedIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    selectedIdRef.current = selectedId;
-  }, [selectedId]);
   const busy = useRef(false);
   const trackingPolls = useRef(0);
 
-  useEffect(() => {
-    if (!canExecute) return;
-    const value = new InjectedWalletDiscovery({ events: window });
-    discovery.current = value;
-    const update = () => {
-      const list = value.list();
-      setProviders(list);
-      if (!session.current) {
-        const candidate = (selectedIdRef.current ? list.find((p) => p.selectionId === selectedIdRef.current) : null) ??
-          (list.length === 1 && list[0].status === "AVAILABLE" ? list[0] : null);
-        if (candidate && candidate.status === "AVAILABLE") {
-          session.current = value.selectFromUserAction(candidate.selectionId);
-          setSelectedId(candidate.selectionId);
-          setModel((current) => reduceWalletExecutionUi(current, { type: "LOCAL_STATE", state: "READY" }));
-        } else {
-          setModel((current) => reduceWalletExecutionUi(current, {
-            type: "LOCAL_STATE", state: list.length > 0 ? "PROVIDER_SELECTION" : "WALLET_REQUIRED",
-          }));
-        }
-      }
-    };
-    const unsubscribe = value.subscribe(update);
-    value.start();
-    update();
-    return () => {
-      unsubscribe();
-      session.current?.dispose();
-      session.current = null;
-      value.dispose();
-      discovery.current = null;
-    };
-  }, [canExecute, run.id]);
+  const isConnected = wallet.status === "CONNECTED" && wallet.session !== null && wallet.address !== null;
+  const isSignerMismatch = isConnected && (wallet.address?.toLowerCase() !== run.requiredSigner.walletAddress.toLowerCase());
+  const isNetworkMismatch = isConnected && !wallet.isSepolia;
 
   useEffect(() => {
     if (!canTrack || trackingPolls.current >= 30) return;
@@ -105,15 +73,6 @@ export function WalletExecutionSection({ run, onRefresh }: {
   }, [canTrack, onRefresh, run.id, run.revision, trackingTick]);
 
   if (!visible) return null;
-
-  async function select(selectionId: string) {
-    if (busy.current || model.locked || !discovery.current) return;
-    session.current?.dispose();
-    session.current = discovery.current.selectFromUserAction(selectionId);
-    setSelectedId(selectionId);
-    setErrorDetail(null);
-    setModel((current) => reduceWalletExecutionUi(current, { type: "LOCAL_STATE", state: "READY" }));
-  }
 
   async function prepare() {
     if (busy.current || preparing || model.locked || !canExecute) return;
@@ -135,7 +94,7 @@ export function WalletExecutionSection({ run, onRefresh }: {
   }
 
   async function execute() {
-    const selected = session.current;
+    const selected = wallet.session;
     if (!selected || busy.current || model.locked || !canExecute) return;
     busy.current = true;
     setExecuting(true);
@@ -179,17 +138,39 @@ export function WalletExecutionSection({ run, onRefresh }: {
           <p><strong>Destination:</strong> Reviewed Brickken tokenization contract</p>
           <p><strong>Estimated fee:</strong> Computed from Brickken&apos;s prepared transaction before the wallet opens</p>
           <p><strong>Maximum fee:</strong> Server-capped per preparation, always below the 0.1 ETH policy ceiling</p>
-          {selectedId && <p><strong>Wallet:</strong> {providers.find((provider) => provider.selectionId === selectedId)?.displayName ?? "Selected browser wallet"}</p>}
+          <p><strong>Wallet:</strong> {isConnected ? `${wallet.selectedProvider?.displayName ?? "Connected wallet"} · ${shortenAddress(wallet.address)}` : "Not connected"}</p>
         </div>
         {run.execution?.reprepareEligible === false && <p role="status">The replacement preparation is no longer usable. Create a new mandate to continue.</p>}
-        {canExecute && providers.length === 0 && <p className="text-xs text-muted-foreground">Install or enable a browser wallet to execute this mandate.</p>}
-        {canExecute && providers.length > 0 && selectedId === null && (
-          <div className="space-y-2"><p className="text-xs font-medium">Choose the wallet holding the required signer.</p>
-            {providers.map((provider) => <Button key={provider.selectionId} type="button" variant="outline" size="sm"
-              disabled={provider.status !== "AVAILABLE"} onClick={() => void select(provider.selectionId)}>Use {provider.displayName}</Button>)}
+        {canExecute && !isConnected && (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Connect your browser wallet to execute this mandate.</p>
+            <Button size="sm" type="button" onClick={wallet.openSelector}>
+              Connect wallet
+            </Button>
           </div>
         )}
-        {canExecute && selectedId !== null && (
+        {canExecute && isConnected && isNetworkMismatch && (
+          <div role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs space-y-2">
+            <p className="font-semibold text-amber-800 dark:text-amber-300">Wallet is not on Ethereum Sepolia.</p>
+            <p className="text-muted-foreground">This mandate must be executed on Ethereum Sepolia (Sandbox).</p>
+            <Button size="sm" variant="outline" type="button" onClick={() => void wallet.switchChain()}>
+              Switch to Ethereum Sepolia
+            </Button>
+          </div>
+        )}
+        {canExecute && isConnected && !isNetworkMismatch && isSignerMismatch && (
+          <div role="status" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs space-y-2">
+            <p className="font-semibold text-amber-800 dark:text-amber-300">Wallet account doesn&apos;t match this mandate.</p>
+            <div className="space-y-1 font-mono text-[11px]">
+              <p><span className="text-muted-foreground">Required: </span><span className="break-all">{run.requiredSigner.walletAddress}</span></p>
+              <p><span className="text-muted-foreground">Connected: </span><span className="break-all">{wallet.address}</span></p>
+            </div>
+            <Button size="sm" variant="outline" type="button" onClick={wallet.openSelector}>
+              Switch account / wallet
+            </Button>
+          </div>
+        )}
+        {canExecute && isConnected && !isNetworkMismatch && !isSignerMismatch && (
           <div className="space-y-2">
             {operation.stage === "PREPARED" && (
               <p className="text-xs text-muted-foreground">
