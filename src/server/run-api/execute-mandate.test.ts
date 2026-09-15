@@ -87,4 +87,19 @@ describe("Execute mandate product command", () => {
     expect(h.prepareNextOperation).not.toHaveBeenCalled();
     expect(h.reprepareOperation).not.toHaveBeenCalled();
   });
+
+  it("stops and returns 503 FRESHNESS_CHECK_FAILED when prepared attempt freshness check fails, without releasing authority", async () => {
+    const h = harness(run("PREPARED", 4, "4.0"));
+    h.evaluateAndApplyPreparedFreshness.mockResolvedValueOnce({
+      evaluation: { eligible: false, outcome: "PRICE_REPORT_EXPIRED" } as never,
+      run: run("PREPARED_STALE", 5, "4.0"),
+    });
+    const response = await executeMandateHandler(request(4), RUN_ID, options(h.runtime));
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toEqual({ ok: false, error: { code: "FRESHNESS_CHECK_FAILED" } });
+    expect(h.evaluateAndApplyPreparedFreshness).toHaveBeenCalledOnce();
+    expect(h.reprepareOperation).not.toHaveBeenCalled();
+    expect(h.releaseSendAuthority).not.toHaveBeenCalled();
+  });
 });

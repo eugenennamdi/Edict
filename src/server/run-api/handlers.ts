@@ -407,8 +407,8 @@ export async function executeMandateHandler(
         run.revision,
       );
       run = freshness.run;
-      if (run.operations[0].stage === "PREPARED_STALE") {
-        run = await api.walletExecution.reprepareOperation(runId, run.revision);
+      if (!freshness.evaluation.eligible) {
+        throw new OrchestrationError("FRESHNESS_CHECK_FAILED");
       }
     }
 

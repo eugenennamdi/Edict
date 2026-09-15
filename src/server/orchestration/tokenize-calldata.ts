@@ -4,6 +4,7 @@ import { decodeFunctionData, decodeFunctionResult, encodeFunctionData, parseAbi,
 import type { ExecutionRun } from "../execution/types";
 import type { TrustedSepoliaRpcClient } from "../rpc/types";
 import { getPriceReportSafetyBufferSeconds } from "../rpc/freshness";
+import { decodeContractRevertData } from "../rpc/http-transport";
 import { ERC1967_IMPLEMENTATION_SLOT, REVIEWED_SEPOLIA_FACTORY, REVIEWED_SEPOLIA_IMPLEMENTATION, REVIEWED_TOKENIZE_FUNCTION_SIGNATURE, implementationAddressFromErc1967Slot } from "./tokenize-receipt-binding";
 
 export const TOKENIZE_ABI = parseAbi([`function ${REVIEWED_TOKENIZE_FUNCTION_SIGNATURE}`]);
@@ -33,7 +34,7 @@ export function canonicalTokenizeCall(run: ExecutionRun, data: string) {
       permit[3] >= report[1] && [27, 28].includes(permit[4]) &&
       permit[5] !== zeroHash && permit[6] !== zeroHash;
     if (decoded.functionName !== "newTokenization" ||
-      report[2].toLowerCase() !== signer || report[3].toLowerCase() !== signer ||
+      report[2].toLowerCase() !== signer.toLowerCase() || report[3].toLowerCase() !== signer.toLowerCase() ||
       config[4] === zeroAddress || (config[5] === zeroAddress) !== config[6] ||
       report[0] === zeroAddress || report[4] <= 0n ||
       !/^0x[0-9a-fA-F]{130}$/.test(report[6]) ||
@@ -53,6 +54,39 @@ export function canonicalTokenizeCall(run: ExecutionRun, data: string) {
   } catch { return refuse(); }
 }
 
+export type TokenizeFreshnessReason =
+  | "PRICE_REPORT_EXPIRED"
+  | "PRICE_REPORT_TOO_CLOSE_TO_EXPIRY";
+
+export class TokenizeFreshnessError extends Error {
+  readonly code = "FRESHNESS_CHECK_FAILED" as const;
+  readonly reason: TokenizeFreshnessReason;
+
+  constructor(reason: TokenizeFreshnessReason, message?: string) {
+    super(message ?? `Tokenization freshness check failed: ${reason}`);
+    this.name = "TokenizeFreshnessError";
+    this.reason = reason;
+  }
+}
+
+export function isExpiredSignatureRevert(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidates: unknown[] = [
+    (error as { data?: unknown }).data,
+    (error as { cause?: { data?: unknown } }).cause?.data,
+    (error as { error?: { data?: unknown } }).error?.data,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string") {
+      const lower = candidate.toLowerCase();
+      if (lower.startsWith("0xdba17e9a")) return true;
+      const decoded = decodeContractRevertData(candidate);
+      if (decoded?.errorName === "ExpiredSignature") return true;
+    }
+  }
+  return false;
+}
+
 /** Only read RPCs. getFees validates the exact report signature, EIP-712
  * chain/factory domain and current FACTORY_OFFCHAIN_REPORTER_ROLE. */
 export async function validateTokenizeProtocol(run: ExecutionRun, data: string, rpc: TrustedSepoliaRpcClient): Promise<void> {
@@ -60,7 +94,19 @@ export async function validateTokenizeProtocol(run: ExecutionRun, data: string, 
   if (!rpc.call || !rpc.getCode) refuse();
   await rpc.verifyChain();
   const block = await rpc.getLatestBlock();
-  if (block.timestamp === null || BigInt(block.timestamp) + BigInt(getPriceReportSafetyBufferSeconds()) >= report[4]) refuse();
+  if (block.timestamp === null) refuse();
+
+  const blockTime = BigInt(block.timestamp);
+  const deadline = report[4];
+  const safetyBuffer = BigInt(getPriceReportSafetyBufferSeconds());
+
+  if (blockTime >= deadline) {
+    throw new TokenizeFreshnessError("PRICE_REPORT_EXPIRED", "Price report deadline expired");
+  }
+  if (blockTime + safetyBuffer >= deadline) {
+    throw new TokenizeFreshnessError("PRICE_REPORT_TOO_CLOSE_TO_EXPIRY", "Price report is within safety buffer of expiry");
+  }
+
   const slot = await rpc.getStorageAt(REVIEWED_SEPOLIA_FACTORY, ERC1967_IMPLEMENTATION_SLOT, block.number);
   if (implementationAddressFromErc1967Slot(slot) !== REVIEWED_SEPOLIA_IMPLEMENTATION) refuse();
   for (const address of [REVIEWED_SEPOLIA_FACTORY, REVIEWED_SEPOLIA_IMPLEMENTATION, config[4], ...(config[6] ? [] : [config[5]])]) {
@@ -70,7 +116,20 @@ export async function validateTokenizeProtocol(run: ExecutionRun, data: string, 
   const tokenImplementation = decodeFunctionResult({ abi: TOKEN_UNITS_ABI, functionName: "implementation", data: await rpc.call({ to: beacon, data: encodeFunctionData({ abi: TOKEN_UNITS_ABI, functionName: "implementation" }) }, block.number) as `0x${string}` });
   const decimals = decodeFunctionResult({ abi: TOKEN_UNITS_ABI, functionName: "decimals", data: await rpc.call({ to: tokenImplementation, data: encodeFunctionData({ abi: TOKEN_UNITS_ABI, functionName: "decimals" }) }, block.number) as `0x${string}` });
   if (beacon === zeroAddress || tokenImplementation === zeroAddress || decimals !== 18) refuse();
-  const result = await rpc.call({ to: REVIEWED_SEPOLIA_FACTORY, data: encodeFunctionData({ abi: FEES_ABI, functionName: "getFees", args: [report] }) }, block.number);
+
+  let result: string;
+  try {
+    result = (await rpc.call(
+      { to: REVIEWED_SEPOLIA_FACTORY, data: encodeFunctionData({ abi: FEES_ABI, functionName: "getFees", args: [report] }) },
+      block.number,
+    )) as `0x${string}`;
+  } catch (err) {
+    if (isExpiredSignatureRevert(err)) {
+      throw new TokenizeFreshnessError("PRICE_REPORT_EXPIRED", "getFees reverted with ExpiredSignature");
+    }
+    refuse();
+  }
+
   const [amount, reporter] = decodeFunctionResult({ abi: FEES_ABI, functionName: "getFees", data: result as `0x${string}` });
   if (amount !== report[1] || reporter === zeroAddress) refuse();
   const nonce = decodeFunctionResult({ abi: FEES_ABI, functionName: "nonces", data: await rpc.call({ to: REVIEWED_SEPOLIA_FACTORY, data: encodeFunctionData({ abi: FEES_ABI, functionName: "nonces", args: [reporter] }) }, block.number) as `0x${string}` });
@@ -78,5 +137,12 @@ export async function validateTokenizeProtocol(run: ExecutionRun, data: string, 
   // Execute only a read-only simulation against the reviewed implementation.
   // This validates the generated configuration through the actual initializer
   // and protocol rules, without signing, broadcasting or persisting chain state.
-  if (await rpc.call({ to: REVIEWED_SEPOLIA_FACTORY, from: run.requiredSigner.walletAddress, data }, block.number) !== "0x") refuse();
+  try {
+    if (await rpc.call({ to: REVIEWED_SEPOLIA_FACTORY, from: run.requiredSigner.walletAddress, data }, block.number) !== "0x") refuse();
+  } catch (err) {
+    if (isExpiredSignatureRevert(err)) {
+      throw new TokenizeFreshnessError("PRICE_REPORT_EXPIRED", "simulation reverted with ExpiredSignature");
+    }
+    refuse();
+  }
 }

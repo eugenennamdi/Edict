@@ -12,7 +12,10 @@ import {
 import type { Clock, IdGenerator } from "../execution/infrastructure";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
 import { ExecutionRunService } from "../execution/run-service";
-import { createApprovalProofFixture } from "../execution/test-fixtures";
+import {
+  createApprovalProofFixture,
+  createValidTokenizeCalldata as createCanonicalCalldata,
+} from "../execution/test-fixtures";
 import type {
   ExecutionRunV4,
   OperationKind,
@@ -37,13 +40,11 @@ import {
   type BrickkenServerAdapter,
   type BrickkenTransactionLocator,
 } from "../brickken";
-import { encodeFunctionData, parseAbi } from "viem";
 import {
   ERC1967_IMPLEMENTATION_SLOT,
   NEW_TOKENIZATION_EVENT_TOPIC,
   REVIEWED_SEPOLIA_FACTORY,
   REVIEWED_SEPOLIA_IMPLEMENTATION,
-  REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
 } from "./tokenize-receipt-binding";
 import {
   type BrickkenWriteGate,
@@ -76,6 +77,7 @@ class FakeSemanticAuthorizationEvaluator
 {
   readonly isProductionDenyAll = false;
   allow: boolean = true;
+  requiresProtocolValidation: boolean = false;
   authorizationId: string = "test-auth-1";
 
   async evaluate(input: {
@@ -140,18 +142,12 @@ function indexedAddress(address: string): string {
   return `0x${"0".repeat(24)}${address.slice(2).toLowerCase()}`;
 }
 
-const TOKENIZE_ABI = parseAbi([`function ${REVIEWED_TOKENIZE_FUNCTION_SIGNATURE} external`]);
-
 export function createValidTokenizeCalldata(deadline: bigint = 2000000000n): string {
-  return encodeFunctionData({
-    abi: TOKENIZE_ABI,
-    functionName: "newTokenization",
-    args: [
-      ["Token", "TKN", "ipfs://meta", 1000000n, TOKENIZER_ADDRESS, TO, false, [], []],
-      [TO, 100n, TO, TOKENIZER_ADDRESS, deadline, 1n, "0x1234"],
-      [100n, TO, TO, 10n, 0, `0x${"00".repeat(32)}`, `0x${"00".repeat(32)}`],
-    ],
-  });
+  return createCanonicalCalldata(
+    deadline,
+    TOKENIZER_ADDRESS as `0x${string}`,
+    TO as `0x${string}`,
+  );
 }
 
 const VALID_TOKENIZE_CALLDATA = createValidTokenizeCalldata();
@@ -307,6 +303,18 @@ function createHarness(options: {
       baseFeePerGas: "0x10",
       timestamp: "0x66e44000",
     };
+  });
+  fakeRpcTransport.on("eth_getCode", () => "0x6000");
+  fakeRpcTransport.on("eth_getStorageAt", () => "0x0000000000000000000000002c24f3fe7665ea83b2280bb5a7e66072c869ad89");
+  fakeRpcTransport.on("eth_call", (params) => {
+    const data = (params?.[0] as { data?: string })?.data ?? "";
+    if (data.startsWith("0x9350d6f9") || data.startsWith("0x5c60da1b")) {
+      return "0x0000000000000000000000003333333333333333333333333333333333333333";
+    }
+    if (data.startsWith("0x313ce567")) return `0x${"0".repeat(62)}12`;
+    if (data.startsWith("0xf3d02cfd")) return "0x";
+    if (data.startsWith("0x7ecebe00")) return `0x${"0".repeat(63)}1`;
+    return "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000003333333333333333333333333333333333333333";
   });
 
   const rpc = createTrustedSepoliaRpcClient(fakeRpcTransport);
@@ -3238,5 +3246,151 @@ describe("pre-live audit regressions", () => {
     expect(h.fakeRpcTransport.calls).toHaveLength(calls);
     expect(h.correlationSender.calls).toHaveLength(0);
     expect((await projectPublicRun(current)).trackingRemaining).toBe(0);
+  });
+
+  describe("Price-report expiry routing and error taxonomy regressions (A-H)", () => {
+    it("A: static invalidity (changed name/symbol/supply/destination) throws AUTHORIZATION_POLICY_REFUSED and cannot reprepare", async () => {
+      const h = createHarness();
+      h.semanticAuth.requiresProtocolValidation = true;
+
+      // Create calldata with wrong destination or modified asset name
+      const invalidCalldata = "0x" + "00".repeat(200); // Invalid selector/calldata
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: invalidCalldata },
+      });
+
+      await expect(
+        h.v4.promotePreparedRunToV4(runV2.id, runV2.revision),
+      ).rejects.toMatchObject({ code: "AUTHORIZATION_POLICY_REFUSED" });
+
+      const unchanged = await h.repository.getById(runV2.id);
+      expect(unchanged.schemaVersion).toBe("2.0");
+      expect(unchanged.operations[0].stage).toBe("PREPARED");
+    });
+
+    it("B, F: V2 PREPARED with valid static semantics + expired report promotes to V4, detects FRESHNESS_CHECK_FAILED -> PREPARED_STALE, and allows one legal reprepare", async () => {
+      const prepare = vi.fn().mockResolvedValue({
+        ok: true,
+        value: {
+          txId: "fresh-tx-2",
+          transaction: {
+            normalizedChainId: "11155111",
+            from: TOKENIZER_ADDRESS,
+            to: TO,
+            data: VALID_TOKENIZE_CALLDATA,
+            rawUnsigned: { ...UNSIGNED_TOKENIZE_TX, nonce: "0x5" },
+          },
+        },
+      });
+      const h = createHarness({
+        brickkenPrepare: {
+          prepareTokenization: prepare,
+          prepareWhitelist: vi.fn(),
+          prepareMint: vi.fn(),
+        },
+      });
+      h.semanticAuth.requiresProtocolValidation = true;
+
+      // Expired price report (deadline = 1000 < current block timestamp 0x66e44000 = 1726234624)
+      const expiredCalldata = createValidTokenizeCalldata(1000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+
+      // F. V2 promotion succeeds without semantic refusal
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      expect(v4Run.schemaVersion).toBe("4.0");
+      expect(v4Run.operations[0].stage).toBe("PREPARED");
+
+      // Preflight returns FRESHNESS_CHECK_FAILED, not AUTHORIZATION_DENIED
+      const preflight = await h.v4.preflightWalletAuthorization(v4Run.id, v4Run.revision);
+      expect(preflight.authorized).toBe(false);
+      if (!preflight.authorized) {
+        expect(preflight.reason).toBe("FRESHNESS_CHECK_FAILED");
+        expect(preflight.detail).toBe("PRICE_REPORT_EXPIRED");
+      }
+
+      // B. Freshness evaluation marks PREPARED_STALE
+      const freshnessResult = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      expect(freshnessResult.evaluation.outcome).toBe("PRICE_REPORT_EXPIRED");
+      expect(freshnessResult.run.operations[0].stage).toBe("PREPARED_STALE");
+      const staleRun = freshnessResult.run as ExecutionRunV4;
+      expect(staleRun.operations[0].preparationAttempts[0].staleReason).toBe("PRICE_REPORT_EXPIRED");
+
+      // One legal reprepare succeeds
+      const reprepared = await h.v4.reprepareOperation(staleRun.id, staleRun.revision);
+      expect(reprepared.operations[0].stage).toBe("PREPARED");
+      expect(reprepared.operations[0].preparationAttempts).toHaveLength(2);
+      expect(reprepared.operations[0].activePreparationAttemptId).not.toBe(
+        staleRun.operations[0].preparationAttempts[0].attemptId,
+      );
+      expect(prepare).toHaveBeenCalledOnce();
+    });
+
+    it("C: report within 300s safety buffer promotes, fails freshness, and allows reprepare", async () => {
+      const h = createHarness({
+        brickkenPrepare: {
+          prepareTokenization: vi.fn().mockResolvedValue({
+            ok: true,
+            value: {
+              txId: "fresh-tx-buffer",
+              transaction: {
+                normalizedChainId: "11155111",
+                from: TOKENIZER_ADDRESS,
+                to: TO,
+                data: VALID_TOKENIZE_CALLDATA,
+                rawUnsigned: { ...UNSIGNED_TOKENIZE_TX, nonce: "0x5" },
+              },
+            },
+          }),
+          prepareWhitelist: vi.fn(),
+          prepareMint: vi.fn(),
+        },
+      });
+      h.semanticAuth.requiresProtocolValidation = true;
+
+      // Current block timestamp is 0x66e44000 = 1726234624
+      // Deadline 100s in the future (within 300s safety buffer)
+      const nearExpiryDeadline = BigInt("0x66e44000") + 100n;
+      const bufferCalldata = createValidTokenizeCalldata(nearExpiryDeadline);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: bufferCalldata },
+      });
+
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      expect(v4Run.schemaVersion).toBe("4.0");
+
+      const preflight = await h.v4.preflightWalletAuthorization(v4Run.id, v4Run.revision);
+      expect(preflight.authorized).toBe(false);
+      if (!preflight.authorized) {
+        expect(preflight.reason).toBe("FRESHNESS_CHECK_FAILED");
+        expect(preflight.detail).toBe("PRICE_REPORT_TOO_CLOSE_TO_EXPIRY");
+      }
+
+      const freshnessResult = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      expect(freshnessResult.evaluation.outcome).toBe("PRICE_REPORT_TOO_CLOSE_TO_EXPIRY");
+      expect(freshnessResult.run.operations[0].stage).toBe("PREPARED_STALE");
+    });
+
+    it("G: releaseSendAuthority with expired report marks PREPARED_STALE and throws FRESHNESS_CHECK_FAILED, never releasing authority", async () => {
+      const h = createHarness();
+      h.semanticAuth.requiresProtocolValidation = true;
+
+      const expiredCalldata = createValidTokenizeCalldata(1000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+
+      await expect(
+        h.v4.releaseSendAuthority(v4Run.id, v4Run.revision),
+      ).rejects.toMatchObject({ code: "FRESHNESS_CHECK_FAILED" });
+
+      const updated = (await h.repository.getById(v4Run.id)) as ExecutionRunV4;
+      expect(updated.operations[0].stage).toBe("PREPARED_STALE");
+      expect(updated.operations[0].walletPromptAuthorization).toBeNull();
+      expect(updated.operations[0].preparationAttempts[0].state).toBe("STALE");
+      expect(updated.operations[0].preparationAttempts[0].staleReason).toBe("PRICE_REPORT_EXPIRED");
+    });
   });
 });

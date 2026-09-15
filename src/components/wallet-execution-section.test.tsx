@@ -88,7 +88,8 @@ describe("wallet execution product surface", () => {
 
     const freshness = classifyWalletExecutionErrorDetail("FRESHNESS_CHECK_FAILED");
     expect(freshness.onChainSubmission).toBe("NO");
-    expect(freshness.title).toContain("expired");
+    expect(freshness.title).toBe("Prepared transaction needs refreshing");
+    expect(freshness.description).toContain("expired");
     expect(freshness.nextStep).toContain("Reprepare");
 
     const unknown = classifyWalletExecutionErrorDetail("BROADCAST_OUTCOME_UNKNOWN");

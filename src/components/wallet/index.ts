@@ -1,3 +1,6 @@
-export * from "@/client/wallet/global-wallet-context";
-export * from "./connect-wallet-modal";
-export * from "./wallet-header-control";
+"use client";
+
+export { AppWalletProviders } from "./app-wallet-providers";
+export { WalletHeaderButton } from "./wallet-header-button";
+export { wagmiConfig } from "./wagmi-config";
+export { edictRainbowTheme } from "./theme";

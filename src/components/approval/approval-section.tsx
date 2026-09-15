@@ -130,10 +130,10 @@ function ActiveReadiness({ view, target, acceptDurableRun }: {
   }, [target]);
 
   useEffect(() => {
-    if (globalWallet.selectedProvider && controller.current) {
-      controller.current.chooseProvider(globalWallet.selectedProvider.selectionId);
+    if (globalWallet.connectorId && controller.current) {
+      controller.current.chooseProvider(globalWallet.connectorId);
     }
-  }, [globalWallet.selectedProvider]);
+  }, [globalWallet.connectorId]);
 
   const selected = state.selectedProviderId !== null;
   const chosen = state.candidateSelectionId !== null;

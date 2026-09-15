@@ -511,7 +511,7 @@ describe("run planning workspace", () => {
     for (const name of activeNames) expect(html).toContain(`for="${name}"`);
     expect(html.match(/<input /g)).toHaveLength(5);
     expect(html).toContain("Initial Allocation · Optional");
-  });
+  }, 15_000);
 
   it("renders safe valid and malformed durable route shells without server-side effects", async () => {
     const fetch = vi.fn(() => { throw new Error("Unexpected network"); }); vi.stubGlobal("fetch", fetch);

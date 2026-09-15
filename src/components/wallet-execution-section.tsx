@@ -53,7 +53,7 @@ export function WalletExecutionSection({ run, onRefresh }: {
   const busy = useRef(false);
   const trackingPolls = useRef(0);
 
-  const isConnected = wallet.status === "CONNECTED" && wallet.session !== null && wallet.address !== null;
+  const isConnected = wallet.isConnected && wallet.address !== null;
   const isSignerMismatch = isConnected && (wallet.address?.toLowerCase() !== run.requiredSigner.walletAddress.toLowerCase());
   const isNetworkMismatch = isConnected && !wallet.isSepolia;
 
@@ -94,17 +94,19 @@ export function WalletExecutionSection({ run, onRefresh }: {
   }
 
   async function execute() {
-    const selected = wallet.session;
-    if (!selected || busy.current || model.locked || !canExecute) return;
+    if (!isConnected || busy.current || model.locked || !canExecute) return;
     busy.current = true;
     setExecuting(true);
     setErrorDetail(null);
     setModel((current) => reduceWalletExecutionUi(current, { type: "START" }));
     try {
+      const selected = await wallet.getWalletSession();
       await executeSendAuthorizedEnvelopeFromUserAction({
-        runId: run.id, expectedRevision: run.revision,
+        runId: run.id,
+        expectedRevision: run.revision,
         requiredSigner: run.requiredSigner.walletAddress,
-        wallet: selected, gateway: createWalletExecutionHttpGateway(),
+        wallet: selected,
+        gateway: createWalletExecutionHttpGateway(),
       });
       setModel((current) => reduceWalletExecutionUi(current, { type: "HASH_RECORDED" }));
       await onRefresh();
@@ -138,13 +140,13 @@ export function WalletExecutionSection({ run, onRefresh }: {
           <p><strong>Destination:</strong> Reviewed Brickken tokenization contract</p>
           <p><strong>Estimated fee:</strong> Computed from Brickken&apos;s prepared transaction before the wallet opens</p>
           <p><strong>Maximum fee:</strong> Server-capped per preparation, always below the 0.1 ETH policy ceiling</p>
-          <p><strong>Wallet:</strong> {isConnected ? `${wallet.selectedProvider?.displayName ?? "Connected wallet"} · ${shortenAddress(wallet.address)}` : "Not connected"}</p>
+          <p><strong>Wallet:</strong> {isConnected ? `${wallet.connectorName ?? "Connected wallet"} · ${shortenAddress(wallet.address)}` : "Not connected"}</p>
         </div>
         {run.execution?.reprepareEligible === false && <p role="status">The replacement preparation is no longer usable. Create a new mandate to continue.</p>}
         {canExecute && !isConnected && (
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground">Connect your browser wallet to execute this mandate.</p>
-            <Button size="sm" type="button" onClick={wallet.openSelector}>
+            <Button size="sm" type="button" onClick={wallet.openConnectModal}>
               Connect wallet
             </Button>
           </div>
@@ -165,7 +167,7 @@ export function WalletExecutionSection({ run, onRefresh }: {
               <p><span className="text-muted-foreground">Required: </span><span className="break-all">{run.requiredSigner.walletAddress}</span></p>
               <p><span className="text-muted-foreground">Connected: </span><span className="break-all">{wallet.address}</span></p>
             </div>
-            <Button size="sm" variant="outline" type="button" onClick={wallet.openSelector}>
+            <Button size="sm" variant="outline" type="button" onClick={wallet.openConnectModal}>
               Switch account / wallet
             </Button>
           </div>

@@ -71,8 +71,8 @@ export function classifyWalletExecutionErrorDetail(
   }
   if (code === "FRESHNESS_CHECK_FAILED") {
     return Object.freeze({
-      title: "Transaction preparation expired",
-      description: "On-chain state (such as the price report or account nonce) changed since preparation.",
+      title: "Prepared transaction needs refreshing",
+      description: "The Brickken price report expired before wallet confirmation. No transaction was submitted.",
       onChainSubmission: "NO",
       nextStep: "No transaction was submitted. Click Reprepare to refresh the transaction with current chain state.",
       retryAllowed: true,
@@ -152,7 +152,7 @@ export function classifyWalletExecutionFailure(code: string): Readonly<{
   if (code === "FRESHNESS_CHECK_FAILED") {
     return Object.freeze({
       event: Object.freeze({ type: "FRESHNESS_CHECK_FAILED" }),
-      refresh: false,
+      refresh: true,
     });
   }
   if ([
@@ -196,7 +196,7 @@ export function reduceWalletExecutionUi(
     return Object.freeze({ state: "AUTHORIZATION_POLICY_REFUSED", locked: true, inProgress: false });
   }
   if (event.type === "FRESHNESS_CHECK_FAILED") {
-    return Object.freeze({ state: "FRESHNESS_CHECK_FAILED", locked: true, inProgress: false });
+    return Object.freeze({ state: "FRESHNESS_CHECK_FAILED", locked: false, inProgress: false });
   }
   if (event.type === "REFRESH_REQUIRED") {
     return Object.freeze({ state: "DURABLE_REFRESH_REQUIRED", locked: true, inProgress: false });

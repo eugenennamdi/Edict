@@ -1,6 +1,6 @@
 import "server-only";
 import { assertExecutablePlan } from "../execution/capabilities";
-import { validateTokenizeProtocol } from "./tokenize-calldata";
+import { TokenizeFreshnessError, validateTokenizeProtocol } from "./tokenize-calldata";
 
 import { buildExecutionPlanV1, canonicalizeJson, hashCanonicalJson, validateAssetManifestV1 } from "@/core";
 import {
@@ -348,8 +348,14 @@ export class ExecutionV4Orchestrator {
       tx.walletRequest.to !== REVIEWED_SEPOLIA_FACTORY || tx.walletRequest.value !== "0x0") {
       throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
     }
-    try { await validateTokenizeProtocol(run, tx.walletRequest.data!, this.#deps.rpc); }
-    catch { throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED"); }
+    try {
+      await validateTokenizeProtocol(run, tx.walletRequest.data!, this.#deps.rpc);
+    } catch (err) {
+      if (err instanceof TokenizeFreshnessError) {
+        throw err;
+      }
+      throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
+    }
   }
 
   async promotePreparedRunToV4(
@@ -383,7 +389,17 @@ export class ExecutionV4Orchestrator {
     }
 
     if (this.#semanticAuth.requiresProtocolValidation) {
-      await this.#validateProtocol(current, op.unsignedTransaction);
+      try {
+        await this.#validateProtocol(current, op.unsignedTransaction);
+      } catch (err) {
+        if (err instanceof TokenizeFreshnessError) {
+          // Static semantics are valid, but price report is expired or inside safety buffer.
+          // Establish V4 attempt state so freshness evaluation can legally
+          // transition to PREPARED_STALE and allow one reprepare.
+        } else {
+          throw err;
+        }
+      }
     }
     const v4Foundation: V4PreparationFoundationInput = foundation ?? {
       attemptId: this.#deps.ids.operationId(),
@@ -691,8 +707,23 @@ export class ExecutionV4Orchestrator {
     }
 
     if (this.#semanticAuth.requiresProtocolValidation) {
-      try { await this.#validateProtocol(current, active.unsignedTransaction!); }
-      catch { return { authorized: false, reason: "AUTHORIZATION_DENIED", detail: "PROTOCOL_VALIDATION_FAILED" }; }
+      try {
+        await this.#validateProtocol(current, active.unsignedTransaction!);
+      } catch (err) {
+        if (err instanceof TokenizeFreshnessError) {
+          return Object.freeze({
+            authorized: false,
+            reason: "FRESHNESS_CHECK_FAILED",
+            freshness,
+            detail: err.reason,
+          });
+        }
+        return {
+          authorized: false,
+          reason: "AUTHORIZATION_DENIED",
+          detail: "PROTOCOL_VALIDATION_FAILED",
+        };
+      }
     }
     const semanticResult = await this.#semanticAuth.evaluate({
       run: current,
@@ -813,21 +844,29 @@ export class ExecutionV4Orchestrator {
       );
       if (!preflight.authorized) {
         if (preflight.reason === "FRESHNESS_CHECK_FAILED") {
-          if (preflight.detail === "STALE_NONCE" && preflight.freshness?.nonceEvidence) {
+          if (
+            (preflight.detail === "STALE_NONCE" ||
+              preflight.detail === "PRICE_REPORT_EXPIRED" ||
+              preflight.detail === "PRICE_REPORT_TOO_CLOSE_TO_EXPIRY") &&
+            preflight.freshness?.nonceEvidence
+          ) {
             const foundation: V4PreparationFoundationInput = {
               attemptId: active.attemptId,
               freshnessPolicyVersion: active.freshnessPolicyVersion,
             };
+            const staleReason =
+              preflight.detail === "STALE_NONCE" ? "NONCE_MISMATCH" : "PRICE_REPORT_EXPIRED";
             const staleRun = await markPreparedStaleV4({
               run: current,
               kind,
               foundation,
               nonceEvidence: preflight.freshness.nonceEvidence,
+              staleReason,
               id: this.#deps.ids.eventId(),
               at: preflight.freshness.nonceEvidence.observedAt,
             });
             await this.#deps.repository.update(runId, currentRevision, staleRun);
-            throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+            throw new OrchestrationError("FRESHNESS_CHECK_FAILED");
           }
           throw new OrchestrationError("FRESHNESS_CHECK_FAILED");
         }

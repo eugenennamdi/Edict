@@ -6,7 +6,7 @@ import { InMemoryExecutionRunRepository } from "../execution/repository";
 import { ExecutionRunService } from "../execution/run-service";
 import { createValidTokenizeCalldata, syntheticTokenizeProtocolRpc } from "../execution/test-fixtures";
 import { createTrustedSepoliaRpcClient } from "../rpc/client";
-import { canonicalTokenizeCall, TOKENIZE_ABI, validateTokenizeProtocol } from "./tokenize-calldata";
+import { canonicalTokenizeCall, isExpiredSignatureRevert, TOKENIZE_ABI, TokenizeFreshnessError, validateTokenizeProtocol } from "./tokenize-calldata";
 
 async function runFixture() {
   const manifest = validateAssetManifestV1(createValidRawManifest());
@@ -73,11 +73,63 @@ describe("canonical mandate calldata", () => {
     expect(() => canonicalTokenizeCall(run, withWrongSpender)).toThrow();
   });
 
-  it("rejects expired and safety-buffer reports", async () => {
+  it("rejects expired and safety-buffer reports with typed TokenizeFreshnessError", async () => {
     const run = await runFixture();
-    for (const deadline of [1n, BigInt("0x66e44000") + 299n]) {
-      await expect(validateTokenizeProtocol(run, createValidTokenizeCalldata(deadline), rpcFixture())).rejects.toThrow();
-    }
+
+    await expect(validateTokenizeProtocol(run, createValidTokenizeCalldata(1n), rpcFixture()))
+      .rejects.toSatisfy((err) => err instanceof TokenizeFreshnessError && err.reason === "PRICE_REPORT_EXPIRED");
+
+    await expect(validateTokenizeProtocol(run, createValidTokenizeCalldata(BigInt("0x66e44000") + 299n), rpcFixture()))
+      .rejects.toSatisfy((err) => err instanceof TokenizeFreshnessError && err.reason === "PRICE_REPORT_TOO_CLOSE_TO_EXPIRY");
+  });
+
+  it("identifies Brickken ExpiredSignature selector strictly", () => {
+    const expiredData = "0xdba17e9a000000000000000000000000000000000000000000000000000000006aa6aaf8000000000000000000000000000000000000000000000000000000006aa6bf8c";
+    expect(isExpiredSignatureRevert({ data: expiredData })).toBe(true);
+    expect(isExpiredSignatureRevert({ cause: { data: expiredData } })).toBe(true);
+    expect(isExpiredSignatureRevert({ error: { data: expiredData } })).toBe(true);
+    expect(isExpiredSignatureRevert({ data: "0x12345678" })).toBe(false);
+    expect(isExpiredSignatureRevert(new Error("generic revert"))).toBe(false);
+  });
+
+  it("maps getFees ExpiredSignature revert to TokenizeFreshnessError, but other reverts to semantic refusal", async () => {
+    const run = await runFixture();
+    const expiredRpc = rpcFixture((method, params) => {
+      const data = (params?.[0] as { data?: string })?.data ?? "";
+      if (method === "eth_call" && data.startsWith("0x95c4b694")) {
+        throw { data: "0xdba17e9a000000000000000000000000000000000000000000000000000000006aa6aaf8000000000000000000000000000000000000000000000000000000006aa6bf8c" };
+      }
+    });
+    await expect(validateTokenizeProtocol(run, createValidTokenizeCalldata(), expiredRpc))
+      .rejects.toSatisfy((err) => err instanceof TokenizeFreshnessError && err.reason === "PRICE_REPORT_EXPIRED");
+
+    const otherRevertRpc = rpcFixture((method, params) => {
+      const data = (params?.[0] as { data?: string })?.data ?? "";
+      if (method === "eth_call" && data.startsWith("0x95c4b694")) {
+        throw { data: "0x4e487b710000000000000000000000000000000000000000000000000000000000000001" };
+      }
+    });
+    await expect(validateTokenizeProtocol(run, createValidTokenizeCalldata(), otherRevertRpc))
+      .rejects.toSatisfy((err) => !(err instanceof TokenizeFreshnessError) && (err as Error).message === "TOKENIZE_CANONICAL_SEMANTICS_INVALID");
+  });
+
+  it("maps simulation ExpiredSignature revert to TokenizeFreshnessError, but other simulation revert to semantic refusal", async () => {
+    const run = await runFixture();
+    const expiredSimRpc = rpcFixture((method, params) => {
+      const data = (params?.[0] as { data?: string })?.data ?? "";
+      if (data.startsWith("0xf3d02cfd")) {
+        throw { data: "0xdba17e9a000000000000000000000000000000000000000000000000000000006aa6aaf8000000000000000000000000000000000000000000000000000000006aa6bf8c" };
+      }
+    });
+    await expect(validateTokenizeProtocol(run, createValidTokenizeCalldata(), expiredSimRpc))
+      .rejects.toSatisfy((err) => err instanceof TokenizeFreshnessError && err.reason === "PRICE_REPORT_EXPIRED");
+
+    const otherSimRpc = rpcFixture((method, params) => {
+      const data = (params?.[0] as { data?: string })?.data ?? "";
+      if (data.startsWith("0xf3d02cfd")) throw new Error("execution reverted");
+    });
+    await expect(validateTokenizeProtocol(run, createValidTokenizeCalldata(), otherSimRpc))
+      .rejects.toSatisfy((err) => !(err instanceof TokenizeFreshnessError) && (err as Error).message === "TOKENIZE_CANONICAL_SEMANTICS_INVALID");
   });
 
   it.each(["chain", "implementation", "signature/source/domain", "code", "simulation", "decimals", "report nonce"])("fails closed on invalid current %s", async (failure) => {

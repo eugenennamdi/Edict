@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AppWalletProviders } from "@/components/wallet";
 import "./tokens.css";
 import "./globals.css";
 import "./workspace.css";
@@ -15,7 +16,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <AppWalletProviders>{children}</AppWalletProviders>
+      </body>
     </html>
   );
 }
