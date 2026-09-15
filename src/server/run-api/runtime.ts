@@ -40,6 +40,7 @@ export interface RunApiRuntime {
     | "promotePreparedRunToV4"
     | "evaluateAndApplyPreparedFreshness"
     | "trackExecution"
+    | "reconcileSubmittedRun"
     | "reprepareOperation"
   >;
   readonly nowIso: () => string;

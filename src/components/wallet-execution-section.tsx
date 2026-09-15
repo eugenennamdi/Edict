@@ -49,7 +49,8 @@ export function WalletExecutionSection({ run, onRefresh }: {
   const needsAttention = run.status === "RECONCILIATION_REQUIRED" || budgetExhausted;
   const canExecute = !budgetExhausted && (run.executeEligible ?? (run.executablePlan !== false && run.approved && run.phase === "TOKENIZATION" && run.terminalOutcome === null &&
     run.execution?.reprepareEligible !== false && !hasHash && ["NOT_STARTED", "PREPARED", "PREPARED_STALE"].includes(operation.stage)));
-  const canTrack = (run.trackingRemaining ?? 30) > 0 && hasHash && run.terminalOutcome === null && !needsAttention && operation.stage !== "READ_BACK_VERIFIED";
+  const isFinalized = ["RPC_TRANSACTION_VERIFIED", "BRICKKEN_CORRELATION_PENDING", "BRICKKEN_CORRELATED"].includes(operation.stage);
+  const canTrack = ((run.trackingRemaining ?? 30) > 0 || isFinalized) && hasHash && run.terminalOutcome === null && !needsAttention && operation.stage !== "READ_BACK_VERIFIED";
   const visible = run.approved && (run.phase === "TOKENIZATION" || !!run.tokenizationResult || operation.stage === "READ_BACK_VERIFIED");
   const [model, setModel] = useState<WalletExecutionUiModel>(initialWalletExecutionUiModel);
   const [errorDetail, setErrorDetail] = useState<WalletExecutionErrorDetail | null>(null);
@@ -64,7 +65,7 @@ export function WalletExecutionSection({ run, onRefresh }: {
   const isNetworkMismatch = isConnected && !wallet.isSepolia;
 
   useEffect(() => {
-    if (!canTrack || trackingPolls.current >= 30) return;
+    if (!canTrack || (!isFinalized && trackingPolls.current >= 30)) return;
     let cancelled = false;
     const delay = Math.min(2_000 * (2 ** Math.min(trackingPolls.current, 4)), 30_000);
     const timer = window.setTimeout(() => {
@@ -76,7 +77,7 @@ export function WalletExecutionSection({ run, onRefresh }: {
         });
     }, delay);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [canTrack, onRefresh, run.id, run.revision, trackingTick]);
+  }, [canTrack, isFinalized, onRefresh, run.id, run.revision, trackingTick]);
 
   if (!visible) return null;
 

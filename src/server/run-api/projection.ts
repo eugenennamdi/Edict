@@ -54,7 +54,14 @@ async function projectedRun(run: ExecutionRun): Promise<PublicRunProjection> {
           (run.schemaVersion === "4.0" && run.operations[0].stage === "WALLET_PROMPT_RECORDED" &&
             run.operations[0].walletPromptAuthorization?.providerInvocation === "PROVEN_NOT_INVOKED")
         ),
-      trackingRemaining: Math.max(0, 30 - run.events.filter((event) => event.type === "TRACK_EXECUTION_RESERVED").length),
+      trackingRemaining: Math.max(
+        run.schemaVersion === "4.0" &&
+          run.operations[0].transactionReceiptEvidence?.finalityStatus === "FINALIZED" &&
+          run.operations[0].stage !== "READ_BACK_VERIFIED"
+          ? 1
+          : 0,
+        30 - run.events.filter((event) => event.type === "TRACK_EXECUTION_RESERVED").length,
+      ),
       tokenizationResult: run.schemaVersion === "4.0" && run.tokenIdentity !== null ? {
         tokenAddress: run.tokenIdentity.tokenAddress,
         escrowAddress: run.tokenIdentity.escrowAddress ?? null,

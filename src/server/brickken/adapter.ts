@@ -18,7 +18,7 @@ import {
   type BrickkenRuntimeConfig,
 } from "./config";
 import { BrickkenAdapterError, safeErrorMessage } from "./errors";
-import { parsePreparedOperation } from "./prepared-transaction";
+import { normalizeSepoliaChainId, parsePreparedOperation } from "./prepared-transaction";
 import {
   brickkenCorrelationRequestSchema,
   classifyCorrelationResponse,
@@ -387,7 +387,9 @@ export function createBrickkenServerAdapter(
             tokenizerEmail: parsed.data.tokenizerEmail ?? null,
             companyWalletAddress: parsed.data.companyWalletAddress ?? null,
             maxTokenSupply: parsed.data.maxTokenSupply ?? null,
-            paymentChainId: parsed.data.paymentToken?.blockchain?.chainId ?? null,
+            paymentChainId:
+              normalizeSepoliaChainId(parsed.data.paymentToken?.blockchain?.chainId) ??
+              (parsed.data.paymentToken?.blockchain?.chainId ?? null),
           } satisfies TokenInfoView,
         };
       });

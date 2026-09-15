@@ -60,12 +60,12 @@ export const tokenInfoAssetSchema = z
     tokenType: z.string().optional(),
     tokenizerEmail: z.string().optional(),
     companyWalletAddress: z.string().optional(),
-    maxTokenSupply: z.string().optional(),
+    maxTokenSupply: z.union([z.string(), z.number()]).transform(String).optional(),
     paymentToken: z
       .object({
         blockchain: z
           .object({
-            chainId: z.string().optional(),
+            chainId: z.union([z.string(), z.number()]).transform(String).optional(),
           })
           .passthrough()
           .optional(),

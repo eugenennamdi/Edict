@@ -236,7 +236,23 @@ export async function getRunHandler(request: Request, runId: string, options?: R
   try {
     const api = runtime(options);
     await authorize(request, runId, api, runAccessCookieOptions(guard.trustedOrigin, options?.nodeEnv).name);
-    const run = await api.runs.getRun(runId);
+    let run = await api.runs.getRun(runId);
+    if (
+      api.walletExecution?.reconcileSubmittedRun &&
+      run.schemaVersion === "4.0" &&
+      run.phase === "TOKENIZATION" &&
+      run.terminalOutcome === null &&
+      run.status !== "RECONCILIATION_REQUIRED" &&
+      run.operations[0].blockchainTxHash !== null &&
+      run.operations[0].stage !== "READ_BACK_VERIFIED"
+    ) {
+      try {
+        const reconciled = await api.walletExecution.reconcileSubmittedRun(run.id, run.revision);
+        run = reconciled.run;
+      } catch {
+        // Safe read-only fallback: do not fail GET if upstream reconciliation is temporarily unavailable
+      }
+    }
     const record = await projectPublicPlanningRecord(run);
     return response(200, { ok: true, ...record });
   } catch (error) {

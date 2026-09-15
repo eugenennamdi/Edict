@@ -347,6 +347,7 @@ describe("V4 browser wallet run routes", () => {
         run: durable as never,
       })),
       trackExecution: vi.fn(async () => ({ run: durable as never })),
+      reconcileSubmittedRun: vi.fn(async () => ({ run: durable as never })),
       reprepareOperation: vi.fn(async () => durable as never),
     };
     const runtime: RunApiRuntime = { ...api, walletExecution };
@@ -645,6 +646,32 @@ describe("V4 browser wallet run routes", () => {
       ok: false,
       error: { code: "READ_BACK_BINDING_UNRESOLVED" },
     });
+  });
+
+  it("reconciles submitted run read-only on getRunHandler refresh when on-chain hash exists", async () => {
+    const value = await setup();
+    const submittedRun = {
+      ...value.durable,
+      schemaVersion: "4.0",
+      status: "CONFIRMING",
+      phase: "TOKENIZATION",
+      operations: [
+        {
+          ...value.durable.operations[0],
+          stage: "BRICKKEN_CORRELATED",
+          blockchainTxHash: txHash,
+        },
+        value.durable.operations[1],
+        value.durable.operations[2],
+      ],
+    };
+    vi.spyOn(value.runtime.runs, "getRun").mockResolvedValueOnce(submittedRun as never);
+    const getRequest = new Request(`${config.trustedOrigin}/api/runs/${runId}`, {
+      headers: { cookie: value.cookie, "sec-fetch-site": "same-origin" },
+    });
+    const response = await getRunHandler(getRequest, runId, value.options);
+    expect(response.status).toBe(200);
+    expect(value.walletExecution.reconcileSubmittedRun).toHaveBeenCalledWith(runId, submittedRun.revision);
   });
 
   it("reprepares stale run accepting strictly expectedRevision and returning strict public DTO", async () => {

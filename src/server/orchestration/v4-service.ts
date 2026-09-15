@@ -1858,6 +1858,27 @@ export class ExecutionV4Orchestrator {
     return { statusResult, durableEvidence, run: current };
   }
 
+  async reconcileSubmittedRun(
+    runId: string,
+    expectedRevision: number,
+  ): Promise<TrackExecutionResult> {
+    const current = await this.#deps.repository.getById(runId);
+    assertRevision(current, expectedRevision);
+    assertV4(current);
+
+    const { operation: initialOp } = deriveActiveOperation(current);
+    if (
+      initialOp.blockchainTxHash === null ||
+      initialOp.stage === "READ_BACK_VERIFIED" ||
+      current.terminalOutcome !== null ||
+      current.status === "RECONCILIATION_REQUIRED"
+    ) {
+      return { run: current };
+    }
+
+    return this.#reconcilePipeline(current);
+  }
+
   async trackExecution(
     runId: string,
     expectedRevision: number,
@@ -1871,12 +1892,18 @@ export class ExecutionV4Orchestrator {
       throw new IllegalStateTransitionError();
     }
 
-    if (current.terminalOutcome !== null || current.status === "RECONCILIATION_REQUIRED" ||
-      initialOp.stage === "READ_BACK_VERIFIED") throw new IllegalStateTransitionError();
+    if (
+      current.terminalOutcome !== null ||
+      current.status === "RECONCILIATION_REQUIRED" ||
+      initialOp.stage === "READ_BACK_VERIFIED"
+    ) {
+      throw new IllegalStateTransitionError();
+    }
     const trackingEvents = current.events.filter((event) => event.type === "TRACK_EXECUTION_RESERVED");
     const now = this.#deps.clock.nowIso();
     const last = trackingEvents.at(-1);
-    if (trackingEvents.length >= 30 || (last && Date.parse(now) - Date.parse(last.at) < 2000)) {
+    const isFinalized = initialOp.transactionReceiptEvidence?.finalityStatus === "FINALIZED";
+    if (!isFinalized && (trackingEvents.length >= 30 || (last && Date.parse(now) - Date.parse(last.at) < 2000))) {
       throw new OrchestrationError("TRACKING_BUDGET_EXHAUSTED");
     }
     // Reserve before RPC, including failed/missing-transaction polls. Revision
@@ -1887,6 +1914,16 @@ export class ExecutionV4Orchestrator {
         type: "TRACK_EXECUTION_RESERVED", at: now, actor: "SERVER", operationKind: "TOKENIZE",
       }],
     }) as ExecutionRunV4;
+
+    return this.#reconcilePipeline(current);
+  }
+
+  async #reconcilePipeline(
+    currentRun: ExecutionRunV4,
+  ): Promise<TrackExecutionResult> {
+    let current = currentRun;
+    const runId = current.id;
+    const { operation: initialOp } = deriveActiveOperation(current);
 
     let rpcEvaluation: TransactionComparisonEvaluation | undefined;
     let receiptEvaluation: ReceiptFinalityEvaluation | undefined;
