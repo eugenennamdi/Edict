@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createWalletExecutionHttpGateway } from "@/client/run-api/wallet-execution-gateway";
+import {
+  createWalletExecutionHttpGateway,
+  WalletExecutionGatewayError,
+} from "@/client/run-api/wallet-execution-gateway";
 import { useGlobalWallet } from "@/client/wallet/global-wallet-context";
 import { WalletBoundaryError } from "@/client/wallet/errors";
 import { executeSendAuthorizedEnvelopeFromUserAction } from "@/client/wallet/v4-execution";
@@ -26,10 +29,12 @@ function shortenAddress(address: string | null): string {
 }
 
 function productStatus(run: PublicRunProjection): string {
-  if (run.status === "RECONCILIATION_REQUIRED") return "Needs attention";
+  const operation = run.operations[0];
+  const budgetExhausted = run.execution?.reprepareEligible === false && operation.stage === "PREPARED_STALE";
+  if (run.status === "RECONCILIATION_REQUIRED" || budgetExhausted) return "Needs attention";
   if (run.status === "FAILED" || run.terminalOutcome !== null) return "Failed";
-  if (run.operations[0].stage === "READ_BACK_VERIFIED") return "Tokenized asset created";
-  if (run.operations[0].blockchainTxHash !== null) return "Verifying";
+  if (operation.stage === "READ_BACK_VERIFIED") return "Tokenized asset created";
+  if (operation.blockchainTxHash !== null) return "Verifying";
   return "Ready to execute";
 }
 
@@ -40,9 +45,10 @@ export function WalletExecutionSection({ run, onRefresh }: {
   const wallet = useGlobalWallet();
   const operation = run.operations[0];
   const hasHash = operation.blockchainTxHash !== null;
-  const needsAttention = run.status === "RECONCILIATION_REQUIRED";
-  const canExecute = run.executeEligible ?? (run.executablePlan !== false && run.approved && run.phase === "TOKENIZATION" && run.terminalOutcome === null &&
-    run.execution?.reprepareEligible !== false && !hasHash && ["NOT_STARTED", "PREPARED", "PREPARED_STALE"].includes(operation.stage));
+  const budgetExhausted = run.execution?.reprepareEligible === false && operation.stage === "PREPARED_STALE";
+  const needsAttention = run.status === "RECONCILIATION_REQUIRED" || budgetExhausted;
+  const canExecute = !budgetExhausted && (run.executeEligible ?? (run.executablePlan !== false && run.approved && run.phase === "TOKENIZATION" && run.terminalOutcome === null &&
+    run.execution?.reprepareEligible !== false && !hasHash && ["NOT_STARTED", "PREPARED", "PREPARED_STALE"].includes(operation.stage)));
   const canTrack = (run.trackingRemaining ?? 30) > 0 && hasHash && run.terminalOutcome === null && !needsAttention && operation.stage !== "READ_BACK_VERIFIED";
   const visible = run.approved && (run.phase === "TOKENIZATION" || !!run.tokenizationResult || operation.stage === "READ_BACK_VERIFIED");
   const [model, setModel] = useState<WalletExecutionUiModel>(initialWalletExecutionUiModel);
@@ -84,8 +90,14 @@ export function WalletExecutionSection({ run, onRefresh }: {
       await gateway.reprepare(run.id, run.revision);
       await onRefresh();
     } catch (error) {
-      const code = error instanceof WalletBoundaryError ? error.code : "UNKNOWN";
-      setErrorDetail(classifyWalletExecutionErrorDetail(code));
+      const code = error instanceof WalletBoundaryError
+        ? error.code
+        : error instanceof WalletExecutionGatewayError
+          ? error.code
+          : "PREPARATION_FAILED";
+      setErrorDetail(classifyWalletExecutionErrorDetail(code, {
+        reprepareEligible: run.execution?.reprepareEligible,
+      }));
       await onRefresh().catch(() => undefined);
     } finally {
       busy.current = false;
@@ -111,10 +123,16 @@ export function WalletExecutionSection({ run, onRefresh }: {
       setModel((current) => reduceWalletExecutionUi(current, { type: "HASH_RECORDED" }));
       await onRefresh();
     } catch (error) {
-      const code = error instanceof WalletBoundaryError ? error.code : "UNKNOWN";
+      const code = error instanceof WalletBoundaryError
+        ? error.code
+        : error instanceof WalletExecutionGatewayError
+          ? error.code
+          : "EXECUTION_FAILED";
       const failure = classifyWalletExecutionFailure(code);
       setModel((current) => reduceWalletExecutionUi(current, failure.event));
-      setErrorDetail(classifyWalletExecutionErrorDetail(code));
+      setErrorDetail(classifyWalletExecutionErrorDetail(code, {
+        reprepareEligible: run.execution?.reprepareEligible,
+      }));
       if (failure.refresh) await onRefresh().catch(() => undefined);
     } finally {
       busy.current = false;
@@ -218,6 +236,8 @@ export function WalletExecutionSection({ run, onRefresh }: {
         {needsAttention && <div role="alert" className="flex gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs">
           <AlertTriangle className="h-4 w-4 shrink-0" />{hasHash
             ? "The transaction was submitted, but Edict detected an execution mismatch. Edict will not submit another transaction."
+            : budgetExhausted
+            ? "All allowed preparation attempts (maximum 2) have expired. This execution cannot proceed. Create a new mandate to continue."
             : "We couldn't confirm the preparation with Brickken. No wallet transaction was requested. This execution needs attention."}
         </div>}
         {errorDetail && (

@@ -14,7 +14,7 @@ import {
 import { z } from "zod";
 
 const MAX_RESPONSE_BYTES = 128 * 1024;
-const REQUEST_TIMEOUT_MS = 15_000;
+const REQUEST_TIMEOUT_MS = 60_000;
 const revisionSchema = z.number().int().safe().positive();
 const bindingSchema = z.strictObject({
   expectedRevision: revisionSchema,

@@ -100,6 +100,74 @@ describe("wallet execution product surface", () => {
     const userReject = classifyWalletExecutionErrorDetail("TRANSACTION_REJECTED");
     expect(userReject.onChainSubmission).toBe("NO");
     expect(userReject.nextStep).toContain("safely try again");
+
+    const exhausted = classifyWalletExecutionErrorDetail("REPREPARE_EXHAUSTED");
+    expect(exhausted.onChainSubmission).toBe("NO");
+    expect(exhausted.title).toBe("Preparation attempts exhausted");
+    expect(exhausted.retryAllowed).toBe(false);
+    expect(exhausted.nextStep).toContain("Create a new mandate");
+
+    const optionExhausted = classifyWalletExecutionErrorDetail("UNKNOWN", { reprepareEligible: false });
+    expect(optionExhausted.title).toBe("Preparation attempts exhausted");
+    expect(optionExhausted.retryAllowed).toBe(false);
+
+    const prepFailed = classifyWalletExecutionErrorDetail("PREPARATION_FAILED");
+    expect(prepFailed.onChainSubmission).toBe("NO");
+    expect(prepFailed.title).toBe("Preparation request failed");
+    expect(prepFailed.retryAllowed).toBe(true);
+
+    const serverReject = classifyWalletExecutionErrorDetail("SERVER_REJECTION");
+    expect(serverReject.title).toBe("Preparation request failed");
+    expect(serverReject.retryAllowed).toBe(true);
+
+    const malformed = classifyWalletExecutionErrorDetail("MALFORMED_RESPONSE");
+    expect(malformed.title).toBe("Preparation response invalid");
+    expect(malformed.retryAllowed).toBe(false);
+
+    const fallback = classifyWalletExecutionErrorDetail("SOME_UNKNOWN_ERROR");
+    expect(fallback.title).toBe("Execution halted");
+    expect(fallback.nextStep).not.toContain("Check your wallet");
+    expect(fallback.retryAllowed).toBe(false);
+  });
+
+  it("handles SERVER_REJECTION and PREPARATION_FAILED failure classification", () => {
+    expect(classifyWalletExecutionFailure("SERVER_REJECTION")).toEqual({
+      event: { type: "REFRESH_REQUIRED" },
+      refresh: true,
+    });
+    expect(classifyWalletExecutionFailure("PREPARATION_FAILED")).toEqual({
+      event: { type: "REFRESH_REQUIRED" },
+      refresh: true,
+    });
+  });
+
+  it("projects budget exhausted stale run as Needs attention and forbids execution", () => {
+    const base = fixture();
+    const exhaustedRun = fixture({
+      schemaVersion: "4.0",
+      status: "AWAITING_WALLET",
+      executeEligible: false,
+      execution: {
+        projectionVersion: "1.0",
+        nextOperation: { id: "op-1", kind: "TOKENIZE", sequence: 1, name: "Create tokenization" },
+        preparationStatus: "PREPARED_STALE",
+        preparationFailureCode: null,
+        staleReason: "PRICE_REPORT_EXPIRED",
+        reprepareEligible: false,
+        transactionReview: null,
+      },
+      operations: [
+        { ...base.operations[0], stage: "PREPARED_STALE", preparedTxId: "tx-2" },
+        base.operations[1],
+        base.operations[2],
+      ],
+    });
+    const html = renderToStaticMarkup(createElement(WalletExecutionSection, { run: exhaustedRun, onRefresh: async () => undefined }));
+    expect(html).toContain("Needs attention");
+    expect(html).toContain("All allowed preparation attempts (maximum 2) have expired");
+    expect(html).not.toContain("Confirm in wallet");
+    expect(html).not.toContain("Reprepare tokenization");
+    expect(html).not.toContain(">Execute mandate</button>");
   });
 
   it("exposes two-stage action labels: Execute mandate when unprepared, Confirm in wallet when prepared, Reprepare when stale", () => {

@@ -41,7 +41,17 @@ export interface WalletExecutionErrorDetail {
 
 export function classifyWalletExecutionErrorDetail(
   code: string,
+  options?: { readonly reprepareEligible?: boolean | null },
 ): WalletExecutionErrorDetail {
+  if (code === "REPREPARE_EXHAUSTED" || options?.reprepareEligible === false) {
+    return Object.freeze({
+      title: "Preparation attempts exhausted",
+      description: "This mandate has used all allowed preparation attempts (maximum 2). The transaction price report has expired and cannot be refreshed again.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted to the network and no funds were spent. Create a new mandate to tokenize this asset with fresh pricing.",
+      retryAllowed: false,
+    });
+  }
   if (code === "BROADCAST_OUTCOME_UNKNOWN" || code === "RECONCILIATION_REQUIRED") {
     return Object.freeze({
       title: "Transaction broadcast outcome unknown",
@@ -121,12 +131,30 @@ export function classifyWalletExecutionErrorDetail(
       retryAllowed: true,
     });
   }
+  if (code === "PREPARATION_FAILED" || code === "SERVER_REJECTION") {
+    return Object.freeze({
+      title: "Preparation request failed",
+      description: "The preparation request to Brickken timed out or could not be completed by the server.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted to the network. Click Reprepare to request fresh preparation parameters from Brickken.",
+      retryAllowed: true,
+    });
+  }
+  if (code === "MALFORMED_RESPONSE" || code === "MALFORMED_REQUEST") {
+    return Object.freeze({
+      title: "Preparation response invalid",
+      description: "The server response could not be verified by client runtime safety checks.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted. Refresh this record before proceeding.",
+      retryAllowed: false,
+    });
+  }
   return Object.freeze({
-    title: "Wallet execution could not proceed",
-    description: "Edict could not safely proceed with the wallet transaction.",
+    title: "Execution halted",
+    description: "Edict stopped before submitting an on-chain transaction because an invariant or response could not be verified.",
     onChainSubmission: "NO",
-    nextStep: "No confirmed wallet transaction was recorded. Check your wallet, ensure it is unlocked on Sepolia, and try again.",
-    retryAllowed: true,
+    nextStep: "No transaction was submitted to the network and no funds or gas were spent. Refresh the record or review technical details.",
+    retryAllowed: false,
   });
 }
 
@@ -160,6 +188,8 @@ export function classifyWalletExecutionFailure(code: string): Readonly<{
     "AUTHORIZATION_RESPONSE_UNKNOWN",
     "AUTHORIZATION_RESPONSE_MALFORMED",
     "AUTHORIZATION_REQUEST_REFUSED",
+    "SERVER_REJECTION",
+    "PREPARATION_FAILED",
   ].includes(code)) {
     return Object.freeze({ event: Object.freeze({ type: "REFRESH_REQUIRED" }), refresh: true });
   }

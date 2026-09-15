@@ -393,6 +393,30 @@ describe("nonce staleness and explicit repreparation", () => {
     })).toThrow(IllegalStateTransitionError);
   });
 
+  it("strictly enforces maximum 2 preparation attempts and rejects attempt 3", async () => {
+    const at = "2026-09-11T09:20:00.000Z";
+    const stale = await markPreparedStaleV4({
+      run: await preparedRun(), kind: "TOKENIZE", foundation: FOUNDATION,
+      nonceEvidence: nonceEvidence("STALE", at), id: "stale", at,
+    });
+    const intent = beginReprepareV4({
+      run: stale, kind: "TOKENIZE", attemptId: "attempt-2", id: "reprepare", at: "2026-09-11T09:20:01.000Z",
+    });
+    const reprepared = await recordRepreparedV4({
+      run: intent, kind: "TOKENIZE", txId: "brickken-tx-2",
+      unsignedTransaction: { ...UNSIGNED, nonce: "0x1" }, id: "reprepared", at: "2026-09-11T09:20:02.000Z",
+    });
+    const stale2 = await markPreparedStaleV4({
+      run: reprepared, kind: "TOKENIZE", foundation: FOUNDATION,
+      nonceEvidence: nonceEvidence("STALE", "2026-09-11T09:25:00.000Z"), id: "stale2", at: "2026-09-11T09:25:00.000Z",
+    });
+    expect(stale2.operations[0].preparationAttempts).toHaveLength(2);
+    expect(stale2.operations[0].stage).toBe("PREPARED_STALE");
+    expect(() => beginReprepareV4({
+      run: stale2, kind: "TOKENIZE", attemptId: "attempt-3", id: "reprepare-3", at: "2026-09-11T09:25:01.000Z",
+    })).toThrow(IllegalStateTransitionError);
+  });
+
   it.each(["PREPARE_UNKNOWN", "REFUSED"] as const)("records %s from REPREPARE_INTENT", async (outcome) => {
     const at = "2026-09-11T09:21:00.000Z";
     const stale = await markPreparedStaleV4({
