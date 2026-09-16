@@ -64,6 +64,11 @@ function publicOperationSchema(kind: "TOKENIZE" | "WHITELIST" | "MINT") {
     feePolicyViolationCode: z.string().nullable().optional(),
     authorizedPriorityFeePerGas: z.string().nullable().optional(),
     observedPriorityFeePerGas: z.string().nullable().optional(),
+    authorizedGasLimit: z.string().nullable().optional(),
+    observedGasLimit: z.string().nullable().optional(),
+    authorizedMaxFeePerGas: z.string().nullable().optional(),
+    observedMaxFeePerGas: z.string().nullable().optional(),
+    observedTransactionType: z.string().nullable().optional(),
   });
 }
 

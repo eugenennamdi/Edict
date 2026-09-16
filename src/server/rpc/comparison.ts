@@ -33,6 +33,13 @@ function sameAddress(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
 }
 
+function parseQuantityOrNull(val: string | null | undefined): string | null {
+  if (typeof val === "string" && /^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(val)) {
+    return val;
+  }
+  return null;
+}
+
 /**
  * Normalizes and compares an on-chain transaction observed via trusted RPC
  * against expected immutable identity and authorized fee envelope.
@@ -82,11 +89,27 @@ export async function compareOnchainTransaction(
     });
   }
 
+  let baseFeePerGas: string | null = null;
+  if (transaction.type === "0x0") {
+    try {
+      if (transaction.blockHash !== null) {
+        const block = await input.client.getBlockByHash(transaction.blockHash);
+        if (block?.baseFeePerGas) baseFeePerGas = block.baseFeePerGas;
+      } else {
+        const block = await input.client.getLatestBlock();
+        if (block?.baseFeePerGas) baseFeePerGas = block.baseFeePerGas;
+      }
+    } catch {
+      // Non-fatal if transport lacks block handler
+    }
+  }
+
   return compareNormalizedTransaction({
     transaction,
     expectedImmutableIdentity: input.expectedImmutableIdentity,
     expectedFeeAuthorization: input.expectedFeeAuthorization,
     observedAt: input.observedAt,
+    baseFeePerGas,
   });
 }
 
@@ -95,6 +118,7 @@ export function compareNormalizedTransaction(input: {
   readonly expectedImmutableIdentity: ImmutableExecutionIdentityV1;
   readonly expectedFeeAuthorization: FeeAuthorizationV1;
   readonly observedAt: string;
+  readonly baseFeePerGas?: string | null;
 }): TransactionComparisonEvaluation {
   const tx = input.transaction;
   const expected = input.expectedImmutableIdentity;
@@ -119,6 +143,25 @@ export function compareNormalizedTransaction(input: {
     nonce: tx.nonce,
   });
 
+  const observedTxType = tx.type;
+  let observedPriorityFee: string | null = null;
+  if (tx.type === "0x2" && tx.maxPriorityFeePerGas) {
+    observedPriorityFee = parseQuantityOrNull(tx.maxPriorityFeePerGas);
+  } else if (tx.type === "0x0" && tx.gasPrice) {
+    const rawGasPrice = parseQuantityOrNull(tx.gasPrice);
+    if (rawGasPrice) {
+      const gasPrice = BigInt(rawGasPrice);
+      const rawBaseFee = parseQuantityOrNull(input.baseFeePerGas);
+      const baseFee = rawBaseFee ? BigInt(rawBaseFee) : null;
+      if (baseFee !== null) {
+        const effPriority = gasPrice > baseFee ? gasPrice - baseFee : 0n;
+        observedPriorityFee = `0x${effPriority.toString(16)}`;
+      }
+    }
+  }
+  const observedGasLimit = parseQuantityOrNull(tx.gas);
+  const observedMaxFee = parseQuantityOrNull(tx.type === "0x2" ? tx.maxFeePerGas : tx.gasPrice);
+
   if (!immutableIdentityMatches) {
     const evidence = rpcTransactionAuthorizationEvidenceV1Schema.parse({
       evidenceVersion: "1.0",
@@ -129,6 +172,10 @@ export function compareNormalizedTransaction(input: {
       feeAuthorizationStatus: "NOT_EVALUATED",
       feePolicyViolationCode: null,
       observedMaximumNetworkFeeWei: null,
+      observedPriorityFeePerGas: observedPriorityFee,
+      observedGasLimit,
+      observedMaxFeePerGas: observedMaxFee,
+      observedTransactionType: observedTxType,
     });
 
     return Object.freeze({
@@ -147,10 +194,11 @@ export function compareNormalizedTransaction(input: {
   const actualFeeFields = {
     transactionType: tx.type,
     gasLimit: tx.gas,
-    maxFeePerGas: tx.maxFeePerGas ?? "0x0",
-    maxPriorityFeePerGas: tx.maxPriorityFeePerGas ?? "0x0",
+    maxFeePerGas: tx.maxFeePerGas ?? null,
+    maxPriorityFeePerGas: tx.maxPriorityFeePerGas ?? null,
     gasPrice: tx.gasPrice,
     accessList: tx.accessList,
+    baseFeePerGas: input.baseFeePerGas ?? null,
   };
 
   let feeDecision:
@@ -173,6 +221,10 @@ export function compareNormalizedTransaction(input: {
       feeAuthorizationStatus: "POLICY_VIOLATION",
       feePolicyViolationCode: violationCode,
       observedMaximumNetworkFeeWei: null,
+      observedPriorityFeePerGas: observedPriorityFee,
+      observedGasLimit,
+      observedMaxFeePerGas: observedMaxFee,
+      observedTransactionType: observedTxType,
     });
 
     return Object.freeze({
@@ -196,6 +248,10 @@ export function compareNormalizedTransaction(input: {
     feeAuthorizationStatus: "WITHIN_ENVELOPE",
     feePolicyViolationCode: null,
     observedMaximumNetworkFeeWei: feeDecision.maximumNetworkFeeWei,
+    observedPriorityFeePerGas: observedPriorityFee,
+    observedGasLimit,
+    observedMaxFeePerGas: observedMaxFee,
+    observedTransactionType: observedTxType,
   });
 
   return Object.freeze({

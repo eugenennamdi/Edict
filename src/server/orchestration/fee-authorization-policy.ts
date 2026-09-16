@@ -6,7 +6,7 @@ const MAX_UINT256 = (1n << 256n) - 1n;
 
 /** Private deployment policy. Browser requests and manifests cannot supply these limits. */
 export const SERVER_FEE_AUTHORIZATION_POLICY_V1 = Object.freeze({
-  gasLimitHeadroomBps: 12_000n,
+  gasLimitHeadroomBps: 15_000n,
   maxFeeHeadroomBps: 30_000n,
   priorityFeeHeadroomBps: 30_000n,
   gasLimitAbsoluteCeiling: 8_000_000n,

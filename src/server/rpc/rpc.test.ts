@@ -890,9 +890,9 @@ describe("Trusted Sepolia RPC client & contracts", () => {
       expect(priorityFeeExceededResult.feePolicyViolationCode).toBe("PRIORITY_FEE_CAP_EXCEEDED");
       expect(priorityFeeExceededResult.reconciliationRequired).toBe(true);
 
-      // 4. Other fee violations (model, legacy price, access list, invalid evidence):
+      // 4. Other fee violations (model, missing legacy price, access list, invalid evidence):
       const otherViolations: Array<[string, Partial<NormalizedRpcTransaction>, string]> = [
-        ["LEGACY_GAS_PRICE", { type: "0x0", gasPrice: "0x10" }, "LEGACY_GAS_PRICE"],
+        ["LEGACY_GAS_PRICE", { type: "0x0", gasPrice: null }, "LEGACY_GAS_PRICE"],
         ["FEE_MODEL_CHANGED", { type: "0x1" }, "FEE_MODEL_CHANGED"],
         [
           "ACCESS_LIST_CHANGED",
@@ -918,6 +918,17 @@ describe("Trusted Sepolia RPC client & contracts", () => {
         expect(result.feePolicyViolationCode).toBe(expectedCode);
         expect(result.reconciliationRequired).toBe(true);
       }
+
+      // 5. Bounded legacy transaction within all economic caps is accepted (FEE_COMPLIANT)
+      const legacyCompliantResult = compareNormalizedTransaction({
+        transaction: { ...validTx, type: "0x0", gasPrice: "0x10" },
+        expectedImmutableIdentity: immutable,
+        expectedFeeAuthorization: feeAuth,
+        observedAt: NOW,
+      });
+      expect(legacyCompliantResult.outcome).toBe("IMMUTABLE_MATCH + FEE_COMPLIANT");
+      expect(legacyCompliantResult.feeAuthorizationStatus).toBe("WITHIN_ENVELOPE");
+      expect(legacyCompliantResult.reconciliationRequired).toBe(false);
     });
 
     it("13. distinguishes presence states: NOT_FOUND vs UNMINED vs MINED", async () => {

@@ -62,8 +62,31 @@ export function verificationFailureCopy(run: PublicRunProjection): string | null
     return "Verification failed. Edict will not submit another transaction.";
   }
   if (run.status === "RECONCILIATION_REQUIRED" && activeLifecycleOperation(run).blockchainTxHash !== null) {
-    if (isFeePolicyMismatch(run)) {
+    const op = activeLifecycleOperation(run);
+    const code = op.feePolicyViolationCode;
+    if (code === "GAS_LIMIT_CAP_EXCEEDED") {
+      return "The transaction was confirmed on Ethereum Sepolia, but the wallet used a gas limit above Edict’s authorized limit. No additional transaction will be submitted.";
+    }
+    if (code === "MAX_FEE_CAP_EXCEEDED") {
+      return "The transaction was confirmed on Ethereum Sepolia, but the wallet used a max fee per gas above Edict’s authorized limit. No additional transaction will be submitted.";
+    }
+    if (code === "PRIORITY_FEE_CAP_EXCEEDED") {
       return "The transaction was confirmed on Ethereum Sepolia, but the wallet used a network priority fee above Edict’s authorized limit. No additional transaction will be submitted.";
+    }
+    if (code === "NETWORK_FEE_CAP_EXCEEDED") {
+      return "The transaction was confirmed on Ethereum Sepolia, but the transaction’s maximum network fee exceeded Edict’s authorized ceiling. No additional transaction will be submitted.";
+    }
+    if (code === "LEGACY_GAS_PRICE") {
+      return "The transaction was confirmed on Ethereum Sepolia, but the wallet submitted a legacy transaction without EIP-1559 fee controls. No additional transaction will be submitted.";
+    }
+    if (code === "FEE_MODEL_CHANGED") {
+      return "The transaction was confirmed on Ethereum Sepolia, but the wallet modified the transaction fee model. No additional transaction will be submitted.";
+    }
+    if (code === "ACCESS_LIST_CHANGED") {
+      return "The transaction was confirmed on Ethereum Sepolia, but the transaction access list was modified. No additional transaction will be submitted.";
+    }
+    if (isFeePolicyMismatch(run)) {
+      return "The transaction was confirmed on Ethereum Sepolia, but the wallet used fee parameters outside Edict’s authorized limits. No additional transaction will be submitted.";
     }
     return "The transaction was submitted, but Edict detected an execution mismatch. Edict will not submit another transaction.";
   }

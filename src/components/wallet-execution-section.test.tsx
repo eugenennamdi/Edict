@@ -122,6 +122,46 @@ describe("wallet execution product surface", () => {
     expect(html).toContain("⚠");
   });
 
+  it("renders the precise gas limit cap mismatch card for legacy transactions without false priority fee claims", () => {
+    const base = fixture();
+    const gasMismatchRun = fixture({
+      schemaVersion: "4.0",
+      phase: "TOKENIZATION",
+      status: "RECONCILIATION_REQUIRED",
+      operations: [
+        {
+          ...base.operations[0],
+          stage: "BRICKKEN_CORRELATED",
+          blockchainTxHash: "0xca554ea011572fb03dc2f99f722dc408ea9ab730e2c8a73112bedec55e420eb7",
+          feePolicyViolationCode: "GAS_LIMIT_CAP_EXCEEDED",
+          authorizedGasLimit: "0x3fa847",
+          observedGasLimit: "0x48567f",
+          authorizedMaxFeePerGas: "0xe389a9d6",
+          observedMaxFeePerGas: "0x4bd88df2",
+          observedTransactionType: "0x0",
+          authorizedPriorityFeePerGas: "0xb2d05e00",
+          observedPriorityFeePerGas: null,
+        },
+        base.operations[1],
+        base.operations[2],
+      ],
+    });
+
+    const html = renderToStaticMarkup(createElement(WalletExecutionSection, { run: gasMismatchRun, onRefresh: async () => undefined }));
+
+    expect(html).toContain("Transaction completed with a policy mismatch");
+    expect(html).toContain("The transaction was confirmed on Ethereum Sepolia, but the wallet used a gas limit above Edict’s authorized limit. No additional transaction will be submitted.");
+    expect(html).toContain("Authorized gas limit");
+    expect(html).toContain("4,171,847 gas");
+    expect(html).toContain("Observed gas limit");
+    expect(html).toContain("4,740,735 gas");
+    expect(html).toContain("Transaction type");
+    expect(html).toContain("Legacy (type 0)");
+    expect(html).toContain("0xca554ea011572fb03dc2f99f722dc408ea9ab730e2c8a73112bedec55e420eb7");
+    expect(html).not.toContain("used a network priority fee above Edict’s authorized limit");
+    expect(html).not.toContain("Observed priority fee");
+  });
+
   it("serializes rapid starts and locks post-authority ambiguity", () => {
     const ready = reduceWalletExecutionUi(initialWalletExecutionUiModel, { type: "LOCAL_STATE", state: "READY" });
     const started = reduceWalletExecutionUi(ready, { type: "START" });

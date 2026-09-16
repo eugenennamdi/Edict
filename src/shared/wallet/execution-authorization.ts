@@ -205,7 +205,7 @@ export function createInitialFeeAuthorizationV1(input: {
   });
 }
 
-const actualFeeFieldsSchema = z.strictObject({
+const actualType2FeeFieldsSchema = z.strictObject({
   transactionType: z.literal("0x2"),
   gasLimit: quantity,
   maxFeePerGas: quantity,
@@ -214,38 +214,91 @@ const actualFeeFieldsSchema = z.strictObject({
   // Transaction type and max-fee fields, not this compatibility field, own
   // fee-model classification.
   gasPrice: quantity.nullable().optional(),
-  accessList,
+  accessList: accessList.optional().default([]),
+  baseFeePerGas: quantity.nullable().optional(),
 });
+
+const actualType0FeeFieldsSchema = z.strictObject({
+  transactionType: z.literal("0x0"),
+  gasLimit: quantity,
+  gasPrice: quantity,
+  maxFeePerGas: quantity.nullable().optional(),
+  maxPriorityFeePerGas: quantity.nullable().optional(),
+  accessList: accessList.optional().default([]),
+  baseFeePerGas: quantity.nullable().optional(),
+});
+
+const actualFeeFieldsSchema = z.discriminatedUnion("transactionType", [
+  actualType2FeeFieldsSchema,
+  actualType0FeeFieldsSchema,
+]);
 
 export function evaluateFeeAuthorizationV1(
   authorizationRaw: unknown,
   actualRaw: unknown,
 ): FeeAuthorizationDecisionV1 {
   const authorization = feeAuthorizationV1Schema.parse(authorizationRaw);
+  const caps = authorization.authorizedCaps;
+
   if (typeof actualRaw === "object" && actualRaw !== null) {
+    const rawObj = actualRaw as Record<string, unknown>;
+    if (typeof rawObj.gasLimit === "string" && /^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(rawObj.gasLimit)) {
+      if (BigInt(rawObj.gasLimit) > BigInt(caps.gasLimit)) {
+        return Object.freeze({ accepted: false, code: "GAS_LIMIT_CAP_EXCEEDED" });
+      }
+    }
     if (
-      "transactionType" in actualRaw &&
-      (actualRaw as { transactionType?: unknown }).transactionType === "0x0"
-    ) return Object.freeze({ accepted: false, code: "LEGACY_GAS_PRICE" });
+      "transactionType" in rawObj &&
+      rawObj.transactionType !== "0x2" &&
+      rawObj.transactionType !== "0x0"
+    ) {
+      return Object.freeze({ accepted: false, code: "FEE_MODEL_CHANGED" });
+    }
     if (
-      "transactionType" in actualRaw &&
-      (actualRaw as { transactionType?: unknown }).transactionType !== authorization.transactionType
-    ) return Object.freeze({ accepted: false, code: "FEE_MODEL_CHANGED" });
+      rawObj.transactionType === "0x0" &&
+      (rawObj.gasPrice === null || rawObj.gasPrice === undefined || rawObj.gasPrice === "")
+    ) {
+      return Object.freeze({ accepted: false, code: "LEGACY_GAS_PRICE" });
+    }
   }
+
   const actual = actualFeeFieldsSchema.parse(actualRaw);
-  if (actual.transactionType !== authorization.transactionType) {
-    return Object.freeze({ accepted: false, code: "FEE_MODEL_CHANGED" });
-  }
+
   if (canonicalizeJson(actual.accessList) !== canonicalizeJson(authorization.preparedAccessList)) {
     return Object.freeze({ accepted: false, code: "ACCESS_LIST_CHANGED" });
   }
+
   const gas = BigInt(actual.gasLimit);
-  const maxFee = BigInt(actual.maxFeePerGas);
-  const priority = BigInt(actual.maxPriorityFeePerGas);
-  const caps = authorization.authorizedCaps;
   if (gas > BigInt(caps.gasLimit)) {
     return Object.freeze({ accepted: false, code: "GAS_LIMIT_CAP_EXCEEDED" });
   }
+
+  if (actual.transactionType === "0x0") {
+    const gasPrice = BigInt(actual.gasPrice);
+    if (gasPrice > BigInt(caps.maxFeePerGas)) {
+      return Object.freeze({ accepted: false, code: "MAX_FEE_CAP_EXCEEDED" });
+    }
+
+    const baseFee = actual.baseFeePerGas ? BigInt(actual.baseFeePerGas) : 0n;
+    const effectivePriority = gasPrice > baseFee ? gasPrice - baseFee : 0n;
+    if (effectivePriority > BigInt(caps.maxPriorityFeePerGas)) {
+      return Object.freeze({ accepted: false, code: "PRIORITY_FEE_CAP_EXCEEDED" });
+    }
+
+    const maximumNetworkFee = gas * gasPrice;
+    if (maximumNetworkFee > MAX_UINT256 || maximumNetworkFee > BigInt(caps.maximumNetworkFeeWei)) {
+      return Object.freeze({ accepted: false, code: "NETWORK_FEE_CAP_EXCEEDED" });
+    }
+
+    return Object.freeze({
+      accepted: true,
+      maximumNetworkFeeWei: `0x${maximumNetworkFee.toString(16)}`,
+    });
+  }
+
+  const maxFee = BigInt(actual.maxFeePerGas);
+  const priority = BigInt(actual.maxPriorityFeePerGas);
+
   if (maxFee > BigInt(caps.maxFeePerGas)) {
     return Object.freeze({ accepted: false, code: "MAX_FEE_CAP_EXCEEDED" });
   }

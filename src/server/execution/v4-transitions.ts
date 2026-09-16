@@ -753,12 +753,34 @@ export function recordRpcTransactionV4(input: {
   } catch {
     // The immutable transaction exists and matches; invalid fee evidence is a policy violation.
   }
+  const parseQuantityOrNull = (val: unknown): string | null =>
+    typeof val === "string" && /^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(val) ? val : null;
+
   const actualFeeObj = typeof input.actualFeeFields === "object" && input.actualFeeFields !== null
     ? (input.actualFeeFields as Record<string, unknown>)
     : null;
-  const observedPriorityFee = typeof actualFeeObj?.maxPriorityFeePerGas === "string"
-    ? actualFeeObj.maxPriorityFeePerGas
+  const observedTxType = typeof actualFeeObj?.transactionType === "string"
+    ? actualFeeObj.transactionType
     : null;
+  let observedPriorityFee: string | null = null;
+  if (observedTxType === "0x2" && typeof actualFeeObj?.maxPriorityFeePerGas === "string") {
+    observedPriorityFee = parseQuantityOrNull(actualFeeObj.maxPriorityFeePerGas);
+  } else if (observedTxType === "0x0" && typeof actualFeeObj?.gasPrice === "string") {
+    const rawGasPrice = parseQuantityOrNull(actualFeeObj.gasPrice);
+    if (rawGasPrice) {
+      const gasPrice = BigInt(rawGasPrice);
+      const rawBaseFee = parseQuantityOrNull(actualFeeObj.baseFeePerGas);
+      const baseFee = rawBaseFee ? BigInt(rawBaseFee) : null;
+      if (baseFee !== null) {
+        const effPriority = gasPrice > baseFee ? gasPrice - baseFee : 0n;
+        observedPriorityFee = `0x${effPriority.toString(16)}`;
+      }
+    }
+  }
+  const observedGasLimit = parseQuantityOrNull(actualFeeObj?.gasLimit);
+  const observedMaxFee = parseQuantityOrNull(
+    observedTxType === "0x2" ? actualFeeObj?.maxFeePerGas : actualFeeObj?.gasPrice
+  );
   if (feeDecision === null || !feeDecision.accepted) {
     const evidence: RpcTransactionAuthorizationEvidenceV1 = {
       evidenceVersion: "1.0",
@@ -770,6 +792,9 @@ export function recordRpcTransactionV4(input: {
       feePolicyViolationCode: feeDecision?.code ?? "INVALID_FEE_EVIDENCE",
       observedMaximumNetworkFeeWei: null,
       observedPriorityFeePerGas: observedPriorityFee,
+      observedGasLimit,
+      observedMaxFeePerGas: observedMaxFee,
+      observedTransactionType: observedTxType,
     };
     return appendEvent(
       replaceOperation({ ...run, status: "RECONCILIATION_REQUIRED" }, input.kind, {
@@ -791,6 +816,9 @@ export function recordRpcTransactionV4(input: {
     feePolicyViolationCode: null,
     observedMaximumNetworkFeeWei: feeDecision.maximumNetworkFeeWei,
     observedPriorityFeePerGas: observedPriorityFee,
+    observedGasLimit,
+    observedMaxFeePerGas: observedMaxFee,
+    observedTransactionType: observedTxType,
   };
   return appendEvent(
     replaceOperation({ ...run, status: "BROADCAST_RECORDED" }, input.kind, {

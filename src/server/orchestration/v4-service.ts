@@ -1475,13 +1475,29 @@ export class ExecutionV4Orchestrator {
       nonce: tx.nonce,
     };
 
+    let baseFeePerGas: string | null = null;
+    if (tx.type === "0x0") {
+      try {
+        if (tx.blockHash !== null) {
+          const block = await this.#deps.rpc.getBlockByHash(tx.blockHash);
+          if (block?.baseFeePerGas) baseFeePerGas = block.baseFeePerGas;
+        } else {
+          const block = await this.#deps.rpc.getLatestBlock();
+          if (block?.baseFeePerGas) baseFeePerGas = block.baseFeePerGas;
+        }
+      } catch {
+        // Non-fatal if transport lacks block handler
+      }
+    }
+
     const actualFeeFields = {
-      transactionType: "0x2" as const,
+      transactionType: tx.type,
       gasLimit: tx.gas,
-      maxFeePerGas: tx.maxFeePerGas ?? "0x0",
-      maxPriorityFeePerGas: tx.maxPriorityFeePerGas ?? "0x0",
+      maxFeePerGas: tx.maxFeePerGas ?? null,
+      maxPriorityFeePerGas: tx.maxPriorityFeePerGas ?? null,
       gasPrice: tx.gasPrice,
       accessList: tx.accessList,
+      baseFeePerGas,
     };
 
     const nextRun = recordRpcTransactionV4({
@@ -1532,7 +1548,7 @@ export class ExecutionV4Orchestrator {
       txHash: op.blockchainTxHash,
       expectedFrom: op.rpcTransactionEvidence.immutableIdentity.from,
       expectedTo: op.rpcTransactionEvidence.immutableIdentity.to,
-      expectedType: "0x2",
+      expectedType: (op.rpcTransactionEvidence.observedTransactionType as "0x0" | "0x1" | "0x2" | null) ?? undefined,
       gasLimit: active.feeAuthorization?.authorizedCaps.gasLimit,
       observedAt: this.#deps.clock.nowIso(),
     });

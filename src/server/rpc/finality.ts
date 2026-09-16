@@ -114,7 +114,10 @@ export async function evaluateReceiptAndFinality(
   // Validate receipt identity matches expected execution parameters
   const fromMatches = sameAddress(receipt.from, input.expectedFrom);
   const toMatches = sameAddress(receipt.to, input.expectedTo);
-  const typeMatches = receipt.type === (input.expectedType ?? "0x2");
+  const typeMatches =
+    input.expectedType === undefined
+      ? (receipt.type === "0x2" || receipt.type === "0x0")
+      : receipt.type === input.expectedType;
   const gasLimitMatches =
     input.gasLimit === undefined || BigInt(receipt.gasUsed) <= BigInt(input.gasLimit);
   const noContractCreation = receipt.contractAddress === null;

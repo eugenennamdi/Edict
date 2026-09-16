@@ -236,6 +236,9 @@ export interface RpcTransactionAuthorizationEvidenceV1 {
     | null;
   readonly observedMaximumNetworkFeeWei: string | null;
   readonly observedPriorityFeePerGas?: string | null;
+  readonly observedGasLimit?: string | null;
+  readonly observedMaxFeePerGas?: string | null;
+  readonly observedTransactionType?: string | null;
 }
 
 export interface BrickkenCorrelationAttemptV1 {

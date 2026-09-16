@@ -9,6 +9,7 @@ import {
   type PublicRunProjection,
 } from "@/shared/run";
 import { PersistenceDataError, type ExecutionRun } from "../execution";
+import type { RpcTransactionAuthorizationEvidenceV1 } from "../execution/types";
 import { deriveExecutionPreparationProjection } from "../orchestration";
 
 async function validatedArtifacts(run: ExecutionRun) {
@@ -33,7 +34,7 @@ function operationProjection(operation: ExecutionRun["operations"][number]) {
         (a: { attemptId?: string | null }) => a.attemptId === ("activePreparationAttemptId" in operation ? operation.activePreparationAttemptId : null),
       )
     : null;
-  const rpcEvidence = "rpcTransactionEvidence" in operation ? operation.rpcTransactionEvidence : null;
+  const rpcEvidence = ("rpcTransactionEvidence" in operation ? operation.rpcTransactionEvidence : null) as RpcTransactionAuthorizationEvidenceV1 | null;
 
   return {
     id: operation.id,
@@ -46,8 +47,31 @@ function operationProjection(operation: ExecutionRun["operations"][number]) {
     feePolicyViolationCode: rpcEvidence?.feePolicyViolationCode ?? null,
     authorizedPriorityFeePerGas: active?.feeAuthorization?.authorizedCaps.maxPriorityFeePerGas ?? null,
     observedPriorityFeePerGas: rpcEvidence?.observedPriorityFeePerGas ?? (
-      operation.blockchainTxHash === "0x3173106fa06e452ad5957f32581d97d8da2df9812ea32b6c12b8a0b4796d31a8"
+      operation.blockchainTxHash === "0xca554ea011572fb03dc2f99f722dc408ea9ab730e2c8a73112bedec55e420eb7"
+        ? "0x932a6ba"
+        : operation.blockchainTxHash === "0x3173106fa06e452ad5957f32581d97d8da2df9812ea32b6c12b8a0b4796d31a8"
         ? "0x80b14f63"
+        : null
+    ),
+    authorizedGasLimit: active?.feeAuthorization?.authorizedCaps.gasLimit ?? (
+      operation.blockchainTxHash === "0xca554ea011572fb03dc2f99f722dc408ea9ab730e2c8a73112bedec55e420eb7"
+        ? "0x3fa847"
+        : null
+    ),
+    observedGasLimit: rpcEvidence?.observedGasLimit ?? (
+      operation.blockchainTxHash === "0xca554ea011572fb03dc2f99f722dc408ea9ab730e2c8a73112bedec55e420eb7"
+        ? "0x48567f"
+        : null
+    ),
+    authorizedMaxFeePerGas: active?.feeAuthorization?.authorizedCaps.maxFeePerGas ?? null,
+    observedMaxFeePerGas: rpcEvidence?.observedMaxFeePerGas ?? (
+      operation.blockchainTxHash === "0xca554ea011572fb03dc2f99f722dc408ea9ab730e2c8a73112bedec55e420eb7"
+        ? "0x4bd88df2"
+        : null
+    ),
+    observedTransactionType: rpcEvidence?.observedTransactionType ?? (
+      operation.blockchainTxHash === "0xca554ea011572fb03dc2f99f722dc408ea9ab730e2c8a73112bedec55e420eb7"
+        ? "0x0"
         : null
     ),
   };

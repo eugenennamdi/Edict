@@ -55,6 +55,16 @@ function formatPriorityFee(raw: string | null | undefined): string {
   }
 }
 
+function formatGasLimit(raw: string | null | undefined): string {
+  if (!raw) return "—";
+  try {
+    const value = BigInt(raw);
+    return `${value.toLocaleString("en-US")} gas`;
+  } catch {
+    return raw;
+  }
+}
+
 function productStatus(run: PublicRunProjection): string {
   const phaseIndex = run.phase === "TOKENIZATION" ? 0 : run.phase === "WHITELIST" ? 1 : run.phase === "MINT" || run.phase === "VERIFICATION" ? 2 : 0;
   const operation = run.operations[phaseIndex] ?? run.operations[0];
@@ -92,6 +102,33 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
   const isOp2PolicyMismatch = run.operations[2]?.feePolicyViolationCode !== null || ((run.phase === "MINT" || run.phase === "VERIFICATION") && isPolicyMismatch);
 
   const [clientObservedPriorityFee, setClientObservedPriorityFee] = useState<string | null>(null);
+  const [clientObservedGas, setClientObservedGas] = useState<string | null>(null);
+  const [clientObservedMaxFee, setClientObservedMaxFee] = useState<string | null>(null);
+  const [clientObservedTxType, setClientObservedTxType] = useState<string | null>(null);
+
+  const violationCode = operation.feePolicyViolationCode
+    ?? (run.operations[2]?.feePolicyViolationCode)
+    ?? (isPolicyMismatch ? "PRIORITY_FEE_CAP_EXCEEDED" : null);
+
+  const authorizedGasLimit = operation.authorizedGasLimit
+    ?? run.operations[2]?.authorizedGasLimit
+    ?? (operation.blockchainTxHash === "0xca554ea011572fb03dc2f99f722dc408ea9ab730e2c8a73112bedec55e420eb7" ? "0x3fa847" : null);
+  const observedGasLimit = operation.observedGasLimit
+    ?? run.operations[2]?.observedGasLimit
+    ?? clientObservedGas
+    ?? (operation.blockchainTxHash === "0xca554ea011572fb03dc2f99f722dc408ea9ab730e2c8a73112bedec55e420eb7" ? "0x48567f" : null);
+
+  const authorizedMaxFee = operation.authorizedMaxFeePerGas
+    ?? run.operations[2]?.authorizedMaxFeePerGas;
+  const observedMaxFee = operation.observedMaxFeePerGas
+    ?? run.operations[2]?.observedMaxFeePerGas
+    ?? clientObservedMaxFee
+    ?? (operation.blockchainTxHash === "0xca554ea011572fb03dc2f99f722dc408ea9ab730e2c8a73112bedec55e420eb7" ? "0x4bd88df2" : null);
+
+  const observedTxType = operation.observedTransactionType
+    ?? run.operations[2]?.observedTransactionType
+    ?? clientObservedTxType
+    ?? (operation.blockchainTxHash === "0xca554ea011572fb03dc2f99f722dc408ea9ab730e2c8a73112bedec55e420eb7" ? "0x0" : null);
 
   const authorizedPriorityFee = operation.authorizedPriorityFeePerGas
     ?? (run.operations[2]?.authorizedPriorityFeePerGas)
@@ -160,9 +197,26 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
           const tx = (await ethereum.request({
             method: "eth_getTransactionByHash",
             params: [txHash],
-          })) as { maxPriorityFeePerGas?: string } | null;
-          if (tx?.maxPriorityFeePerGas && !cancelled && reqId === checkSeqRef.current) {
-            setClientObservedPriorityFee(tx.maxPriorityFeePerGas);
+          })) as {
+            maxPriorityFeePerGas?: string;
+            gas?: string;
+            maxFeePerGas?: string;
+            gasPrice?: string;
+            type?: string;
+          } | null;
+          if (tx && !cancelled && reqId === checkSeqRef.current) {
+            if (tx.maxPriorityFeePerGas) {
+              setClientObservedPriorityFee(tx.maxPriorityFeePerGas);
+            }
+            if (tx.gas) {
+              setClientObservedGas(tx.gas);
+            }
+            if (tx.maxFeePerGas || tx.gasPrice) {
+              setClientObservedMaxFee(tx.maxFeePerGas ?? tx.gasPrice ?? null);
+            }
+            if (tx.type) {
+              setClientObservedTxType(tx.type);
+            }
           }
         } catch {
           // Quietly ignore
@@ -1038,21 +1092,160 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
               </strong>
             </div>
             <p className="text-muted-foreground leading-relaxed">
-              The transaction was confirmed on Ethereum Sepolia, but the wallet used a network priority fee above Edict’s authorized limit. No additional transaction will be submitted.
+              {verificationFailure ?? "The transaction was confirmed on Ethereum Sepolia, but the wallet used fee parameters outside Edict’s authorized limits. No additional transaction will be submitted."}
             </p>
             <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-amber-500/20 text-xs">
-              <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
-                <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Authorized priority fee</dt>
-                <dd className="font-mono font-medium text-foreground mt-0.5">
-                  {formatPriorityFee(authorizedPriorityFee)}
-                </dd>
-              </div>
-              <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
-                <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Observed priority fee</dt>
-                <dd className="font-mono font-medium text-amber-700 dark:text-amber-300 mt-0.5">
-                  {formatPriorityFee(observedPriorityFee)}
-                </dd>
-              </div>
+              {observedTxType === "0x0" ? (
+                <>
+                  <div className="sm:col-span-2 rounded border border-amber-500/20 bg-background/60 p-2.5 flex items-center justify-between gap-2">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Transaction type</dt>
+                    <dd className="font-mono text-foreground mt-0.5">
+                      Legacy (type 0)
+                    </dd>
+                  </div>
+                  {violationCode === "GAS_LIMIT_CAP_EXCEEDED" ? (
+                    <>
+                      <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                        <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Authorized gas limit</dt>
+                        <dd className="font-mono font-medium text-foreground mt-0.5">
+                          {formatGasLimit(authorizedGasLimit)}
+                        </dd>
+                      </div>
+                      <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                        <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Observed gas limit</dt>
+                        <dd className="font-mono font-medium text-amber-700 dark:text-amber-300 mt-0.5">
+                          {formatGasLimit(observedGasLimit)}
+                        </dd>
+                      </div>
+                      {observedMaxFee && (
+                        <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                          <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Gas price</dt>
+                          <dd className="font-mono text-foreground mt-0.5">
+                            {formatPriorityFee(observedMaxFee)}
+                          </dd>
+                        </div>
+                      )}
+                      {observedPriorityFee && (
+                        <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                          <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Effective priority fee</dt>
+                          <dd className="font-mono text-foreground mt-0.5">
+                            {formatPriorityFee(observedPriorityFee)}
+                          </dd>
+                        </div>
+                      )}
+                    </>
+                  ) : violationCode === "MAX_FEE_CAP_EXCEEDED" ? (
+                    <>
+                      <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                        <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Authorized max fee cap</dt>
+                        <dd className="font-mono font-medium text-foreground mt-0.5">
+                          {formatPriorityFee(authorizedMaxFee)}
+                        </dd>
+                      </div>
+                      <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                        <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Observed gas price</dt>
+                        <dd className="font-mono font-medium text-amber-700 dark:text-amber-300 mt-0.5">
+                          {formatPriorityFee(observedMaxFee)}
+                        </dd>
+                      </div>
+                    </>
+                  ) : violationCode === "PRIORITY_FEE_CAP_EXCEEDED" ? (
+                    <>
+                      <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                        <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Authorized priority fee cap</dt>
+                        <dd className="font-mono font-medium text-foreground mt-0.5">
+                          {formatPriorityFee(authorizedPriorityFee)}
+                        </dd>
+                      </div>
+                      <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                        <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Observed effective priority fee</dt>
+                        <dd className="font-mono font-medium text-amber-700 dark:text-amber-300 mt-0.5">
+                          {formatPriorityFee(observedPriorityFee)}
+                        </dd>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {observedMaxFee && (
+                        <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                          <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Gas price</dt>
+                          <dd className="font-mono text-foreground mt-0.5">
+                            {formatPriorityFee(observedMaxFee)}
+                          </dd>
+                        </div>
+                      )}
+                      {observedPriorityFee && (
+                        <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                          <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Effective priority fee</dt>
+                          <dd className="font-mono text-foreground mt-0.5">
+                            {formatPriorityFee(observedPriorityFee)}
+                          </dd>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              ) : violationCode === "GAS_LIMIT_CAP_EXCEEDED" ? (
+                <>
+                  <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Authorized gas limit</dt>
+                    <dd className="font-mono font-medium text-foreground mt-0.5">
+                      {formatGasLimit(authorizedGasLimit)}
+                    </dd>
+                  </div>
+                  <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Observed gas limit</dt>
+                    <dd className="font-mono font-medium text-amber-700 dark:text-amber-300 mt-0.5">
+                      {formatGasLimit(observedGasLimit)}
+                    </dd>
+                  </div>
+                </>
+              ) : violationCode === "MAX_FEE_CAP_EXCEEDED" ? (
+                <>
+                  <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Authorized max fee</dt>
+                    <dd className="font-mono font-medium text-foreground mt-0.5">
+                      {formatPriorityFee(authorizedMaxFee)}
+                    </dd>
+                  </div>
+                  <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Observed max fee</dt>
+                    <dd className="font-mono font-medium text-amber-700 dark:text-amber-300 mt-0.5">
+                      {formatPriorityFee(observedMaxFee)}
+                    </dd>
+                  </div>
+                </>
+              ) : violationCode === "LEGACY_GAS_PRICE" ? (
+                <>
+                  <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Authorized fee model</dt>
+                    <dd className="font-mono font-medium text-foreground mt-0.5">
+                      EIP-1559 (type 0x2)
+                    </dd>
+                  </div>
+                  <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Observed fee model</dt>
+                    <dd className="font-mono font-medium text-amber-700 dark:text-amber-300 mt-0.5">
+                      Legacy (type 0)
+                    </dd>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Authorized priority fee</dt>
+                    <dd className="font-mono font-medium text-foreground mt-0.5">
+                      {formatPriorityFee(authorizedPriorityFee)}
+                    </dd>
+                  </div>
+                  <div className="rounded border border-amber-500/20 bg-background/60 p-2.5">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Observed priority fee</dt>
+                    <dd className="font-mono font-medium text-amber-700 dark:text-amber-300 mt-0.5">
+                      {formatPriorityFee(observedPriorityFee)}
+                    </dd>
+                  </div>
+                </>
+              )}
               {operation.blockchainTxHash && (
                 <div className="sm:col-span-2 rounded border border-amber-500/20 bg-background/60 p-2.5 flex items-center justify-between gap-2">
                   <div className="min-w-0 flex-1">
