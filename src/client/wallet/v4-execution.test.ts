@@ -84,8 +84,14 @@ function harness(provider = new Provider()) {
   const unknowns: unknown[] = [];
   let authorityAvailable = true;
   const gateway: WalletExecutionHttpGateway = {
+    execute: vi.fn(async () => {
+      if (!authorityAvailable) throw new Error("revision conflict");
+      authorityAvailable = false;
+      return envelope;
+    }),
     promote: vi.fn(async () => ({} as never)),
     readiness: vi.fn(async () => ({} as never)),
+    reprepare: vi.fn(async () => ({} as never)),
     authorize: vi.fn(async () => {
       if (!authorityAvailable) throw new Error("revision conflict");
       authorityAvailable = false;
@@ -156,7 +162,7 @@ describe("V4 browser wallet execution coordinator", () => {
 
   it("keeps production deny-all distinct from TOKENIZE policy refusal", async () => {
     const denied = harness();
-    vi.mocked(denied.gateway.authorize).mockRejectedValueOnce(
+    vi.mocked(denied.gateway.execute).mockRejectedValueOnce(
       new WalletExecutionGatewayError("EXECUTION_AUTHORIZATION_UNAVAILABLE"),
     );
     await expect(execute(denied)).rejects.toMatchObject({
@@ -165,7 +171,7 @@ describe("V4 browser wallet execution coordinator", () => {
     expect(sends(denied.provider)).toHaveLength(0);
 
     const refused = harness();
-    vi.mocked(refused.gateway.authorize).mockRejectedValueOnce(
+    vi.mocked(refused.gateway.execute).mockRejectedValueOnce(
       new WalletExecutionGatewayError("AUTHORIZATION_POLICY_REFUSED"),
     );
     await expect(execute(refused)).rejects.toMatchObject({
@@ -174,7 +180,7 @@ describe("V4 browser wallet execution coordinator", () => {
     expect(sends(refused.provider)).toHaveLength(0);
 
     const freshnessFailed = harness();
-    vi.mocked(freshnessFailed.gateway.authorize).mockRejectedValueOnce(
+    vi.mocked(freshnessFailed.gateway.execute).mockRejectedValueOnce(
       new WalletExecutionGatewayError("FRESHNESS_CHECK_FAILED"),
     );
     await expect(execute(freshnessFailed)).rejects.toMatchObject({
@@ -187,14 +193,14 @@ describe("V4 browser wallet execution coordinator", () => {
     const value = harness();
     value.provider.accounts = [OTHER];
     await expect(execute(value)).rejects.toMatchObject({ code: "REQUIRED_ACCOUNT_UNAVAILABLE" });
-    expect(value.gateway.authorize).not.toHaveBeenCalled();
+    expect(value.gateway.execute).not.toHaveBeenCalled();
     expect(sends(value.provider)).toHaveLength(0);
   });
 
   it("turns account or provider-generation changes after authority release into reconciliation without sending", async () => {
     for (const change of ["account", "generation"] as const) {
       const value = harness();
-      vi.mocked(value.gateway.authorize).mockImplementationOnce(async () => {
+      vi.mocked(value.gateway.execute).mockImplementationOnce(async () => {
         if (change === "account") value.provider.accounts = [OTHER];
         else value.provider.emit("accountsChanged");
         return envelope;

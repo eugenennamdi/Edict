@@ -2,27 +2,18 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { PlanningView } from "./run-planning";
-import { displayUtc, operationLabels, recordStatus, type Draft } from "./planning-presentation";
+import { displayUtc, recordStatus, operationLabels, type Draft } from "./planning-presentation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import {
   Check,
   Copy,
   FileCode,
-  Layers,
-  Sparkles,
-  ExternalLink,
   ChevronDown,
   ChevronRight,
-  Clock,
-  CircleDot,
   CheckCircle2,
-  Wallet,
-  ArrowRightLeft,
-  Coins,
 } from "lucide-react";
 
 export function CopyValue({
@@ -121,7 +112,7 @@ export function DraftSummary({
               Provisional Preview
             </Badge>
             <Badge variant={ready ? "success" : "secondary"} className="text-[11px]">
-              {ready ? "Ready to record" : `${filled}/9 fields`}
+              {ready ? "Ready to record" : `${filled}/5 fields`}
             </Badge>
           </div>
           <CardTitle className="text-lg font-semibold pt-1">Draft Preview</CardTitle>
@@ -133,9 +124,9 @@ export function DraftSummary({
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>Mandate completeness</span>
-              <span className="font-mono font-medium text-foreground">{Math.round((filled / 9) * 100)}%</span>
+              <span className="font-mono font-medium text-foreground">{Math.round((filled / 5) * 100)}%</span>
             </div>
-            <Progress value={filled} max={9} indicatorClassName={ready ? "bg-emerald-600 dark:bg-emerald-500" : "bg-primary"} />
+            <Progress value={filled} max={5} indicatorClassName={ready ? "bg-emerald-600 dark:bg-emerald-500" : "bg-primary"} />
           </div>
 
           <Separator />
@@ -156,7 +147,6 @@ export function DraftSummary({
             <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
               02 · Signing Authority
             </span>
-            <Row label="Tokenizer">{draft.tokenizerEmail}</Row>
             <Row label="Signer" mono>{draft.tokenizerWallet ? `${draft.tokenizerWallet.slice(0, 8)}…${draft.tokenizerWallet.slice(-6)}` : ""}</Row>
           </div>
 
@@ -166,9 +156,9 @@ export function DraftSummary({
             <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
               03 · Allocation
             </span>
-            <Row label="Investor">{draft.investorEmail}</Row>
-            <Row label="Recipient" mono>{draft.investorWallet ? `${draft.investorWallet.slice(0, 8)}…${draft.investorWallet.slice(-6)}` : ""}</Row>
-            <Row label="Mint amount" mono>{draft.mintAmount ? `${draft.mintAmount} tokens` : ""}</Row>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Optional after token creation. Excluded from this mandate.
+            </p>
           </div>
 
           <div className="rounded-lg bg-muted/40 p-2.5 border flex items-center justify-between text-xs text-muted-foreground font-mono">
@@ -217,20 +207,23 @@ export function RecordedManifest({ view }: { view: PlanningView }) {
             <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
               02 · Signing Authority
             </span>
-            <Row label="Tokenizer email">{m.tokenizer.email}</Row>
+            {m.tokenizer.email && <Row label="Tokenizer email">{m.tokenizer.email}</Row>}
             <CopyValue label="Required signer" value={run.requiredSigner.walletAddress} compact />
           </div>
 
-          <Separator />
-
-          <div className="space-y-2">
-            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
-              03 · Investor Allocation
-            </span>
-            <Row label="Investor email">{m.investor.email}</Row>
-            <CopyValue label="Recipient address" value={m.investor.walletAddress} compact />
-            <Row label="Mint amount" mono>{m.investor.mintAmount} tokens</Row>
-          </div>
+          {m.investor && (
+            <>
+              <Separator />
+              <div className="space-y-2">
+                <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
+                  03 · Future allocation · unavailable
+                </span>
+                <Row label="Investor email">{m.investor.email}</Row>
+                <CopyValue label="Recipient address" value={m.investor.walletAddress} compact />
+                <Row label="Mint amount" mono>{m.investor.mintAmount} tokens</Row>
+              </div>
+            </>
+          )}
 
           <div className="rounded-lg bg-muted/40 p-2.5 border flex items-center justify-between text-xs text-muted-foreground font-mono">
             <span>{m.asset.tokenType}</span>
@@ -264,24 +257,29 @@ export function RecordedManifest({ view }: { view: PlanningView }) {
 }
 
 export function PlanDocument({ view }: { view: PlanningView }) {
+  const outcomes = view.plan.operations.map((operation) => ({
+    title: operation.kind === "TOKENIZE" ? "Create tokenized asset" :
+      operation.kind === "CONFIRM_TOKENIZATION" ? "Verify tokenization" : operationLabels[operation.kind],
+    summary: operation.summary,
+  }));
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <Badge variant="brand" className="font-mono text-[11px] font-semibold tracking-wide">
-          EXECUTION PIPELINE
+          MANDATE PLAN
         </Badge>
         <span className="text-xs text-muted-foreground font-mono">
-          7 operations
+          {outcomes.length} outcomes
         </span>
       </div>
 
       <Card className="shadow-xs">
         <CardHeader className="pb-4">
           <CardTitle className="text-xl font-bold tracking-tight">
-            Deterministic Execution Plan
+            What Edict will accomplish
           </CardTitle>
           <CardDescription className="text-xs leading-relaxed max-w-xl">
-            Sequential orchestration graph: 3 explicit wallet signatures with automated confirmation and read-back between each step.
+            A deterministic, approved outcome plan. Edict handles preparation, durable transitions, and verification internally.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6 pt-0">
@@ -293,37 +291,33 @@ export function PlanDocument({ view }: { view: PlanningView }) {
           </div>
 
           <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-3 before:bottom-3 before:w-[2px] before:bg-border">
-            {view.plan.operations.map((op) => {
-              const isWallet = op.mode === "WALLET_TRANSACTION";
-              const isFinal = op.mode === "FINAL_VERIFICATION";
-
+            {outcomes.map((outcome, index) => {
+              const isFinal = index === outcomes.length - 1;
               return (
-                <div key={op.id} className="relative group">
+                <div key={outcome.title} className="relative group">
                   <div
                     className={`absolute -left-6 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border bg-background text-[10px] font-mono font-bold transition-all shadow-2xs ${
-                      isWallet
-                        ? "border-amber-500 text-amber-600 dark:text-amber-400 ring-2 ring-amber-500/20"
-                        : isFinal
+                      isFinal
                         ? "border-emerald-500 text-emerald-600 dark:text-emerald-400 ring-2 ring-emerald-500/20"
                         : "border-border text-muted-foreground"
                     }`}
                   >
-                    {String(op.sequence).padStart(2, "0")}
+                    {String(index + 1).padStart(2, "0")}
                   </div>
 
                   <Card className="p-4 bg-card/60 hover:bg-card transition-colors">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2">
                       <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-                        {operationLabels[op.kind]}
+                        {outcome.title}
                       </h3>
                       <Badge
-                        variant={isWallet ? "warning" : isFinal ? "success" : "secondary"}
+                        variant={isFinal ? "success" : "secondary"}
                         className="text-[10px] shrink-0 font-medium tracking-wide"
                       >
-                        {isWallet ? "Wallet prompt" : isFinal ? "Final verification" : "Automated read-back"}
+                        {isFinal ? "Verified result" : "Mandate outcome"}
                       </Badge>
                     </div>
-                    <p className="text-xs text-muted-foreground leading-relaxed">{op.summary}</p>
+                    <p className="text-xs text-muted-foreground leading-relaxed">{outcome.summary}</p>
                   </Card>
                 </div>
               );

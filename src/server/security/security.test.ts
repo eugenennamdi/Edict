@@ -3,9 +3,7 @@ import { z } from "zod";
 import { buildExecutionPlanV1, validateAssetManifestV1 } from "@/core";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
 import { ExecutionRunService } from "../execution/run-service";
-import { applyRunEvent } from "../execution/transitions";
 import type { ExecutionRun } from "../execution/types";
-import { decodeExecutionRunV1, encodeExecutionRunV1 } from "../persistence/codec";
 import { APPROVAL_SIGNATURE_VECTOR as vector } from "./public-signature-vector";
 import { RUN_ACCESS_COOKIE, RunAccessService, runAccessCookieOptions } from "./run-access";
 import {
@@ -107,44 +105,22 @@ describe("run capability security", () => {
 });
 
 describe("EOA wallet approval", () => {
-  it("recovers and durably reconstructs the checked-in public signature", async () => {
-    const run = await vectorRun();
-    let now = vector.issuedAt;
-    const wallet = new WalletApprovalService({
-      mac: new DomainSeparatedTokenMac(secret),
-      clock: { nowEpochSeconds: () => now },
-      nonces: fixedNonce,
-    });
-    const challenge = await wallet.issueChallenge(run, run.revision);
-    expect(challenge.typedData.message.manifestHash).toBe(`0x${vector.manifestHash.slice(7)}`);
-    expect(challenge.typedData.message.planHash).toBe(`0x${vector.planHash.slice(7)}`);
-    expect(challenge.typedDataDigest).toBe(vector.typedDataDigest);
-    expect(challenge.signingRequest.method).toBe("eth_signTypedData_v4");
-    expect(challenge.signingRequest.params[0]).toBe(vector.signer);
-    expect(JSON.parse(challenge.signingRequest.params[1])).toEqual(challenge.typedData);
-    now += 1;
-    const proof = await wallet.verify(
-      run,
-      run.revision,
-      challenge.challengeToken,
-      vector.signature,
-      "2026-09-04T10:00:01.000Z",
-    );
-    expect(proof.recoveredSigner).toBe(vector.signer);
-    expect(proof.typedDataDigest).toBe(vector.typedDataDigest);
-    const approved = applyRunEvent(run, {
-      type: "APPROVE_PLAN",
-      id: "approval-event",
-      at: proof.verifiedAt,
-      planHash: run.planHash,
-      approvedByWallet: proof.recoveredSigner,
-      proof,
-    });
-    const durable = decodeExecutionRunV1(encodeExecutionRunV1(approved));
-    expect(durable.schemaVersion).toBe("2.0");
-    expect(durable.approval && "proof" in durable.approval).toBe(true);
-    if (!durable.approval || !("proof" in durable.approval)) throw new Error("Missing proof.");
-    expect(await wallet.reproduceSigner(durable.approval.proof)).toBe(vector.signer);
+  it("reconstructs the historical public signature without authorizing its disabled plan", async () => {
+    const current = await vectorRun();
+    const wallet = new WalletApprovalService({ mac: new DomainSeparatedTokenMac(secret),
+      clock: { nowEpochSeconds: () => vector.issuedAt }, nonces: fixedNonce });
+    const historical = { ...current, planHash: vector.planHash,
+      plan: { ...current.plan, executionScope: undefined, planHash: vector.planHash } };
+    await expect(wallet.issueChallenge(historical, historical.revision)).rejects.toThrow();
+    const proof = {
+      scheme: "EIP712_EOA" as const, proofVersion: "1.0" as const, domainVersion: "1" as const,
+      runId: vector.runId, manifestHash: vector.manifestHash, planHash: vector.planHash,
+      environment: "sandbox" as const, chainId: "11155111" as const, approvalRevision: 1,
+      requiredSigner: vector.signer, recoveredSigner: vector.signer, challengeNonce: vector.nonce,
+      issuedAt: new Date(vector.issuedAt * 1000).toISOString(), expiresAt: new Date(vector.expiresAt * 1000).toISOString(),
+      verifiedAt: "2026-09-04T10:00:01.000Z", typedDataDigest: vector.typedDataDigest, publicSignature: vector.signature,
+    };
+    expect(await wallet.reproduceSigner(proof)).toBe(vector.signer);
   });
 
   it("fails closed for the wrong signer and never claims EIP-1271 or personal-sign", async () => {

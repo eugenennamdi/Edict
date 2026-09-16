@@ -156,6 +156,8 @@ export interface FreshnessEvaluation {
 export interface TrustedSepoliaRpcClient {
   readonly chainId: typeof SEPOLIA_DECIMAL_CHAIN_ID;
   verifyChain(): Promise<void>;
+  call?(request: { to: string; data: string; from?: string }, blockNumber: string): Promise<string>;
+  getCode?(address: string, blockNumber: string): Promise<string>;
   getPendingNonce(address: string): Promise<string>;
   getBalance(address: string, blockTag?: "pending" | "latest"): Promise<string>;
   getLatestBlock(): Promise<NormalizedRpcBlock>;

@@ -130,6 +130,37 @@ describe("run planning workspace", () => {
     expect(validateAssetManifestV1(creationRequest(input).manifest).ok).toBe(true);
   });
 
+  it("constructs a 5-field tokenize-only mandate request without investor or tokenizer email", () => {
+    const data = new FormData();
+    data.set("assetName", "Café Receivables");
+    data.set("symbol", "ED1");
+    data.set("supplyCap", "1000");
+    data.set("documentationUrl", "https://docs.example.com/asset");
+    data.set("tokenizerWallet", "0x1111111111111111111111111111111111111111");
+
+    const req = creationRequest(data);
+    expect(req.manifest).toEqual({
+      schemaVersion: "1.0",
+      environment: "sandbox",
+      chainId: "11155111",
+      tokenizer: {
+        walletAddress: "0x1111111111111111111111111111111111111111",
+      },
+      asset: {
+        name: "Café Receivables",
+        symbol: "ED1",
+        tokenType: "RWA_TOKEN",
+        supplyCap: "1000",
+        documentationUrl: "https://docs.example.com/asset",
+      },
+    });
+    const validated = validateAssetManifestV1(req.manifest);
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+    expect(validated.value.investor).toBeUndefined();
+    expect(validated.value.tokenizer.email).toBeUndefined();
+  });
+
   it("uses the strict server public projection and unchanged golden hashes", async () => {
     const body = await projection();
     const view = readProjection(body);
@@ -235,6 +266,43 @@ describe("run planning workspace", () => {
     ]);
     expect(h.state().view?.run.execution?.preparationStatus).toBe("PREPARED_FOR_REVIEW");
     expect(h.state().notice).toContain("recovered from the durable record");
+  });
+
+  it("pulls the latest durable run without a page refresh even while another action is pending", async () => {
+    const body = await projection();
+    const approved = await approvedProjection();
+    const h = harness();
+    h.transport
+      .mockResolvedValueOnce(Response.json(body, { status: 201 }))
+      .mockResolvedValueOnce(Response.json(approved));
+    const create = h.workspace.create(form());
+    expect(h.state().pending).toBe("create");
+    await h.workspace.pullLatest();
+    expect(h.state().view).toBeNull();
+    await create;
+    await h.workspace.pullLatest();
+    expect(h.state().view?.run).toMatchObject({ approved: true, revision: 2, phase: "TOKENIZATION" });
+    expect(h.state().notice).toBeNull();
+    expect(h.transport).toHaveBeenCalledTimes(2);
+    expect(h.transport.mock.calls[1]?.[0]).toBe(`/api/runs/${id}`);
+  });
+
+  it("applies a tracked successor run in place without a refresh notice", async () => {
+    const body = await projection();
+    const h = harness();
+    h.transport.mockResolvedValueOnce(Response.json(body, { status: 201 }));
+    await h.workspace.create(form());
+    const tracked = {
+      ...body.run,
+      approved: true,
+      phase: "WHITELIST",
+      status: "PREPARING",
+      revision: 2,
+      executeEligible: true,
+    } as PublicRunProjection;
+    expect(h.workspace.applyDurableRun(tracked)).toBe(true);
+    expect(h.state().view?.run).toMatchObject({ phase: "WHITELIST", revision: 2, executeEligible: true });
+    expect(h.state().notice).toBeNull();
   });
 
   it("locks repeat preparation after an unconfirmed response and failed reconciliation", async () => {
@@ -476,9 +544,20 @@ describe("run planning workspace", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(html).toContain("Tokenization Planning Workspace");
     expect(html).toContain("Create execution plan");
-    for (const [name] of form()) expect(html).toContain(`for="${name}"`);
-    expect(html.match(/<input /g)).toHaveLength(9);
-  });
+    const activeNames = [
+      "assetName",
+      "symbol",
+      "supplyCap",
+      "documentationUrl",
+      "tokenizerWallet",
+      "investorEmail",
+      "investorWallet",
+      "mintAmount",
+    ];
+    for (const name of activeNames) expect(html).toContain(`for="${name}"`);
+    expect(html.match(/<input /g)).toHaveLength(8);
+    expect(html).toContain("Initial Allocation · Optional");
+  }, 15_000);
 
   it("renders safe valid and malformed durable route shells without server-side effects", async () => {
     const fetch = vi.fn(() => { throw new Error("Unexpected network"); }); vi.stubGlobal("fetch", fetch);

@@ -9,7 +9,7 @@ import {
 
 const sha256DigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const identitySchema = z.strictObject({
-  email: z.string(),
+  email: z.string().optional(),
   walletAddress: z.string().regex(/^0x[0-9a-f]{40}$/),
 });
 const assetSchema = z.strictObject({
@@ -159,7 +159,7 @@ const executionPlanBodyV1Schema = z.strictObject({
     role: z.literal("tokenizer"),
     walletAddress: z.string().regex(/^0x[0-9a-f]{40}$/),
   }),
-  operations: z.tuple([
+  operations: z.union([z.tuple([tokenizeOperationSchema, confirmTokenizationOperationSchema]), z.tuple([
     tokenizeOperationSchema,
     confirmTokenizationOperationSchema,
     whitelistOperationSchema,
@@ -167,7 +167,7 @@ const executionPlanBodyV1Schema = z.strictObject({
     mintOperationSchema,
     confirmMintOperationSchema,
     verifyDeploymentOperationSchema,
-  ]),
+  ])]),
 });
 
 const executionPlanV1Schema = executionPlanBodyV1Schema.extend({
@@ -215,6 +215,7 @@ export function validateExecutionPlanV1(input: unknown): ExecutionPlanValidation
 
 export async function buildExecutionPlanV1(
   manifest: NormalizedAssetManifestV1,
+  scope: "TOKENIZE_ONLY" | "LEGACY_FULL" = "LEGACY_FULL",
 ): Promise<ExecutionPlanV1> {
   const snapshot = getTrustedManifestSnapshot(manifest);
   if (!snapshot) {
@@ -223,12 +224,8 @@ export async function buildExecutionPlanV1(
 
   const { hash: manifestHash } = await hashAssetManifestV1(manifest);
   const tokenizer = {
-    email: snapshot.tokenizer.email,
+    ...(snapshot.tokenizer.email ? { email: snapshot.tokenizer.email } : {}),
     walletAddress: snapshot.tokenizer.walletAddress,
-  };
-  const investor = {
-    email: snapshot.investor.email,
-    walletAddress: snapshot.investor.walletAddress,
   };
   const asset = {
     name: snapshot.asset.name,
@@ -238,50 +235,61 @@ export async function buildExecutionPlanV1(
     documentationUrl: snapshot.asset.documentationUrl,
   };
 
-  const candidateBody = {
-    planVersion: "1.0" as const,
-    manifestHash,
-    environment: "sandbox" as const,
-    chainId: "11155111" as const,
-    requiredSigner: {
-      role: "tokenizer" as const,
-      walletAddress: snapshot.tokenizer.walletAddress,
+  const tokenizeOps = [
+    {
+      sequence: 1 as const,
+      id: "tokenize" as const,
+      kind: "TOKENIZE" as const,
+      mode: "WALLET_TRANSACTION" as const,
+      dependsOn: [] as const,
+      signer: "tokenizer" as const,
+      walletConfirmationRequired: true as const,
+      intent: {
+        tokenizer: { ...tokenizer },
+        asset: { ...asset },
+      },
+      summary: `Tokenize ${asset.name} (${asset.symbol}) on chain 11155111.`,
     },
-    operations: [
-      {
-        sequence: 1 as const,
-        id: "tokenize" as const,
-        kind: "TOKENIZE" as const,
-        mode: "WALLET_TRANSACTION" as const,
-        dependsOn: [] as const,
-        signer: "tokenizer" as const,
-        walletConfirmationRequired: true as const,
-        intent: {
+    {
+      sequence: 2 as const,
+      id: "confirm-tokenization" as const,
+      kind: "CONFIRM_TOKENIZATION" as const,
+      mode: "CONFIRM_AND_READ" as const,
+      dependsOn: ["tokenize"] as const,
+      signer: null,
+      walletConfirmationRequired: false as const,
+      intent: {
+        transactionOperationId: "tokenize" as const,
+        reads: ["TOKEN_INFO", "TOKENIZER_INFO"] as const,
+        expected: {
+          chainId: "11155111" as const,
           tokenizer: { ...tokenizer },
           asset: { ...asset },
+          tokenAddressPresent: true as const,
         },
-        summary: `Tokenize ${asset.name} (${asset.symbol}) on chain 11155111.`,
       },
-      {
-        sequence: 2 as const,
-        id: "confirm-tokenization" as const,
-        kind: "CONFIRM_TOKENIZATION" as const,
-        mode: "CONFIRM_AND_READ" as const,
-        dependsOn: ["tokenize"] as const,
-        signer: null,
-        walletConfirmationRequired: false as const,
-        intent: {
-          transactionOperationId: "tokenize" as const,
-          reads: ["TOKEN_INFO", "TOKENIZER_INFO"] as const,
-          expected: {
-            chainId: "11155111" as const,
-            tokenizer: { ...tokenizer },
-            asset: { ...asset },
-            tokenAddressPresent: true as const,
-          },
-        },
-        summary: `Confirm tokenization and verify ${asset.symbol} token and tokenizer read-back.`,
-      },
+      summary: `Confirm tokenization and verify ${asset.symbol} token and tokenizer read-back.`,
+    },
+  ] as const;
+
+  let candidateOperations: readonly [
+    (typeof tokenizeOps)[0],
+    (typeof tokenizeOps)[1],
+    ...unknown[],
+  ] | readonly [(typeof tokenizeOps)[0], (typeof tokenizeOps)[1]];
+
+  if (scope === "TOKENIZE_ONLY") {
+    candidateOperations = tokenizeOps;
+  } else {
+    if (!snapshot.investor) {
+      throw new ExecutionPlanBuildError("INTERNAL_PLAN_INVARIANT");
+    }
+    const investor = {
+      email: snapshot.investor.email,
+      walletAddress: snapshot.investor.walletAddress,
+    };
+    candidateOperations = [
+      ...tokenizeOps,
       {
         sequence: 3 as const,
         id: "whitelist-investor" as const,
@@ -374,7 +382,19 @@ export async function buildExecutionPlanV1(
         },
         summary: `Verify the complete ${asset.symbol} deployment against the approved plan.`,
       },
-    ] as const,
+    ] as const;
+  }
+
+  const candidateBody = {
+    planVersion: "1.0" as const,
+    manifestHash,
+    environment: "sandbox" as const,
+    chainId: "11155111" as const,
+    requiredSigner: {
+      role: "tokenizer" as const,
+      walletAddress: snapshot.tokenizer.walletAddress,
+    },
+    operations: candidateOperations,
   };
 
   const bodyResult = executionPlanBodyV1Schema.safeParse(candidateBody);

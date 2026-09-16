@@ -109,4 +109,41 @@ describe("server-derived preparation review", () => {
       approval: approved.approval && { ...approved.approval, approvedByWallet: "0x4444444444444444444444444444444444444444" },
     } as ExecutionRun)).toThrow(OrchestrationError);
   });
+
+  it("projects PREPARED_STALE with staleReason and reprepareEligibility", async () => {
+    const { runs, approved } = await setup();
+    const intent = await runs.beginPrepare(approved.id, approved.revision, "TOKENIZE");
+    const prepared = await runs.recordPrepared(intent.id, intent.revision, "TOKENIZE", {
+      txId: "prepared-1",
+      unsignedTransaction: { from: TOKENIZER_ADDRESS, to: "0x3333333333333333333333333333333333333333", data: "0x1234", chainId: "0xaa36a7" },
+    });
+    const staleRun = {
+      ...prepared,
+      operations: [
+        {
+          ...prepared.operations[0],
+          stage: "PREPARED_STALE",
+          preparationAttempts: [
+            {
+              attemptId: "attempt-1",
+              staleReason: "PRICE_REPORT_EXPIRED",
+            },
+          ],
+          activePreparationAttemptId: "attempt-1",
+          walletPromptAuthorization: null,
+          blockchainTxHash: null,
+        },
+        prepared.operations[1],
+        prepared.operations[2],
+      ],
+    } as unknown as ExecutionRun;
+
+    const projection = await deriveExecutionPreparationProjection(staleRun);
+    expect(projection).toMatchObject({
+      preparationStatus: "PREPARED_STALE",
+      staleReason: "PRICE_REPORT_EXPIRED",
+      reprepareEligible: true,
+      transactionReview: null,
+    });
+  });
 });

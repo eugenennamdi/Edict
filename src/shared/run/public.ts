@@ -76,6 +76,7 @@ const executionPreparationSchema = z.strictObject({
     "READY_FOR_PREPARATION",
     "PREPARATION_PENDING",
     "PREPARED_FOR_REVIEW",
+    "PREPARED_STALE",
     "PREPARATION_UNCONFIRMED",
     "PREPARATION_FAILED",
   ]),
@@ -90,6 +91,8 @@ const executionPreparationSchema = z.strictObject({
     "PREPARATION_REFUSED",
     "PREPARATION_UNCONFIRMED",
   ]).nullable().optional(),
+  staleReason: z.enum(["NONCE_MISMATCH", "PRICE_REPORT_EXPIRED"]).nullable().optional(),
+  reprepareEligible: z.boolean().nullable().optional(),
   transactionReview: preparedTransactionReviewV1Schema.nullable(),
 });
 
@@ -105,6 +108,7 @@ export type PublicExecutionPreparation = Readonly<{
     | "READY_FOR_PREPARATION"
     | "PREPARATION_PENDING"
     | "PREPARED_FOR_REVIEW"
+    | "PREPARED_STALE"
     | "PREPARATION_UNCONFIRMED"
     | "PREPARATION_FAILED";
   preparationFailureCode?:
@@ -118,10 +122,21 @@ export type PublicExecutionPreparation = Readonly<{
     | "PREPARATION_REFUSED"
     | "PREPARATION_UNCONFIRMED"
     | null;
+  staleReason?: "NONCE_MISMATCH" | "PRICE_REPORT_EXPIRED" | null;
+  reprepareEligible?: boolean | null;
   transactionReview: PreparedTransactionReviewV1 | null;
 }>;
 
 export const publicRunProjectionSchema = z.strictObject({
+  executablePlan: z.boolean().optional(),
+  executeEligible: z.boolean().optional(),
+  trackingRemaining: z.number().int().min(0).max(30).optional(),
+  tokenizationResult: z.strictObject({
+    tokenAddress: walletSchema, escrowAddress: walletSchema.nullable(),
+    tokenizationId: z.string().regex(/^[1-9][0-9]*$/).nullable(),
+    transactionHash: transactionHashSchema, verifiedAt: isoUtcSchema,
+    verificationStatus: z.literal("VERIFIED"),
+  }).nullable().optional(),
   id: publicRunIdSchema,
   schemaVersion: z.enum(["1.0", "2.0", "3.0", "4.0"]),
   manifestHash: digestSchema,
@@ -196,11 +211,14 @@ function assertExecutionProjection(run: PublicRunProjection): void {
   const expectedPreparationStatus =
     tokenization.stage === "NOT_STARTED" && run.status === "PREPARING"
       ? "READY_FOR_PREPARATION"
-      : tokenization.stage === "PREPARE_INTENT" && run.status === "PREPARING"
+      : (tokenization.stage === "PREPARE_INTENT" || tokenization.stage === "REPREPARE_INTENT") &&
+          run.status === "PREPARING"
         ? "PREPARATION_PENDING"
-        : tokenization.stage === "PREPARED" && run.status === "AWAITING_WALLET"
+        : ["PREPARED", "WALLET_PROMPT_RECORDED"].includes(tokenization.stage) && run.status === "AWAITING_WALLET"
           ? "PREPARED_FOR_REVIEW"
-          : tokenization.stage === "PREPARE_UNKNOWN" && run.status === "RECONCILIATION_REQUIRED"
+          : tokenization.stage === "PREPARED_STALE" && run.status === "AWAITING_WALLET"
+            ? "PREPARED_STALE"
+            : tokenization.stage === "PREPARE_UNKNOWN" && run.status === "RECONCILIATION_REQUIRED"
             ? "PREPARATION_UNCONFIRMED"
             : (tokenization.stage === "REJECTED" || tokenization.stage === "PREPARE_UNKNOWN") &&
                 run.status === "FAILED" && run.terminalOutcome === "FAILED" &&
@@ -241,7 +259,7 @@ function assertExecutionProjection(run: PublicRunProjection): void {
     (execution === null &&
       run.approved &&
       run.terminalOutcome === null &&
-      run.phase === "TOKENIZATION" &&
+      ["TOKENIZATION"].includes(run.phase) &&
       expectedPreparationStatus !== null)
   ) throw new Error("PUBLIC_RUN_DTO_INVALID");
 }

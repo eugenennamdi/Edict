@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { createPlanningWorkspace, initialWorkspace } from "./run-planning";
 import {
   draftForm,
@@ -13,15 +14,14 @@ import {
 } from "./planning-presentation";
 import { MandateForm } from "./planning-form";
 import { ApprovalReadinessSection } from "./approval/approval-section";
-import { ExecutionReviewSection } from "./execution-review-section";
 import { WalletExecutionSection } from "./wallet-execution-section";
+import { WalletHeaderButton } from "@/components/wallet";
 import {
   DraftSummary,
   PlanDocument,
   RecordedManifest,
   RecordDetails,
 } from "./planning-artifacts";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -126,11 +126,6 @@ export default function RunPlanningWorkspace({
     });
   }
 
-  async function prepareNextOperation() {
-    await workspace.prepareNextOperation();
-    requestAnimationFrame(() => error.current?.focus());
-  }
-
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans antialiased selection:bg-primary selection:text-primary-foreground">
       <a
@@ -144,9 +139,11 @@ export default function RunPlanningWorkspace({
       <header className="sticky top-0 z-40 w-full border-b border-border/80 bg-background/80 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <img
+            <Image
               src="/logo.png"
               alt="Edict"
+              width={64}
+              height={24}
               className="h-6 w-auto object-contain dark:invert"
             />
             <span className="text-xs text-muted-foreground hidden sm:inline border-l border-border/60 pl-3">
@@ -154,20 +151,7 @@ export default function RunPlanningWorkspace({
             </span>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-secondary/80 border border-border/70 text-xs">
-              <img
-                src="/ethereum-logo.svg"
-                alt="Ethereum"
-                className="h-3.5 w-auto shrink-0"
-              />
-              <span className="font-medium text-foreground text-[11px] sm:text-xs">Ethereum Sepolia</span>
-              <Separator orientation="vertical" className="h-3 bg-border" />
-              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 font-medium">
-                Sandbox
-              </Badge>
-            </div>
-          </div>
+          <WalletHeaderButton />
         </div>
       </header>
 
@@ -226,9 +210,6 @@ export default function RunPlanningWorkspace({
               >
                 <Workflow className="h-3.5 w-3.5" />
                 <span>Execution plan</span>
-                <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4">
-                  7 ops
-                </Badge>
               </button>
 
               <button
@@ -358,7 +339,11 @@ export default function RunPlanningWorkspace({
                     : "Plan approval not recorded"}
                 </span>
                 <Separator orientation="vertical" className="h-3 bg-border" />
-                <span className="text-muted-foreground">Wallet execution requires server authorization · Production deny-all</span>
+                <span className="text-muted-foreground">
+                  {view.plan.operations.length === 2
+                    ? "Token creation available · Investor access and minting unavailable"
+                    : "Historical plan · Current execution unavailable"}
+                </span>
               </div>
 
               <div className="flex items-center gap-2">
@@ -466,16 +451,11 @@ export default function RunPlanningWorkspace({
                     view={view}
                     acceptDurableRun={workspace.acceptDurableRun}
                   />
-                  <ExecutionReviewSection
-                    view={view}
-                    pending={state.pending === "prepare"}
-                    preparationUnconfirmed={state.preparationUnconfirmed}
-                    onPrepare={() => void prepareNextOperation()}
-                  />
                   <WalletExecutionSection
-                    key={`${view.run.id}:${view.run.revision}`}
+                    key={`${view.run.id}-${view.run.phase}`}
                     run={view.run}
-                    onRefresh={async () => { await workspace.refresh(); }}
+                    onRefresh={() => workspace.pullLatest()}
+                    onTrackedRun={workspace.applyDurableRun}
                   />
                 </div>
               )
@@ -560,9 +540,11 @@ export default function RunPlanningWorkspace({
       <footer className="border-t border-border/70 bg-background/80 py-6 mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-2.5">
-            <img
+            <Image
               src="/logo.png"
               alt="Edict"
+              width={43}
+              height={16}
               className="h-4 w-auto object-contain dark:invert opacity-90"
             />
             <Separator orientation="vertical" className="h-3.5 bg-border" />

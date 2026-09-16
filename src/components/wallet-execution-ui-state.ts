@@ -31,6 +31,133 @@ export type WalletExecutionUiEvent =
   | Readonly<{ type: "HASH_RECORDED" }>
   | Readonly<{ type: "DURABLE_RECONCILIATION" }>;
 
+export interface WalletExecutionErrorDetail {
+  readonly title: string;
+  readonly description: string;
+  readonly onChainSubmission: "NO" | "YES" | "UNKNOWN";
+  readonly nextStep: string;
+  readonly retryAllowed: boolean;
+}
+
+export function classifyWalletExecutionErrorDetail(
+  code: string,
+  options?: { readonly reprepareEligible?: boolean | null },
+): WalletExecutionErrorDetail {
+  if (code === "REPREPARE_EXHAUSTED" || options?.reprepareEligible === false) {
+    return Object.freeze({
+      title: "Preparation attempts exhausted",
+      description: "This mandate has used all allowed preparation attempts (maximum 2). The transaction price report has expired and cannot be refreshed again.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted to the network and no funds were spent. Create a new mandate to tokenize this asset with fresh pricing.",
+      retryAllowed: false,
+    });
+  }
+  if (code === "BROADCAST_OUTCOME_UNKNOWN" || code === "RECONCILIATION_REQUIRED") {
+    return Object.freeze({
+      title: "Transaction broadcast outcome unknown",
+      description: "The wallet may have broadcast the transaction, but Edict could not confirm the transaction hash.",
+      onChainSubmission: "UNKNOWN",
+      nextStep: "Do not submit another transaction. Check your wallet activity or Sepolia block explorer for your address.",
+      retryAllowed: false,
+    });
+  }
+  if (code === "EXECUTION_AUTHORIZATION_UNAVAILABLE") {
+    return Object.freeze({
+      title: "Execution authorization unavailable",
+      description: "Mandate execution authorization is disabled or unavailable on the server.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted to the network. Contact administrator or verify server environment.",
+      retryAllowed: false,
+    });
+  }
+  if (code === "SEMANTIC_POLICY_REFUSED") {
+    return Object.freeze({
+      title: "Transaction policy validation refused",
+      description: "The prepared transaction parameters or contract destination did not satisfy strict safety policy.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted to the network. This execution requires attention; review technical details or create a new mandate.",
+      retryAllowed: false,
+    });
+  }
+  if (code === "FRESHNESS_CHECK_FAILED") {
+    return Object.freeze({
+      title: "Prepared transaction needs refreshing",
+      description: "The Brickken price report expired before wallet confirmation. No transaction was submitted.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted. Click Reprepare to refresh the transaction with current chain state.",
+      retryAllowed: true,
+    });
+  }
+  if (
+    [
+      "AUTHORIZATION_STATE_CHANGED",
+      "AUTHORIZATION_RESPONSE_UNKNOWN",
+      "AUTHORIZATION_RESPONSE_MALFORMED",
+      "AUTHORIZATION_REQUEST_REFUSED",
+    ].includes(code)
+  ) {
+    return Object.freeze({
+      title: "Authorization synchronization conflict",
+      description: "The server mandate record changed or could not be safely synchronized.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted. Refresh this record before trying again.",
+      retryAllowed: true,
+    });
+  }
+  if (code === "TRANSACTION_REJECTED") {
+    return Object.freeze({
+      title: "Transaction signature declined",
+      description: "The transaction prompt was rejected in your wallet.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted and no gas was spent. You can safely try again whenever you are ready.",
+      retryAllowed: true,
+    });
+  }
+  if (code === "REQUIRED_ACCOUNT_UNAVAILABLE" || code === "ACCOUNT_AUTHORIZATION_REJECTED") {
+    return Object.freeze({
+      title: "Required signer account not active",
+      description: "Your connected wallet is not currently active with the approved tokenizer address.",
+      onChainSubmission: "NO",
+      nextStep: "Open your wallet, select the approved signer account, and click Confirm in wallet.",
+      retryAllowed: true,
+    });
+  }
+  if (code === "WRONG_CHAIN" || code === "CHAIN_SWITCH_REJECTED" || code === "CHAIN_SWITCH_UNSUPPORTED") {
+    return Object.freeze({
+      title: "Wrong network selected",
+      description: "Your wallet is not connected to Ethereum Sepolia.",
+      onChainSubmission: "NO",
+      nextStep: "Switch your wallet network to Ethereum Sepolia, then click Confirm in wallet.",
+      retryAllowed: true,
+    });
+  }
+  if (code === "PREPARATION_FAILED" || code === "SERVER_REJECTION") {
+    return Object.freeze({
+      title: "Preparation request failed",
+      description: "The preparation request to Brickken timed out or could not be completed by the server.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted to the network. Click Reprepare to request fresh preparation parameters from Brickken.",
+      retryAllowed: true,
+    });
+  }
+  if (code === "MALFORMED_RESPONSE" || code === "MALFORMED_REQUEST") {
+    return Object.freeze({
+      title: "Preparation response invalid",
+      description: "The server response could not be verified by client runtime safety checks.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted. Refresh this record before proceeding.",
+      retryAllowed: false,
+    });
+  }
+  return Object.freeze({
+    title: "Execution halted",
+    description: "Edict stopped before submitting an on-chain transaction because an invariant or response could not be verified.",
+    onChainSubmission: "NO",
+    nextStep: "No transaction was submitted to the network and no funds or gas were spent. Refresh the record or review technical details.",
+    retryAllowed: false,
+  });
+}
+
 export function classifyWalletExecutionFailure(code: string): Readonly<{
   event: WalletExecutionUiEvent;
   refresh: boolean;
@@ -53,7 +180,7 @@ export function classifyWalletExecutionFailure(code: string): Readonly<{
   if (code === "FRESHNESS_CHECK_FAILED") {
     return Object.freeze({
       event: Object.freeze({ type: "FRESHNESS_CHECK_FAILED" }),
-      refresh: false,
+      refresh: true,
     });
   }
   if ([
@@ -61,6 +188,8 @@ export function classifyWalletExecutionFailure(code: string): Readonly<{
     "AUTHORIZATION_RESPONSE_UNKNOWN",
     "AUTHORIZATION_RESPONSE_MALFORMED",
     "AUTHORIZATION_REQUEST_REFUSED",
+    "SERVER_REJECTION",
+    "PREPARATION_FAILED",
   ].includes(code)) {
     return Object.freeze({ event: Object.freeze({ type: "REFRESH_REQUIRED" }), refresh: true });
   }
@@ -97,7 +226,7 @@ export function reduceWalletExecutionUi(
     return Object.freeze({ state: "AUTHORIZATION_POLICY_REFUSED", locked: true, inProgress: false });
   }
   if (event.type === "FRESHNESS_CHECK_FAILED") {
-    return Object.freeze({ state: "FRESHNESS_CHECK_FAILED", locked: true, inProgress: false });
+    return Object.freeze({ state: "FRESHNESS_CHECK_FAILED", locked: false, inProgress: false });
   }
   if (event.type === "REFRESH_REQUIRED") {
     return Object.freeze({ state: "DURABLE_REFRESH_REQUIRED", locked: true, inProgress: false });

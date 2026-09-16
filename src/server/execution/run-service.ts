@@ -1,3 +1,4 @@
+import { assertCurrentMandate, assertExecutableRun, planScopeForManifest } from "./capabilities";
 import {
   buildExecutionPlanV1,
   hashAssetManifestV1,
@@ -38,7 +39,7 @@ function snapshotManifest(manifest: NormalizedAssetManifestV1): ExecutionManifes
     environment: manifest.environment,
     chainId: manifest.chainId,
     tokenizer: {
-      email: manifest.tokenizer.email,
+      ...(manifest.tokenizer.email ? { email: manifest.tokenizer.email } : {}),
       walletAddress: manifest.tokenizer.walletAddress,
     },
     asset: {
@@ -48,11 +49,15 @@ function snapshotManifest(manifest: NormalizedAssetManifestV1): ExecutionManifes
       supplyCap: manifest.asset.supplyCap,
       documentationUrl: manifest.asset.documentationUrl,
     },
-    investor: {
-      email: manifest.investor.email,
-      walletAddress: manifest.investor.walletAddress,
-      mintAmount: manifest.investor.mintAmount,
-    },
+    ...(manifest.investor
+      ? {
+          investor: {
+            email: manifest.investor.email,
+            walletAddress: manifest.investor.walletAddress,
+            mintAmount: manifest.investor.mintAmount,
+          },
+        }
+      : {}),
   });
 }
 
@@ -63,8 +68,9 @@ function snapshotPlan(plan: {
   chainId: "11155111";
   requiredSigner: { role: "tokenizer"; walletAddress: string };
   planHash: string;
-}): ExecutionPlanSnapshot {
+}, scope: "TOKENIZE_ONLY" | "LEGACY_FULL"): ExecutionPlanSnapshot {
   return jsonClone({
+    executionScope: scope,
     planVersion: plan.planVersion,
     manifestHash: plan.manifestHash,
     environment: plan.environment,
@@ -109,15 +115,17 @@ export class ExecutionRunService {
   }
 
   async createRun(manifest: NormalizedAssetManifestV1): Promise<ExecutionRun> {
+    assertCurrentMandate(manifest);
     const { hash: manifestHash } = await hashAssetManifestV1(manifest);
-    const plan = await buildExecutionPlanV1(manifest);
+    const scope = planScopeForManifest(manifest);
+    const plan = await buildExecutionPlanV1(manifest, scope);
     const createdAt = this.#clock.nowIso();
     const run: ExecutionRun = {
       schemaVersion: "2.0",
       id: this.#ids.runId(),
       manifest: snapshotManifest(manifest),
       manifestHash,
-      plan: snapshotPlan(plan),
+      plan: snapshotPlan(plan, scope),
       planHash: plan.planHash,
       environment: "sandbox",
       chainId: "11155111",
@@ -153,6 +161,7 @@ export class ExecutionRunService {
     expectedRevision: number,
     input: { planHash: string; approvedByWallet: string; proof: ApprovalProofV1 },
   ): Promise<ExecutionRun> {
+    await assertExecutableRun(await this.#repository.getById(runId));
     return this.#apply(runId, expectedRevision, (_at, id) => ({
       type: "APPROVE_PLAN",
       id,

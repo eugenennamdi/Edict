@@ -63,7 +63,7 @@ const manifestSchema = z.object({
   schemaVersion: z.literal("1.0"),
   environment: z.literal("sandbox"),
   chainId: z.literal("11155111"),
-  tokenizer: z.object({ email: identifier, walletAddress: wallet }).strict(),
+  tokenizer: z.object({ email: identifier.optional(), walletAddress: wallet }).strict(),
   asset: z.object({
     name: identifier,
     symbol: z.string().regex(/^[A-Z0-9]{3,5}$/),
@@ -75,10 +75,11 @@ const manifestSchema = z.object({
     email: identifier,
     walletAddress: wallet,
     mintAmount: positiveIntegerString,
-  }).strict(),
+  }).strict().optional(),
 }).strict();
 
 const planSchema = z.object({
+  executionScope: z.enum(["TOKENIZE_ONLY", "LEGACY_FULL"]).optional(),
   planVersion: z.literal("1.0"),
   manifestHash: hash,
   environment: z.literal("sandbox"),
@@ -466,8 +467,17 @@ function parseSnapshot(value: unknown): ExecutionRun {
           txId: active.txId,
           preparedAt: active.preparedAt,
           immutableIdentity: active.immutableIdentity,
+          ...(active.calldataCommitment === undefined
+            ? {}
+            : { calldataCommitment: active.calldataCommitment }),
           feeAuthorization: active.feeAuthorization,
         })
+      ) return true;
+      if (
+        active?.calldataCommitment !== undefined &&
+        active.calldataCommitment !== null &&
+        active.immutableIdentity !== null &&
+        active.calldataCommitment !== sha256Text(active.immutableIdentity.data)
       ) return true;
       const prompt = operation.walletPromptAuthorization;
       if (

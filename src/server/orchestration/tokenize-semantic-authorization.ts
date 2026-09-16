@@ -1,4 +1,6 @@
 import "server-only";
+import { canonicalTokenizeCall } from "./tokenize-calldata";
+import { isExecutablePlan } from "../execution/capabilities";
 
 import {
   buildExecutionPlanV1,
@@ -31,8 +33,7 @@ import {
 export const TOKENIZE_EXECUTION_GATE = "EDICT_TOKENIZE_EXECUTION_ENABLED" as const;
 export const TOKENIZE_ALLOWED_DESTINATION = "EDICT_TOKENIZE_ALLOWED_DESTINATION" as const;
 export const TOKENIZE_FUNCTION_SIGNATURE = "EDICT_TOKENIZE_FUNCTION_SIGNATURE" as const;
-export const TOKENIZE_CALLDATA_COMMITMENT = "EDICT_TOKENIZE_CALLDATA_COMMITMENT" as const;
-export const TOKENIZE_POLICY_VERSION = "edict-tokenize-semantic-v1" as const;
+export const TOKENIZE_POLICY_VERSION = "edict-tokenize-semantic-v2" as const;
 
 export type TokenizeAuthorizationDenialReason =
   | "TOKENIZE_GATE_DISABLED"
@@ -55,7 +56,6 @@ export interface TokenizeSemanticAuthorizationPolicy {
   readonly allowedDestination: `0x${string}`;
   readonly reviewedFunctionSignature: string;
   readonly allowedSelector: `0x${string}`;
-  readonly allowedCalldataCommitment: `sha256:${string}`;
   readonly brickkenMethod: "newTokenization";
   readonly executionMode: "client-broadcast";
 }
@@ -95,11 +95,9 @@ export function deriveTokenizeSelectorFromCanonicalSignature(
 function readPolicy(environment: Readonly<Record<string, string | undefined>>): TokenizeSemanticAuthorizationPolicy | null {
   const destination = environment[TOKENIZE_ALLOWED_DESTINATION];
   const signature = environment[TOKENIZE_FUNCTION_SIGNATURE];
-  const calldataCommitment = environment[TOKENIZE_CALLDATA_COMMITMENT];
   if (
     !destination || !signature || !isAddress(destination) ||
-    destination === "0x0000000000000000000000000000000000000000" ||
-    !calldataCommitment || !/^sha256:[0-9a-f]{64}$/.test(calldataCommitment)
+    destination === "0x0000000000000000000000000000000000000000"
   ) {
     return null;
   }
@@ -116,7 +114,6 @@ function readPolicy(environment: Readonly<Record<string, string | undefined>>): 
       allowedDestination,
       reviewedFunctionSignature: signature,
       allowedSelector,
-      allowedCalldataCommitment: calldataCommitment as `sha256:${string}`,
       brickkenMethod: "newTokenization",
       executionMode: "client-broadcast",
     });
@@ -147,13 +144,13 @@ function denied(reason: TokenizeAuthorizationDenialReason) {
 
 export class TokenizeOnlySemanticAuthorizationEvaluator implements SemanticAuthorizationEvaluator {
   readonly isProductionDenyAll = false;
+  readonly requiresProtocolValidation = true;
   readonly policy: TokenizeSemanticAuthorizationPolicy;
 
   constructor(policy: TokenizeSemanticAuthorizationPolicy) {
     const validated = readPolicy({
       [TOKENIZE_ALLOWED_DESTINATION]: policy.allowedDestination,
       [TOKENIZE_FUNCTION_SIGNATURE]: policy.reviewedFunctionSignature,
-      [TOKENIZE_CALLDATA_COMMITMENT]: policy.allowedCalldataCommitment,
     });
     if (
       validated === null || validated.policyVersion !== policy.policyVersion ||
@@ -169,6 +166,7 @@ export class TokenizeOnlySemanticAuthorizationEvaluator implements SemanticAutho
     readonly attempt: PreparationAttemptV1;
   }) {
     const { run, kind, attempt } = input;
+    if (!isExecutablePlan(run.plan)) return denied("PLAN_MISMATCH");
     if (kind !== "TOKENIZE") return denied("WRONG_OPERATION");
     if (run.environment !== "sandbox" || run.chainId !== "11155111") return denied("WRONG_CHAIN");
 
@@ -177,7 +175,8 @@ export class TokenizeOnlySemanticAuthorizationEvaluator implements SemanticAutho
       (candidate) => candidate.attemptId === operation.activePreparationAttemptId,
     );
     if (
-      operation.kind !== "TOKENIZE" || operation.stage !== "PREPARED" ||
+      operation.preparationAttempts.length > 2 ||
+      operation.kind !== "TOKENIZE" || !["PREPARED", "WALLET_PROMPT_RECORDED"].includes(operation.stage) ||
       active === undefined || active !== attempt || attempt.state !== "PREPARED" ||
       operation.preparedTxId !== attempt.txId ||
       canonicalizeJson(operation.unsignedTransaction) !== canonicalizeJson(attempt.unsignedTransaction)
@@ -203,7 +202,7 @@ export class TokenizeOnlySemanticAuthorizationEvaluator implements SemanticAutho
     if (!manifest.ok || (await hashAssetManifestV1(manifest.value)).hash !== run.manifestHash) {
       return denied("MANIFEST_MISMATCH");
     }
-    const plan = await buildExecutionPlanV1(manifest.value);
+    const plan = await buildExecutionPlanV1(manifest.value, run.plan.executionScope === "TOKENIZE_ONLY" ? "TOKENIZE_ONLY" : "LEGACY_FULL");
     if (
       plan.planHash !== run.planHash || run.plan.planHash !== run.planHash ||
       run.plan.manifestHash !== run.manifestHash || run.plan.environment !== run.environment ||
@@ -228,6 +227,7 @@ export class TokenizeOnlySemanticAuthorizationEvaluator implements SemanticAutho
         preparedAt: attempt.preparedAt,
         preparedRunRevision: attempt.preparedRunRevision,
         immutableIdentity: attempt.immutableIdentity,
+        calldataCommitment: attempt.calldataCommitment ?? undefined,
         feeAuthorization: attempt.feeAuthorization,
       })
     ) return denied("PREPARATION_MISMATCH");
@@ -250,9 +250,14 @@ export class TokenizeOnlySemanticAuthorizationEvaluator implements SemanticAutho
     ) return denied("PREPARATION_MISMATCH");
     if (identity.to !== this.policy.allowedDestination) return denied("DESTINATION_NOT_ALLOWED");
     if (identity.data.slice(0, 10) !== this.policy.allowedSelector) return denied("SELECTOR_NOT_ALLOWED");
+    try {
+      canonicalTokenizeCall(run, identity.data);
+      if (identity.value !== "0x0") return denied("CALLDATA_COMMITMENT_MISMATCH");
+    } catch { return denied("CALLDATA_COMMITMENT_MISMATCH"); }
     const calldataCommitment = await sha256Utf8(identity.data);
     if (
-      calldataCommitment !== this.policy.allowedCalldataCommitment ||
+      (attempt.calldataCommitment !== undefined &&
+        attempt.calldataCommitment !== calldataCommitment) ||
       calldataCommitment !== await sha256Utf8(request.data ?? "")
     ) {
       return denied("CALLDATA_COMMITMENT_MISMATCH");

@@ -7,6 +7,7 @@ export {
   cancelRunHandler,
   createRunHandler,
   evaluateReadinessHandler,
+  executeMandateHandler,
   getRunHandler,
   ingestBroadcastHashHandler,
   prepareNextOperationHandler,

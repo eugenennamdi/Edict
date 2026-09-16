@@ -14,7 +14,7 @@ import {
 import { z } from "zod";
 
 const MAX_RESPONSE_BYTES = 128 * 1024;
-const REQUEST_TIMEOUT_MS = 15_000;
+const REQUEST_TIMEOUT_MS = 60_000;
 const revisionSchema = z.number().int().safe().positive();
 const bindingSchema = z.strictObject({
   expectedRevision: revisionSchema,
@@ -57,8 +57,10 @@ export type BrowserBroadcastUnknownReason =
   | "HASH_PERSISTENCE_UNCONFIRMED";
 
 export interface WalletExecutionHttpGateway {
+  execute(runId: string, expectedRevision: number): Promise<SendAuthorizedEnvelopeV1>;
   promote(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
   readiness(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
+  reprepare(runId: string, expectedRevision: number): Promise<PublicRunProjection>;
   authorize(runId: string, expectedRevision: number): Promise<SendAuthorizedEnvelopeV1>;
   ingestHash(runId: string, input: {
     readonly expectedRevision: number;
@@ -198,11 +200,27 @@ export function createWalletExecutionHttpGateway(
   transport: WalletExecutionHttpTransport = (path, options) => fetch(path, options),
 ): WalletExecutionHttpGateway {
   return Object.freeze({
+    async execute(runId: string, expectedRevision: number) {
+      const parsedRunId = publicRunIdSchema.safeParse(runId);
+      const revision = revisionSchema.safeParse(expectedRevision);
+      if (!parsedRunId.success || !revision.success) {
+        throw new WalletExecutionGatewayError("MALFORMED_REQUEST");
+      }
+      return envelopeFromResponse(await post(
+        transport,
+        `/api/runs/${parsedRunId.data}/execute`,
+        { expectedRevision: revision.data },
+        true,
+      ));
+    },
     async promote(runId: string, expectedRevision: number) {
       return mutateRevision(transport, runId, expectedRevision, "promote");
     },
     async readiness(runId: string, expectedRevision: number) {
       return mutateRevision(transport, runId, expectedRevision, "readiness");
+    },
+    async reprepare(runId: string, expectedRevision: number) {
+      return mutateRevision(transport, runId, expectedRevision, "prepare");
     },
     async authorize(runId: string, expectedRevision: number) {
       const parsedRunId = publicRunIdSchema.safeParse(runId);
@@ -251,7 +269,7 @@ async function mutateRevision(
   transport: WalletExecutionHttpTransport,
   runId: string,
   expectedRevision: number,
-  action: "promote" | "readiness" | "track",
+  action: "promote" | "readiness" | "track" | "prepare",
 ): Promise<PublicRunProjection> {
   const parsedRunId = publicRunIdSchema.safeParse(runId);
   const revision = revisionSchema.safeParse(expectedRevision);

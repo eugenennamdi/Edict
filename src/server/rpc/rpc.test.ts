@@ -1,3 +1,4 @@
+import "server-only";
 import { validateAssetManifestV1 } from "@/core";
 import { TOKENIZER_ADDRESS, createValidRawManifest } from "@/core/test-fixtures";
 import { describe, expect, it } from "vitest";
@@ -114,16 +115,16 @@ async function createPreparedTestRun(): Promise<ExecutionRunV4> {
 }
 
 describe("Trusted Sepolia RPC client & contracts", () => {
-  it("1. verifies correct Sepolia chain (11155111 / 0xaa36a7) and caches session verification", async () => {
+  it("1. verifies correct Sepolia chain (11155111 / 0xaa36a7) and rechecks chain verification", async () => {
     const transport = new FakeRpcTransport().on("eth_chainId", () => "0xaa36a7");
     const client = createTrustedSepoliaRpcClient(transport);
 
     await client.verifyChain();
     expect(client.chainId).toBe("11155111");
 
-    // Second call should reuse verified session and not re-issue eth_chainId
+    // Authority preflight must reverify the current chain.
     await client.verifyChain();
-    expect(transport.calls.filter((c) => c.method === "eth_chainId").length).toBe(1);
+    expect(transport.calls.filter((c) => c.method === "eth_chainId").length).toBe(2);
   });
 
   it("2. rejects wrong chain on verification", async () => {
@@ -265,7 +266,7 @@ describe("Trusted Sepolia RPC client & contracts", () => {
 
   it("7. evaluates fee freshness (baseFeePerGas > maxFeePerGas produces FEE_CAP_EXCEEDED_BY_BASE_FEE)", async () => {
     const run = await createPreparedTestRun();
-    // maxFeePerGas = 0x20 (32 wei), baseFee = 0x30 (48 wei) -> fee cap exceeded
+    // Server cap is at most 10 gwei; 10 gwei + 1 wei must fail freshness.
     const transport = new FakeRpcTransport()
       .on("eth_chainId", () => "0xaa36a7")
       .on("eth_getTransactionCount", () => "0x5")
@@ -274,7 +275,7 @@ describe("Trusted Sepolia RPC client & contracts", () => {
         number: "0x10",
         hash: BLOCK_HASH,
         parentHash: `0x${"00".repeat(32)}`,
-        baseFeePerGas: "0x30", // Exceeds maxFeePerGas 0x20
+        baseFeePerGas: "0x2540be401",
         timestamp: "0x66e44000",
       }));
     const client = createTrustedSepoliaRpcClient(transport);
@@ -731,7 +732,8 @@ describe("Trusted Sepolia RPC client & contracts", () => {
       expect(result.feeAuthorizationStatus).toBe("WITHIN_ENVELOPE");
       expect(result.feePolicyViolationCode).toBeNull();
       expect(result.evidence?.observedMaximumNetworkFeeWei).toBe(
-        feeAuth.authorizedCaps.maximumNetworkFeeWei,
+        `0x${(BigInt(feeAuth.preparedDefaults.gasLimit) *
+          BigInt(feeAuth.preparedDefaults.maxFeePerGas)).toString(16)}`,
       );
       expect(result.reconciliationRequired).toBe(false);
 
@@ -838,7 +840,10 @@ describe("Trusted Sepolia RPC client & contracts", () => {
       // 1. Gas changed above authorized cap:
       // A gasLimit difference by itself must NEVER become IMMUTABLE_MISMATCH
       const gasExceededResult = compareNormalizedTransaction({
-        transaction: { ...validTx, gas: "0x200" }, // Exceeds cap 0x100
+        transaction: {
+          ...validTx,
+          gas: `0x${(BigInt(feeAuth.authorizedCaps.gasLimit) + 1n).toString(16)}`,
+        },
         expectedImmutableIdentity: immutable,
         expectedFeeAuthorization: feeAuth,
         observedAt: NOW,
@@ -852,7 +857,10 @@ describe("Trusted Sepolia RPC client & contracts", () => {
 
       // 2. maxFee changed above cap:
       const maxFeeExceededResult = compareNormalizedTransaction({
-        transaction: { ...validTx, maxFeePerGas: "0x30" }, // Exceeds cap 0x20
+        transaction: {
+          ...validTx,
+          maxFeePerGas: `0x${(BigInt(feeAuth.authorizedCaps.maxFeePerGas) + 1n).toString(16)}`,
+        },
         expectedImmutableIdentity: immutable,
         expectedFeeAuthorization: feeAuth,
         observedAt: NOW,
@@ -866,7 +874,11 @@ describe("Trusted Sepolia RPC client & contracts", () => {
 
       // 3. priority fee changed above cap:
       const priorityFeeExceededResult = compareNormalizedTransaction({
-        transaction: { ...validTx, maxPriorityFeePerGas: "0x25" }, // Exceeds cap 0x4
+        transaction: {
+          ...validTx,
+          maxPriorityFeePerGas:
+            `0x${(BigInt(feeAuth.authorizedCaps.maxPriorityFeePerGas) + 1n).toString(16)}`,
+        },
         expectedImmutableIdentity: immutable,
         expectedFeeAuthorization: feeAuth,
         observedAt: NOW,
@@ -880,8 +892,8 @@ describe("Trusted Sepolia RPC client & contracts", () => {
 
       // 4. Other fee violations (model, legacy price, access list, invalid evidence):
       const otherViolations: Array<[string, Partial<NormalizedRpcTransaction>, string]> = [
-        ["LEGACY_GAS_PRICE", { gasPrice: "0x10" }, "LEGACY_GAS_PRICE"],
-        ["FEE_MODEL_CHANGED", { type: "0x0" }, "FEE_MODEL_CHANGED"],
+        ["LEGACY_GAS_PRICE", { type: "0x0", gasPrice: "0x10" }, "LEGACY_GAS_PRICE"],
+        ["FEE_MODEL_CHANGED", { type: "0x1" }, "FEE_MODEL_CHANGED"],
         [
           "ACCESS_LIST_CHANGED",
           { accessList: [{ address: "0x3333333333333333333333333333333333333333", storageKeys: [] }] },

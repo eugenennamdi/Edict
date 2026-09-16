@@ -1,6 +1,9 @@
 import { sha256Utf8, validateAssetManifestV1 } from "@/core";
 import { TOKENIZER_ADDRESS, createValidRawManifest } from "@/core/test-fixtures";
-import type { SemanticAuthorizationV1 } from "@/shared/wallet/execution-authorization";
+import {
+  createInitialFeeAuthorizationV1,
+  type SemanticAuthorizationV1,
+} from "@/shared/wallet/execution-authorization";
 import { describe, expect, it } from "vitest";
 import { decodeExecutionRunV1, encodeExecutionRunV1 } from "../persistence/codec";
 import { IllegalStateTransitionError } from "./errors";
@@ -309,6 +312,8 @@ describe("ExecutionRunV4 foundation", () => {
     expect(v2.schemaVersion).toBe("2.0");
     expect(v4.schemaVersion).toBe("4.0");
     expect(v4.operations[0].preparationAttempts).toHaveLength(1);
+    expect(v4.operations[0].preparationAttempts[0]?.calldataCommitment)
+      .toBe(await sha256Utf8(UNSIGNED.data));
     const decoded = decodeExecutionRunV1(encodeExecutionRunV1(v4));
     expect(decoded.schemaVersion).toBe("4.0");
     if (decoded.schemaVersion !== "4.0") throw new Error("expected V4");
@@ -385,6 +390,30 @@ describe("nonce staleness and explicit repreparation", () => {
     const prompted = await promptedRun();
     expect(() => beginReprepareV4({
       run: prompted, kind: "TOKENIZE", attemptId: "attempt-2", id: "bad", at: "2026-09-11T09:20:00.000Z",
+    })).toThrow(IllegalStateTransitionError);
+  });
+
+  it("strictly enforces maximum 2 preparation attempts and rejects attempt 3", async () => {
+    const at = "2026-09-11T09:20:00.000Z";
+    const stale = await markPreparedStaleV4({
+      run: await preparedRun(), kind: "TOKENIZE", foundation: FOUNDATION,
+      nonceEvidence: nonceEvidence("STALE", at), id: "stale", at,
+    });
+    const intent = beginReprepareV4({
+      run: stale, kind: "TOKENIZE", attemptId: "attempt-2", id: "reprepare", at: "2026-09-11T09:20:01.000Z",
+    });
+    const reprepared = await recordRepreparedV4({
+      run: intent, kind: "TOKENIZE", txId: "brickken-tx-2",
+      unsignedTransaction: { ...UNSIGNED, nonce: "0x1" }, id: "reprepared", at: "2026-09-11T09:20:02.000Z",
+    });
+    const stale2 = await markPreparedStaleV4({
+      run: reprepared, kind: "TOKENIZE", foundation: FOUNDATION,
+      nonceEvidence: nonceEvidence("STALE", "2026-09-11T09:25:00.000Z"), id: "stale2", at: "2026-09-11T09:25:00.000Z",
+    });
+    expect(stale2.operations[0].preparationAttempts).toHaveLength(2);
+    expect(stale2.operations[0].stage).toBe("PREPARED_STALE");
+    expect(() => beginReprepareV4({
+      run: stale2, kind: "TOKENIZE", attemptId: "attempt-3", id: "reprepare-3", at: "2026-09-11T09:25:01.000Z",
     })).toThrow(IllegalStateTransitionError);
   });
 
@@ -498,15 +527,16 @@ describe("wallet ambiguity and correlation authority", () => {
   });
 
   it.each([
-    ["gasLimit", "0x101", "GAS_LIMIT_CAP_EXCEEDED"],
-    ["maxFeePerGas", "0x21", "MAX_FEE_CAP_EXCEEDED"],
-    ["maxPriorityFeePerGas", "0x5", "PRIORITY_FEE_CAP_EXCEEDED"],
+    ["gasLimit", "GAS_LIMIT_CAP_EXCEEDED"],
+    ["maxFeePerGas", "MAX_FEE_CAP_EXCEEDED"],
+    ["maxPriorityFeePerGas", "PRIORITY_FEE_CAP_EXCEEDED"],
   ] as const)("persists matching identity with excessive %s as an on-chain policy violation", async (
     field,
-    value,
     code,
   ) => {
     const hashed = await broadcastRecordedRun();
+    const caps = hashed.operations[0].preparationAttempts[0]!.feeAuthorization!.authorizedCaps;
+    const value = `0x${(BigInt(caps[field]) + 1n).toString(16)}`;
     const violated = recordRpcTransactionV4({
       run: hashed,
       kind: "TOKENIZE",
@@ -536,6 +566,57 @@ describe("wallet ambiguity and correlation authority", () => {
     }))).toMatchObject({ schemaVersion: "4.0", status: "RECONCILIATION_REQUIRED" });
   });
 
+  it("keeps a successful historical exact-cap attempt in reconciliation without retroactive expansion", async () => {
+    const hashed = await broadcastRecordedRun();
+    const operation = hashed.operations[0];
+    const activeIndex = operation.preparationAttempts.findIndex(
+      (attempt) => attempt.attemptId === operation.activePreparationAttemptId,
+    );
+    const historicalFees = createInitialFeeAuthorizationV1({
+      gasLimit: "0x350c63",
+      maxFeePerGas: "0x454bf75b",
+      maxPriorityFeePerGas: "0x118c30",
+    });
+    const attempts = operation.preparationAttempts.map((attempt, index) => index === activeIndex
+      ? { ...attempt, feeAuthorization: historicalFees }
+      : attempt);
+    const historical = {
+      ...hashed,
+      operations: [{ ...operation, preparationAttempts: attempts }, hashed.operations[1], hashed.operations[2]],
+    } as ExecutionRunV4;
+    const violated = recordRpcTransactionV4({
+      run: historical,
+      kind: "TOKENIZE",
+      txHash: TX_HASH,
+      immutableIdentity: attempts[activeIndex]!.immutableIdentity,
+      actualFeeFields: {
+        transactionType: "0x2",
+        gasLimit: "0x350c63",
+        gasPrice: "0x7b729771",
+        maxFeePerGas: "0x9884d6a8",
+        maxPriorityFeePerGas: "0x406d72c5",
+        accessList: [],
+      },
+      id: "historical-fee-violation",
+      at: "2026-09-13T18:14:48.404Z",
+    });
+    expect(violated.status).toBe("RECONCILIATION_REQUIRED");
+    expect(violated.operations[0].rpcTransactionEvidence).toMatchObject({
+      immutableIdentityStatus: "MATCH",
+      feeAuthorizationStatus: "POLICY_VIOLATION",
+      feePolicyViolationCode: "MAX_FEE_CAP_EXCEEDED",
+    });
+    const successfulReceipt = recordRpcReceiptEvidenceV4({
+      run: violated,
+      kind: "TOKENIZE",
+      evidence: receiptEvidence("INCLUDED", "SUCCESS"),
+      id: "successful-over-cap-receipt",
+    });
+    expect(successfulReceipt.status).toBe("RECONCILIATION_REQUIRED");
+    expect(successfulReceipt.terminalOutcome).toBeNull();
+    expect(successfulReceipt.tokenIdentity).toBeNull();
+  });
+
   it("continues same-pair correlation and receipt/finality evidence after fee violation without advancing", async () => {
     const hashed = await broadcastRecordedRun();
     let run = recordRpcTransactionV4({
@@ -543,7 +624,7 @@ describe("wallet ambiguity and correlation authority", () => {
       kind: "TOKENIZE",
       txHash: TX_HASH,
       immutableIdentity: hashed.operations[0].preparationAttempts[0]!.immutableIdentity,
-      actualFeeFields: actualFees({ gasLimit: "0x101" }),
+      actualFeeFields: actualFees({ gasLimit: "0x7a1201" }),
       id: "fee-violation",
       at: "2026-09-11T09:32:00.000Z",
     });
@@ -604,7 +685,7 @@ describe("wallet ambiguity and correlation authority", () => {
     const violated = recordRpcTransactionV4({
       run: hashed, kind: "TOKENIZE", txHash: TX_HASH,
       immutableIdentity: hashed.operations[0].preparationAttempts[0]!.immutableIdentity,
-      actualFeeFields: actualFees({ maxFeePerGas: "0x21" }),
+      actualFeeFields: actualFees({ maxFeePerGas: "0x2540be401" }),
       id: "fee-violation", at: "2026-09-11T09:32:00.000Z",
     });
     const observed = recordRpcReceiptEvidenceV4({

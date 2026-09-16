@@ -1,5 +1,5 @@
+import { syntheticTokenizeProtocolRpc } from "../execution/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
-import { sha256Utf8 } from "@/core";
 import { createValidRawManifest, TOKENIZER_ADDRESS } from "@/core/test-fixtures";
 import type { BrickkenServerAdapter, PreparedOperation } from "../brickken/types";
 import { BrickkenAdapterError } from "../brickken/errors";
@@ -18,7 +18,6 @@ import {
   ExecutionV4Orchestrator,
   OrchestrationError,
   TOKENIZE_ALLOWED_DESTINATION,
-  TOKENIZE_CALLDATA_COMMITMENT,
   TOKENIZE_EXECUTION_GATE,
   TOKENIZE_FUNCTION_SIGNATURE,
   REVIEWED_SEPOLIA_FACTORY,
@@ -353,6 +352,9 @@ describe("V4 browser wallet run routes", () => {
         run: durable as never,
       })),
       trackExecution: vi.fn(async () => ({ run: durable as never })),
+      reconcileSubmittedRun: vi.fn(async () => ({ run: durable as never })),
+      reprepareOperation: vi.fn(async () => durable as never),
+      prepareOperation: vi.fn(async () => durable as never),
     };
     const runtime: RunApiRuntime = { ...api, walletExecution };
     const options = { config, runtime: () => runtime };
@@ -492,7 +494,7 @@ describe("V4 browser wallet run routes", () => {
     let sequence = 0;
     const walletExecution = new ExecutionV4Orchestrator({
       repository,
-      clock: { nowIso: () => `2026-09-12T13:00:0${sequence++}.000Z` },
+      clock: { nowIso: () => new Date(Date.UTC(2026, 8, 12, 13, 0, sequence++)).toISOString() },
       ids: {
         runId: () => runId,
         operationId: () => `wallet-operation-${sequence++}`,
@@ -503,9 +505,10 @@ describe("V4 browser wallet run routes", () => {
         [TOKENIZE_EXECUTION_GATE]: "1",
         [TOKENIZE_ALLOWED_DESTINATION]: REVIEWED_SEPOLIA_FACTORY,
         [TOKENIZE_FUNCTION_SIGNATURE]: signature,
-        [TOKENIZE_CALLDATA_COMMITMENT]: await sha256Utf8(data),
       }),
       rpc: createTrustedSepoliaRpcClient({ request: async (method, params) => {
+          const protocol = syntheticTokenizeProtocolRpc(method, params);
+          if (protocol !== undefined) return protocol;
         if (method === "eth_chainId") return "0xaa36a7";
         if (method === "eth_getTransactionCount") return "0x5";
         if (method === "eth_getBalance") return "0x1000000000000000";
@@ -650,6 +653,69 @@ describe("V4 browser wallet run routes", () => {
       error: { code: "READ_BACK_BINDING_UNRESOLVED" },
     });
   });
+
+  it("reconciles submitted run read-only on getRunHandler refresh when on-chain hash exists", async () => {
+    const value = await setup();
+    const submittedRun = {
+      ...value.durable,
+      schemaVersion: "4.0",
+      status: "CONFIRMING",
+      phase: "TOKENIZATION",
+      operations: [
+        {
+          ...value.durable.operations[0],
+          stage: "BRICKKEN_CORRELATED",
+          blockchainTxHash: txHash,
+        },
+        value.durable.operations[1],
+        value.durable.operations[2],
+      ],
+    };
+    vi.spyOn(value.runtime.runs, "getRun").mockResolvedValueOnce(submittedRun as never);
+    const getRequest = new Request(`${config.trustedOrigin}/api/runs/${runId}`, {
+      headers: { cookie: value.cookie, "sec-fetch-site": "same-origin" },
+    });
+    const response = await getRunHandler(getRequest, runId, value.options);
+    expect(response.status).toBe(200);
+    expect(value.walletExecution.reconcileSubmittedRun).toHaveBeenCalledWith(runId, submittedRun.revision);
+  });
+
+  it("reprepares stale run accepting strictly expectedRevision and returning strict public DTO", async () => {
+    const value = await setup();
+    vi.spyOn(value.runtime.runs, "getRun").mockResolvedValueOnce({
+      ...value.durable,
+      schemaVersion: "4.0",
+      operations: [
+        { ...value.durable.operations[0], stage: "PREPARED_STALE" },
+        value.durable.operations[1],
+        value.durable.operations[2],
+      ],
+    } as never);
+    const response = await value.call(prepareNextOperationHandler, "prepare", { expectedRevision: 2 });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.ok).toBe(true);
+    expect(body.run.id).toBe(runId);
+    expect(body.run).not.toHaveProperty("rpcTransactionEvidence");
+    expect(body.run).not.toHaveProperty("preparationAttempts");
+    expect(value.walletExecution.reprepareOperation).toHaveBeenCalledWith(runId, 2);
+
+    // Rejects extra caller-supplied fields
+    expect((await value.call(prepareNextOperationHandler, "prepare", { expectedRevision: 2, phase: "TOKENIZATION" })).status).toBe(400);
+
+    // Handles CAS conflict
+    vi.mocked(value.walletExecution.reprepareOperation).mockRejectedValueOnce(new RepositoryRevisionConflictError());
+    vi.spyOn(value.runtime.runs, "getRun").mockResolvedValueOnce({
+      ...value.durable,
+      schemaVersion: "4.0",
+      operations: [
+        { ...value.durable.operations[0], stage: "PREPARED_STALE" },
+        value.durable.operations[1],
+        value.durable.operations[2],
+      ],
+    } as never);
+    expect((await value.call(prepareNextOperationHandler, "prepare", { expectedRevision: 1 })).status).toBe(409);
+  });
 });
 
 const preparedOperation: PreparedOperation = {
@@ -758,7 +824,12 @@ describe("explicit next-operation preparation API", () => {
   it("authorizes before body parsing and does not let the browser choose an operation", async () => {
     const value = await setup();
     expect((await value.prepare({ expectedRevision: value.approved.revision }, "")).status).toBe(403);
-    expect((await value.prepare({ expectedRevision: value.approved.revision, operation: "MINT" })).status).toBe(400);
+    for (const field of ["operation", "gasLimit", "maxFeePerGas", "maxPriorityFeePerGas", "maximumNetworkFeeWei"]) {
+      expect((await value.prepare({
+        expectedRevision: value.approved.revision,
+        [field]: field === "operation" ? "MINT" : "0xffff",
+      })).status).toBe(400);
+    }
     expect(value.brickken.prepareTokenization).not.toHaveBeenCalled();
   });
 

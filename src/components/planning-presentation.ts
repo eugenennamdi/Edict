@@ -6,16 +6,15 @@ export const fields = [
   { name: "symbol", path: "asset.symbol", label: "Token symbol", section: "asset", hint: "3–5 letters or digits. Normalized to uppercase.", placeholder: "e.g. RWA", type: "text" },
   { name: "supplyCap", path: "asset.supplyCap", label: "Supply cap", section: "asset", hint: "Maximum supply, in whole tokens.", placeholder: "0", type: "text", numeric: true },
   { name: "documentationUrl", path: "asset.documentationUrl", label: "Documentation URL", section: "asset", hint: "An HTTPS document URL without embedded credentials.", placeholder: "https://", type: "url", wide: true },
-  { name: "tokenizerEmail", path: "tokenizer.email", label: "Project / issuer email", section: "authority", hint: "Stored in the manifest; Brickken account identity is configured server-side.", placeholder: "name@company.com", type: "email", wide: true },
   { name: "tokenizerWallet", path: "tokenizer.walletAddress", label: "Required signer address", section: "authority", hint: "The tokenizer’s public Ethereum address. No wallet connection needed to plan.", placeholder: "0x…", type: "text", wide: true, mono: true },
-  { name: "investorEmail", path: "investor.email", label: "Investor email", section: "allocation", hint: "Must differ from the tokenizer email.", placeholder: "name@company.com", type: "email", wide: true },
-  { name: "investorWallet", path: "investor.walletAddress", label: "Recipient address", section: "allocation", hint: "The investor’s public Ethereum address.", placeholder: "0x…", type: "text", wide: true, mono: true },
-  { name: "mintAmount", path: "investor.mintAmount", label: "Planned mint amount", section: "allocation", hint: "Whole tokens, no greater than the supply cap.", placeholder: "0", type: "text", numeric: true },
+  { name: "investorEmail", path: "investor.email", label: "Investor email", section: "allocation", hint: "Must differ from tokenizer email.", placeholder: "investor@example.com", type: "email" },
+  { name: "investorWallet", path: "investor.walletAddress", label: "Investor wallet address", section: "allocation", hint: "The investor's public Ethereum address for whitelist and mint.", placeholder: "0x…", type: "text", mono: true },
+  { name: "mintAmount", path: "investor.mintAmount", label: "Mint amount", section: "allocation", hint: "Whole tokens, up to the supply cap.", placeholder: "0", type: "text", numeric: true },
 ] as const;
 
 export type FieldName = typeof fields[number]["name"];
 export type Draft = Record<FieldName, string>;
-export const emptyDraft: Draft = { assetName: "", symbol: "", supplyCap: "", documentationUrl: "", tokenizerEmail: "", tokenizerWallet: "", investorEmail: "", investorWallet: "", mintAmount: "" };
+export const emptyDraft: Draft = { assetName: "", symbol: "", supplyCap: "", documentationUrl: "", tokenizerWallet: "", investorEmail: "", investorWallet: "", mintAmount: "" };
 export function draftForm(draft: Draft) { return { get: (name: string) => draft[name as FieldName] ?? "" }; }
 export function draftIssues(draft: Draft): readonly PlanningIssue[] {
   const result = validateAssetManifestV1(creationRequest(draftForm(draft)).manifest);
@@ -44,13 +43,14 @@ export const operationLabels: Record<PlanningView["plan"]["operations"][number][
 };
 
 export function recordStatus(run: PlanningView["run"]) {
+  if (run.tokenizationResult && run.terminalOutcome === null) return "Tokenized asset created";
   if (run.terminalOutcome === "CANCELLED") return "Run canceled";
   if (run.terminalOutcome === "VERIFICATION_FAILED") return "Verification failed";
   if (run.terminalOutcome === "FAILED") return "Run failed";
   const labels: Record<PlanningView["run"]["status"], string> = {
-    AWAITING_APPROVAL: "Awaiting approval", PREPARING: "Preparation stage", AWAITING_WALLET: "Awaiting wallet",
-    BROADCAST_RECORDED: "Transaction hash recorded", CONFIRMING: "Confirmation stage", SUCCEEDED: "Run reports success",
-    TIMED_OUT: "Confirmation timed out", FAILED: "Run failed", RECONCILIATION_REQUIRED: "Reconciliation required",
+    AWAITING_APPROVAL: "Awaiting approval", PREPARING: "Ready to execute", AWAITING_WALLET: "Ready to execute",
+    BROADCAST_RECORDED: "Transaction submitted", CONFIRMING: "Verifying", SUCCEEDED: "Completed",
+    TIMED_OUT: "Needs attention", FAILED: "Failed", RECONCILIATION_REQUIRED: "Needs attention",
   };
   return labels[run.status];
 }

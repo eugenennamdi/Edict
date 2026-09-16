@@ -4,7 +4,7 @@ import {
   type SemanticAuthorizationV1,
   hashWalletExecutionIntentV1,
 } from "@/shared/wallet/execution-authorization";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   IllegalStateTransitionError,
   RepositoryRevisionConflictError,
@@ -12,7 +12,10 @@ import {
 import type { Clock, IdGenerator } from "../execution/infrastructure";
 import { InMemoryExecutionRunRepository } from "../execution/repository";
 import { ExecutionRunService } from "../execution/run-service";
-import { createApprovalProofFixture } from "../execution/test-fixtures";
+import {
+  createApprovalProofFixture,
+  createValidTokenizeCalldata as createCanonicalCalldata,
+} from "../execution/test-fixtures";
 import type {
   ExecutionRunV4,
   OperationKind,
@@ -21,6 +24,7 @@ import type {
 import { projectPublicRun } from "../run-api/projection";
 import { createTrustedSepoliaRpcClient } from "../rpc/client";
 import type { RpcTransport } from "../rpc/types";
+import { markPreparedStaleV4 } from "../execution/v4-transitions";
 import {
   ExecutionV4Orchestrator,
   OrchestrationError,
@@ -36,14 +40,18 @@ import {
   type BrickkenServerAdapter,
   type BrickkenTransactionLocator,
 } from "../brickken";
-import { encodeFunctionData, parseAbi } from "viem";
 import {
   ERC1967_IMPLEMENTATION_SLOT,
   NEW_TOKENIZATION_EVENT_TOPIC,
   REVIEWED_SEPOLIA_FACTORY,
   REVIEWED_SEPOLIA_IMPLEMENTATION,
-  REVIEWED_TOKENIZE_FUNCTION_SIGNATURE,
 } from "./tokenize-receipt-binding";
+import {
+  type BrickkenWriteGate,
+  createPreparationOnlyBrickkenWriteGate,
+  BrickkenWritesDisabledError,
+} from "./write-gate";
+import { projectTokenizeCalldataReview } from "../../../tools/tokenize-calldata-review";
 
 class FakeRpcTransport implements RpcTransport {
   #handlers: Map<string, (params?: readonly unknown[]) => unknown> = new Map();
@@ -69,6 +77,7 @@ class FakeSemanticAuthorizationEvaluator
 {
   readonly isProductionDenyAll = false;
   allow: boolean = true;
+  requiresProtocolValidation: boolean = false;
   authorizationId: string = "test-auth-1";
 
   async evaluate(input: {
@@ -133,18 +142,12 @@ function indexedAddress(address: string): string {
   return `0x${"0".repeat(24)}${address.slice(2).toLowerCase()}`;
 }
 
-const TOKENIZE_ABI = parseAbi([`function ${REVIEWED_TOKENIZE_FUNCTION_SIGNATURE} external`]);
-
 export function createValidTokenizeCalldata(deadline: bigint = 2000000000n): string {
-  return encodeFunctionData({
-    abi: TOKENIZE_ABI,
-    functionName: "newTokenization",
-    args: [
-      ["Token", "TKN", "ipfs://meta", 1000000n, TOKENIZER_ADDRESS, TO, false, [], []],
-      [TO, 100n, TO, TOKENIZER_ADDRESS, deadline, 1n, "0x1234"],
-      [100n, TO, TO, 10n, 0, `0x${"00".repeat(32)}`, `0x${"00".repeat(32)}`],
-    ],
-  });
+  return createCanonicalCalldata(
+    deadline,
+    TOKENIZER_ADDRESS as `0x${string}`,
+    TO as `0x${string}`,
+  );
 }
 
 const VALID_TOKENIZE_CALLDATA = createValidTokenizeCalldata();
@@ -215,11 +218,15 @@ class FakeBrickkenStatusFetcher implements BrickkenStatusFetcher {
   }
 }
 
-class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo" | "getTokenizerInfo"> {
+class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo" | "getTokenizerInfo" | "getWhitelistStatus" | "getBalanceAndWhitelist"> {
   tokenCalls = 0;
   tokenizerCalls = 0;
+  whitelistCalls = 0;
+  balanceCalls = 0;
   tokenAddress = TOKEN_ADDRESS;
   walletAddress = TOKENIZER_ADDRESS;
+  isWhitelisted = true;
+  tokenBalanceRaw = (25n * 10n ** 18n).toString();
 
   async getTokenInfo(query: { tokenSymbol: string }) {
     this.tokenCalls += 1;
@@ -251,11 +258,47 @@ class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo"
       },
     };
   }
+
+  async getWhitelistStatus(query: { tokenSymbol: string; address: string }) {
+    this.whitelistCalls += 1;
+    return {
+      ok: true as const,
+      value: {
+        isWhitelisted: this.isWhitelisted,
+        source: "blockchain" as const,
+        tokenSymbol: query.tokenSymbol,
+        address: query.address,
+      },
+    };
+  }
+
+  async getBalanceAndWhitelist(query: { tokenSymbol: string; investorEmail: string }) {
+    this.balanceCalls += 1;
+    void query.investorEmail;
+    return {
+      ok: true as const,
+      value: {
+        isWhitelisted: this.isWhitelisted,
+        balanceSource: "blockchain" as const,
+        walletAddress: "0x2222222222222222222222222222222222222222",
+        tokenAddress: this.tokenAddress,
+        tokenBalanceRaw: this.tokenBalanceRaw,
+        tokenDecimals: 18,
+      },
+    };
+  }
 }
 
 let globalAttemptCounter = 0;
 
-function createHarness(options: { readonly readBack?: boolean } = {}) {
+function createHarness(options: {
+  readonly readBack?: boolean;
+  readonly brickkenPrepare?: Pick<
+    BrickkenServerAdapter,
+    "prepareTokenization" | "prepareWhitelist" | "prepareMint"
+  >;
+  readonly writeGate?: BrickkenWriteGate;
+} = {}) {
   let tick = 0;
   let id = 0;
   const clock: Clock = {
@@ -294,6 +337,18 @@ function createHarness(options: { readonly readBack?: boolean } = {}) {
       timestamp: "0x66e44000",
     };
   });
+  fakeRpcTransport.on("eth_getCode", () => "0x6000");
+  fakeRpcTransport.on("eth_getStorageAt", () => "0x0000000000000000000000002c24f3fe7665ea83b2280bb5a7e66072c869ad89");
+  fakeRpcTransport.on("eth_call", (params) => {
+    const data = (params?.[0] as { data?: string })?.data ?? "";
+    if (data.startsWith("0x9350d6f9") || data.startsWith("0x5c60da1b")) {
+      return "0x0000000000000000000000003333333333333333333333333333333333333333";
+    }
+    if (data.startsWith("0x313ce567")) return `0x${"0".repeat(62)}12`;
+    if (data.startsWith("0xf3d02cfd")) return "0x";
+    if (data.startsWith("0x7ecebe00")) return `0x${"0".repeat(63)}1`;
+    return "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000003333333333333333333333333333333333333333";
+  });
 
   const rpc = createTrustedSepoliaRpcClient(fakeRpcTransport);
   const semanticAuth = new FakeSemanticAuthorizationEvaluator();
@@ -312,6 +367,8 @@ function createHarness(options: { readonly readBack?: boolean } = {}) {
     ...(options.readBack
       ? { brickkenReadBack: readBack, brickkenTokenizerEmail: "licensed-account@example.com" }
       : {}),
+    ...(options.brickkenPrepare ? { brickkenPrepare: options.brickkenPrepare } : {}),
+    ...(options.writeGate ? { writeGate: options.writeGate } : {}),
   });
 
   return {
@@ -361,6 +418,158 @@ async function createPreparedV2Run(
   );
 }
 
+async function setupFinalizedCorrelatedRun(
+  h: ReturnType<typeof createHarness>,
+  rawStatus: "pending" | "success" | "rejected" = "success",
+  options: Readonly<{
+    receiptStatus?: "0x0" | "0x1";
+    finalizedBlockNumber?: string;
+    observedMaxFeePerGas?: string;
+    correlationHash?: string;
+    implementationAddress?: string;
+  }> = {},
+) {
+  const runV2 = await createPreparedV2Run(h);
+  const v4Run = await h.v4.promotePreparedRunToV4(
+    runV2.id,
+    runV2.revision,
+  );
+  const promptRun = await h.v4.recordWalletPrompt(
+    v4Run.id,
+    v4Run.revision,
+  );
+  const { envelope, run: releasedRun } = await h.v4.releaseSendAuthority(
+    promptRun.id,
+    promptRun.revision,
+  );
+  const broadcastRun = await h.v4.ingestBroadcastHash(releasedRun.id, {
+    expectedRevision: releasedRun.revision,
+    invocationAttemptId: envelope.invocationAttemptId,
+    walletIntentHash: envelope.walletIntentHash,
+    txHash: TX_HASH,
+  });
+
+  h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+    hash: TX_HASH,
+    chainId: "0xaa36a7",
+    from: TOKENIZER_ADDRESS,
+    to: TO,
+    input: VALID_TOKENIZE_CALLDATA,
+    value: "0x0",
+    nonce: "0x5",
+    type: "0x2",
+    gas: "0x100",
+    gasPrice: null,
+    maxFeePerGas: options.observedMaxFeePerGas ?? "0x20",
+    maxPriorityFeePerGas: "0x4",
+    accessList: [],
+    blockHash: FINALIZED_BLOCK_HASH,
+    blockNumber: "0x20",
+    transactionIndex: "0x0",
+  }));
+
+  h.fakeRpcTransport.on("eth_getBlockByNumber", (params) => {
+    const tag = params?.[0];
+    if (tag === "finalized") {
+      return {
+        number: options.finalizedBlockNumber ?? "0x20",
+        hash: options.finalizedBlockNumber === "0x1f" ? BLOCK_HASH : FINALIZED_BLOCK_HASH,
+        parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+        baseFeePerGas: "0x10",
+        timestamp: "0x66e44000",
+      };
+    }
+    if (tag === "0x20") {
+      return {
+        number: "0x20",
+        hash: FINALIZED_BLOCK_HASH,
+        parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+        baseFeePerGas: "0x10",
+        timestamp: "0x66e44000",
+      };
+    }
+    return {
+      number: "0x10",
+      hash: BLOCK_HASH,
+      parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      baseFeePerGas: "0x10",
+      timestamp: "0x66e44000",
+    };
+  });
+
+  h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+    transactionHash: TX_HASH,
+    blockHash: FINALIZED_BLOCK_HASH,
+    blockNumber: "0x20",
+    transactionIndex: "0x0",
+    from: TOKENIZER_ADDRESS,
+    to: TO,
+    cumulativeGasUsed: "0x50",
+    gasUsed: "0x50",
+    effectiveGasPrice: "0x15",
+    contractAddress: null,
+    type: "0x2",
+    status: options.receiptStatus ?? "0x1",
+    logs: [{
+      address: REVIEWED_SEPOLIA_FACTORY,
+      topics: [
+        NEW_TOKENIZATION_EVENT_TOPIC,
+        `0x${"0".repeat(63)}1`,
+        indexedAddress(TOKEN_ADDRESS),
+        indexedAddress(ESCROW_ADDRESS),
+      ],
+      data: "0x",
+      blockNumber: "0x20",
+      transactionHash: TX_HASH,
+      transactionIndex: "0x0",
+      blockHash: FINALIZED_BLOCK_HASH,
+      logIndex: "0x4",
+      removed: false,
+    }],
+  }));
+
+  h.fakeRpcTransport.on("eth_getStorageAt", (params) => {
+    expect(params).toEqual([
+      REVIEWED_SEPOLIA_FACTORY,
+      ERC1967_IMPLEMENTATION_SLOT,
+      "0x20",
+    ]);
+    return `0x${"0".repeat(24)}${(
+      options.implementationAddress ?? REVIEWED_SEPOLIA_IMPLEMENTATION
+    ).slice(2)}`;
+  });
+
+  h.correlationSender.response = {
+    status: 202,
+    data: options.correlationHash === undefined
+      ? CORRELATION_SUCCESS_DATA
+      : {
+          results: [{
+            result: {
+              transactionHash: options.correlationHash,
+              status: "pending",
+              executionMode: "client-broadcast",
+            },
+          }],
+        },
+  };
+
+  h.statusFetcher.response = {
+    status: 200,
+    data: {
+      status: rawStatus,
+      transactionHash: TX_HASH,
+    },
+  };
+
+  const tracked = await h.v4.trackExecution(
+    broadcastRun.id,
+    broadcastRun.revision,
+  );
+
+  return tracked.run;
+}
+
 describe("ExecutionV4Orchestrator", () => {
   describe("Part B: Explicit V4 Promotion", () => {
     it("promotes a PREPARED V2 run to V4 with CAS", async () => {
@@ -381,7 +590,11 @@ describe("ExecutionV4Orchestrator", () => {
       expect(op.activePreparationAttemptId).toBe(op.preparationAttempts[0].attemptId);
       expect(op.preparationAttempts[0].immutableIdentity).not.toBeNull();
       expect(op.preparationAttempts[0].immutableIdentity?.nonce).toBe("0x5");
-      expect(op.preparationAttempts[0].feeAuthorization).not.toBeNull();
+      const feeAuthorization = op.preparationAttempts[0].feeAuthorization;
+      expect(feeAuthorization?.adjustmentPolicy).toBe("SERVER_BOUNDED_HEADROOM");
+      expect(BigInt(feeAuthorization!.authorizedCaps.gasLimit)).toBeGreaterThan(
+        BigInt(feeAuthorization!.preparedDefaults.gasLimit),
+      );
     });
 
     it("rejects non-PREPARED runs from promotion", async () => {
@@ -523,12 +736,12 @@ describe("ExecutionV4Orchestrator", () => {
         runV2.revision,
       );
 
-      // Base fee 0x50 > maxFeePerGas 0x20
+      // Base fee above the server-owned absolute max-fee ceiling.
       h.fakeRpcTransport.on("eth_getBlockByNumber", () => ({
         number: "0x10",
         hash: BLOCK_HASH,
         parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
-        baseFeePerGas: "0x50",
+        baseFeePerGas: "0x2540be401",
         timestamp: "0x66e44000",
       }));
 
@@ -733,6 +946,183 @@ describe("ExecutionV4Orchestrator", () => {
       expect(freshFreshness.evaluation.outcome).toBe("ELIGIBLE");
       expect(freshFreshness.evaluation.priceReportStatus).toBe("FRESH");
     });
+
+    it("orchestrates reprepareOperation: PREPARED_STALE -> REPREPARE_INTENT -> PREPARED with fresh txId, calldata, and review succeeds", async () => {
+      const freshCalldata = createValidTokenizeCalldata(2000000000n);
+      const mockPrepareTokenization = vi.fn().mockResolvedValue({
+        ok: true,
+        value: {
+          txId: "brickken-fresh-tx-id-42",
+          transaction: {
+            chainId: "11155111",
+            normalizedChainId: "11155111",
+            from: TOKENIZER_ADDRESS,
+            to: REVIEWED_SEPOLIA_FACTORY,
+            data: freshCalldata,
+            rawUnsigned: {
+              ...UNSIGNED_TOKENIZE_TX,
+              data: freshCalldata,
+            },
+          },
+        },
+      });
+
+      const h = createHarness({
+        brickkenPrepare: {
+          prepareTokenization: mockPrepareTokenization,
+          prepareWhitelist: vi.fn(),
+          prepareMint: vi.fn(),
+        },
+        writeGate: createPreparationOnlyBrickkenWriteGate(true),
+      });
+
+      const expiredCalldata = createValidTokenizeCalldata(1000000000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+
+      // Make stale via freshness check
+      const staleRes = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      const staleRun = staleRes.run as ExecutionRunV4;
+      expect(staleRun.operations[0].stage).toBe("PREPARED_STALE");
+      const revisionBefore = staleRun.revision;
+
+      // Operator triggers reprepareOperation
+      const reprepared = await h.v4.reprepareOperation(staleRun.id, staleRun.revision);
+
+      // 1. Exactly one Brickken prepare request was made (no retries)
+      expect(mockPrepareTokenization).toHaveBeenCalledTimes(1);
+
+      // 2. Revision advanced by 2 (CAS 1 REPREPARE_INTENT + CAS 2 PREPARED)
+      expect(reprepared.revision).toBe(revisionBefore + 2);
+
+      // 3. Stage is PREPARED, status is AWAITING_WALLET
+      expect(reprepared.operations[0].stage).toBe("PREPARED");
+      expect(reprepared.status).toBe("AWAITING_WALLET");
+
+      // 4. Fresh txId, fingerprint, and calldata
+      expect(reprepared.operations[0].preparedTxId).toBe("brickken-fresh-tx-id-42");
+      const active = reprepared.operations[0].preparationAttempts[1];
+      expect(active.state).toBe("PREPARED");
+      expect(active.txId).toBe("brickken-fresh-tx-id-42");
+      expect(active.immutableIdentity?.data).toBe(freshCalldata);
+
+      // 5. No wallet authority release
+      expect(reprepared.operations[0].walletPromptAuthorization).toBeNull();
+
+      // 6. Calldata review succeeds afterward and returns fresh commitment
+      const review = await projectTokenizeCalldataReview(reprepared);
+      expect(review.txId).toBe("brickken-fresh-tx-id-42");
+      expect(review.calldataCommitment).toBe(await sha256Utf8(freshCalldata));
+    });
+
+    it("reprepareOperation handles definite Brickken refusal by transitioning to REJECTED/FAILED", async () => {
+      const mockPrepareTokenization = vi.fn().mockResolvedValue({
+        ok: false,
+        error: {
+          code: "AUTHENTICATION_REJECTED",
+          message: "API key unauthorized",
+        },
+      });
+
+      const h = createHarness({
+        brickkenPrepare: {
+          prepareTokenization: mockPrepareTokenization,
+          prepareWhitelist: vi.fn(),
+          prepareMint: vi.fn(),
+        },
+        writeGate: createPreparationOnlyBrickkenWriteGate(true),
+      });
+
+      const expiredCalldata = createValidTokenizeCalldata(1000000000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      const staleRes = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      const staleRun = staleRes.run as ExecutionRunV4;
+
+      await expect(
+        h.v4.reprepareOperation(staleRun.id, staleRun.revision),
+      ).rejects.toThrow(OrchestrationError);
+
+      // Verify run is FAILED/REJECTED, never left in REPREPARE_INTENT
+      const updated = (await h.repository.getById(staleRun.id)) as ExecutionRunV4;
+      expect(updated.status).toBe("FAILED");
+      expect(updated.terminalOutcome).toBe("FAILED");
+      expect(updated.operations[0].stage).toBe("REJECTED");
+      expect(updated.operations[0].preparationAttempts[1].state).toBe("REFUSED");
+    });
+
+    it("reprepareOperation handles ambiguous Brickken error by transitioning to PREPARE_UNKNOWN/RECONCILIATION_REQUIRED", async () => {
+      const mockPrepareTokenization = vi.fn().mockResolvedValue({
+        ok: false,
+        error: {
+          code: "UPSTREAM_SERVER_ERROR",
+          message: "Brickken 502 Bad Gateway",
+        },
+      });
+
+      const h = createHarness({
+        brickkenPrepare: {
+          prepareTokenization: mockPrepareTokenization,
+          prepareWhitelist: vi.fn(),
+          prepareMint: vi.fn(),
+        },
+        writeGate: createPreparationOnlyBrickkenWriteGate(true),
+      });
+
+      const expiredCalldata = createValidTokenizeCalldata(1000000000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      const staleRes = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      const staleRun = staleRes.run as ExecutionRunV4;
+
+      await expect(
+        h.v4.reprepareOperation(staleRun.id, staleRun.revision),
+      ).rejects.toThrow(OrchestrationError);
+
+      // Verify run is RECONCILIATION_REQUIRED/PREPARE_UNKNOWN, never left in REPREPARE_INTENT
+      const updated = (await h.repository.getById(staleRun.id)) as ExecutionRunV4;
+      expect(updated.status).toBe("RECONCILIATION_REQUIRED");
+      expect(updated.operations[0].stage).toBe("PREPARE_UNKNOWN");
+      expect(updated.operations[0].preparationAttempts[1].state).toBe("PREPARE_UNKNOWN");
+    });
+
+    it("reprepareOperation rejects CAS conflict when revision does not match", async () => {
+      const h = createHarness();
+      const expiredCalldata = createValidTokenizeCalldata(1000000000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      const staleRes = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      const staleRun = staleRes.run as ExecutionRunV4;
+
+      await expect(
+        h.v4.reprepareOperation(staleRun.id, staleRun.revision - 1),
+      ).rejects.toThrow(RepositoryRevisionConflictError);
+    });
+
+    it("reprepareOperation blocks repreparation if write gate is disabled", async () => {
+      const h = createHarness({
+        writeGate: createPreparationOnlyBrickkenWriteGate(false),
+      });
+      const expiredCalldata = createValidTokenizeCalldata(1000000000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      const staleRes = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      const staleRun = staleRes.run as ExecutionRunV4;
+
+      await expect(
+        h.v4.reprepareOperation(staleRun.id, staleRun.revision),
+      ).rejects.toThrow(BrickkenWritesDisabledError);
+    });
   });
 
   describe("Part E & F: Wallet Authorization Preflight & Send Authority Release", () => {
@@ -788,6 +1178,10 @@ describe("ExecutionV4Orchestrator", () => {
       expect(
         promptRun.operations[0].walletPromptAuthorization?.providerInvocation,
       ).toBe("PROVEN_NOT_INVOKED");
+      const persistedFees = promptRun.operations[0].preparationAttempts[0].feeAuthorization;
+      expect(persistedFees?.adjustmentPolicy).toBe("SERVER_BOUNDED_HEADROOM");
+      expect(promptRun.operations[0].walletPromptAuthorization?.walletIntent.feeAuthorization)
+        .toEqual(persistedFees);
 
       // Release send authority
       const { envelope, run: releasedRun } = await h.v4.releaseSendAuthority(
@@ -1468,7 +1862,7 @@ describe("ExecutionV4Orchestrator", () => {
       const h = createHarness();
       const broadcastRun = await setupBroadcastRun(h);
 
-      // maxFeePerGas 0x30 exceeds authorized cap 0x20
+      // maxFeePerGas exceeds the server-owned 10 gwei ceiling.
       h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
         hash: TX_HASH,
         chainId: "0xaa36a7",
@@ -1480,7 +1874,7 @@ describe("ExecutionV4Orchestrator", () => {
         type: "0x2",
         gas: "0x100",
         gasPrice: null,
-        maxFeePerGas: "0x30",
+        maxFeePerGas: "0x2540be401",
         maxPriorityFeePerGas: "0x4",
         accessList: [],
         blockHash: BLOCK_HASH,
@@ -2075,7 +2469,7 @@ describe("ExecutionV4Orchestrator", () => {
         txHash: TX_HASH,
       });
 
-      // Fee policy violated on chain (maxFee 0x30 > cap 0x20)
+      // Fee policy violated on chain above the server-owned ceiling.
       h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
         hash: TX_HASH,
         chainId: "0xaa36a7",
@@ -2087,7 +2481,7 @@ describe("ExecutionV4Orchestrator", () => {
         type: "0x2",
         gas: "0x100",
         gasPrice: null,
-        maxFeePerGas: "0x30",
+        maxFeePerGas: "0x2540be401",
         maxPriorityFeePerGas: "0x4",
         accessList: [],
         blockHash: BLOCK_HASH,
@@ -2438,6 +2832,50 @@ describe("ExecutionV4Orchestrator", () => {
       expect(json).not.toContain("events");
       expect(json).not.toContain("privateKey");
     });
+
+    it("projects PREPARED_STALE V4 runs with staleReason and reprepareEligibility", async () => {
+      const h = createHarness();
+      const runV2 = await createPreparedV2Run(h);
+      const v4Run = await h.v4.promotePreparedRunToV4(
+        runV2.id,
+        runV2.revision,
+      );
+      const staleRun = await markPreparedStaleV4({
+        run: v4Run,
+        kind: "TOKENIZE",
+        foundation: {
+          attemptId: v4Run.operations[0].activePreparationAttemptId!,
+          freshnessPolicyVersion: "edict-freshness-v1",
+        },
+        nonceEvidence: {
+          evidenceVersion: "1.0",
+          policyVersion: "edict-freshness-v1",
+          authority: "TRUSTED_SERVER_RPC",
+          rpcMethod: "eth_getTransactionCount",
+          blockTag: "pending",
+          chainId: "11155111",
+          requiredSigner: v4Run.requiredSigner.walletAddress,
+          preparedNonce: v4Run.operations[0].preparationAttempts[0].immutableIdentity!.nonce,
+          observedPendingNonce: v4Run.operations[0].preparationAttempts[0].immutableIdentity!.nonce,
+          status: "FRESH",
+          observedAt: "2026-09-13T16:51:39.422Z",
+        },
+        staleReason: "PRICE_REPORT_EXPIRED",
+        id: "event-stale",
+        at: "2026-09-13T16:51:39.422Z",
+      });
+
+      const publicProj = await projectPublicRun(staleRun);
+
+      expect(publicProj.schemaVersion).toBe("4.0");
+      expect(publicProj.operations[0].stage).toBe("PREPARED_STALE");
+      expect(publicProj.execution).toMatchObject({
+        preparationStatus: "PREPARED_STALE",
+        staleReason: "PRICE_REPORT_EXPIRED",
+        reprepareEligible: true,
+        transactionReview: null,
+      });
+    });
   });
 
   describe("Part N: Post-Broadcast Tracking Pipeline (trackExecution)", () => {
@@ -2463,7 +2901,7 @@ describe("ExecutionV4Orchestrator", () => {
       });
     }
 
-    it("returns NOT_FOUND without revision churn when tx is not observed on RPC", async () => {
+    it("reserves a durable poll even when tx is not observed on RPC", async () => {
       const h = createHarness();
       const broadcastRun = await setupBroadcastRun(h);
 
@@ -2475,7 +2913,7 @@ describe("ExecutionV4Orchestrator", () => {
       );
 
       expect(result.rpcEvaluation?.presence).toBe("NOT_FOUND");
-      expect(result.run.revision).toBe(broadcastRun.revision); // Zero churn
+      expect(result.run.revision).toBe(broadcastRun.revision + 1); // Durable reservation
       expect(result.run.operations[0].stage).toBe("BROADCAST_HASH_PERSISTED");
     });
 
@@ -2569,7 +3007,7 @@ describe("ExecutionV4Orchestrator", () => {
         result.run.id,
         result.run.revision,
       );
-      expect(repeated.run.revision).toBe(result.run.revision);
+      expect(repeated.run.revision).toBe(result.run.revision + 1);
     });
 
     it("handles status contradiction during tracking and marks RECONCILIATION_REQUIRED", async () => {
@@ -2628,155 +3066,6 @@ describe("ExecutionV4Orchestrator", () => {
   });
 
   describe("Part O: Token Read-Back and Terminal Read Protection", () => {
-    async function setupFinalizedCorrelatedRun(
-      h: ReturnType<typeof createHarness>,
-      rawStatus: "pending" | "success" | "rejected" = "success",
-      options: Readonly<{
-        receiptStatus?: "0x0" | "0x1";
-        finalizedBlockNumber?: string;
-        observedMaxFeePerGas?: string;
-        correlationHash?: string;
-        implementationAddress?: string;
-      }> = {},
-    ) {
-      const runV2 = await createPreparedV2Run(h);
-      const v4Run = await h.v4.promotePreparedRunToV4(
-        runV2.id,
-        runV2.revision,
-      );
-      const promptRun = await h.v4.recordWalletPrompt(
-        v4Run.id,
-        v4Run.revision,
-      );
-      const { envelope, run: releasedRun } = await h.v4.releaseSendAuthority(
-        promptRun.id,
-        promptRun.revision,
-      );
-      const broadcastRun = await h.v4.ingestBroadcastHash(releasedRun.id, {
-        expectedRevision: releasedRun.revision,
-        invocationAttemptId: envelope.invocationAttemptId,
-        walletIntentHash: envelope.walletIntentHash,
-        txHash: TX_HASH,
-      });
-
-      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
-        hash: TX_HASH,
-        chainId: "0xaa36a7",
-        from: TOKENIZER_ADDRESS,
-        to: TO,
-        input: VALID_TOKENIZE_CALLDATA,
-        value: "0x0",
-        nonce: "0x5",
-        type: "0x2",
-        gas: "0x100",
-        gasPrice: null,
-        maxFeePerGas: options.observedMaxFeePerGas ?? "0x20",
-        maxPriorityFeePerGas: "0x4",
-        accessList: [],
-        blockHash: FINALIZED_BLOCK_HASH,
-        blockNumber: "0x20",
-        transactionIndex: "0x0",
-      }));
-
-      h.fakeRpcTransport.on("eth_getBlockByNumber", (params) => {
-        const tag = params?.[0];
-        if (tag === "finalized") {
-          return {
-            number: options.finalizedBlockNumber ?? "0x20",
-            hash: options.finalizedBlockNumber === "0x1f" ? BLOCK_HASH : FINALIZED_BLOCK_HASH,
-            parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
-            baseFeePerGas: "0x10",
-          };
-        }
-        if (tag === "0x20") {
-          return {
-            number: "0x20",
-            hash: FINALIZED_BLOCK_HASH,
-            parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
-            baseFeePerGas: "0x10",
-          };
-        }
-        return {
-          number: "0x10",
-          hash: BLOCK_HASH,
-          parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
-          baseFeePerGas: "0x10",
-        };
-      });
-
-      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
-        transactionHash: TX_HASH,
-        blockHash: FINALIZED_BLOCK_HASH,
-        blockNumber: "0x20",
-        transactionIndex: "0x0",
-        from: TOKENIZER_ADDRESS,
-        to: TO,
-        cumulativeGasUsed: "0x50",
-        gasUsed: "0x50",
-        effectiveGasPrice: "0x15",
-        contractAddress: null,
-        type: "0x2",
-        status: options.receiptStatus ?? "0x1",
-        logs: [{
-          address: REVIEWED_SEPOLIA_FACTORY,
-          topics: [
-            NEW_TOKENIZATION_EVENT_TOPIC,
-            `0x${"0".repeat(63)}1`,
-            indexedAddress(TOKEN_ADDRESS),
-            indexedAddress(ESCROW_ADDRESS),
-          ],
-          data: "0x",
-          blockNumber: "0x20",
-          transactionHash: TX_HASH,
-          transactionIndex: "0x0",
-          blockHash: FINALIZED_BLOCK_HASH,
-          logIndex: "0x4",
-          removed: false,
-        }],
-      }));
-
-      h.fakeRpcTransport.on("eth_getStorageAt", (params) => {
-        expect(params).toEqual([
-          REVIEWED_SEPOLIA_FACTORY,
-          ERC1967_IMPLEMENTATION_SLOT,
-          "0x20",
-        ]);
-        return `0x${"0".repeat(24)}${(
-          options.implementationAddress ?? REVIEWED_SEPOLIA_IMPLEMENTATION
-        ).slice(2)}`;
-      });
-
-      h.correlationSender.response = {
-        status: 202,
-        data: options.correlationHash === undefined
-          ? CORRELATION_SUCCESS_DATA
-          : {
-              results: [{
-                result: {
-                  transactionHash: options.correlationHash,
-                  status: "pending",
-                  executionMode: "client-broadcast",
-                },
-              }],
-            },
-      };
-
-      h.statusFetcher.response = {
-        status: 200,
-        data: {
-          status: rawStatus,
-          transactionHash: TX_HASH,
-        },
-      };
-
-      const tracked = await h.v4.trackExecution(
-        broadcastRun.id,
-        broadcastRun.revision,
-      );
-
-      return tracked.run;
-    }
-
     it("rejects untrusted caller-supplied token address and prevents creating TokenIdentityV1", async () => {
       const h = createHarness();
       const run = await setupFinalizedCorrelatedRun(h);
@@ -2810,6 +3099,7 @@ describe("ExecutionV4Orchestrator", () => {
       const h = createHarness({ readBack: true });
       const run = await setupFinalizedCorrelatedRun(h, "rejected");
       expect(run.phase).toBe("WHITELIST");
+      expect(run.status).toBe("PREPARING");
       expect(run.operations[0].stage).toBe("READ_BACK_VERIFIED");
       expect(run.tokenIdentity).toMatchObject({
         tokenAddress: TOKEN_ADDRESS,
@@ -2825,14 +3115,12 @@ describe("ExecutionV4Orchestrator", () => {
     it("cannot replace the receipt-derived token with an older same-symbol Brickken result", async () => {
       const h = createHarness({ readBack: true });
       h.readBack.tokenAddress = "0x7777777777777777777777777777777777777777";
-      await expect(setupFinalizedCorrelatedRun(h)).rejects.toMatchObject({
-        code: "READ_BACK_FAILED",
-      });
-      const run = (await h.repository.getById(
-        "11111111-1111-4111-8111-111111111111",
-      )) as ExecutionRunV4;
+      const run = await setupFinalizedCorrelatedRun(h);
+      expect(run.status).toBe("FAILED");
+      expect(run.terminalOutcome).toBe("VERIFICATION_FAILED");
       expect(run.phase).toBe("TOKENIZATION");
       expect(run.tokenIdentity).toBeNull();
+      expect(run.operations[0].stage).toBe("BRICKKEN_CORRELATED");
     });
 
     it("does not derive identity from an unfinalized receipt", async () => {
@@ -2858,7 +3146,7 @@ describe("ExecutionV4Orchestrator", () => {
     it("does not derive identity after an on-chain fee-policy violation", async () => {
       const h = createHarness({ readBack: true });
       const run = await setupFinalizedCorrelatedRun(h, "success", {
-        observedMaxFeePerGas: "0x21",
+        observedMaxFeePerGas: "0x2540be401",
       });
       expect(run.status).toBe("RECONCILIATION_REQUIRED");
       expect(run.tokenIdentity).toBeNull();
@@ -2877,26 +3165,640 @@ describe("ExecutionV4Orchestrator", () => {
 
     it("rejects an implementation mismatch at the exact receipt block", async () => {
       const h = createHarness({ readBack: true });
-      await expect(setupFinalizedCorrelatedRun(h, "success", {
+      const run = await setupFinalizedCorrelatedRun(h, "success", {
         implementationAddress: "0x8888888888888888888888888888888888888888",
-      })).rejects.toMatchObject({ code: "READ_BACK_BINDING_UNRESOLVED" });
-      const run = (await h.repository.getById(
-        "11111111-1111-4111-8111-111111111111",
-      )) as ExecutionRunV4;
+      });
+      expect(run.status).toBe("FAILED");
+      expect(run.terminalOutcome).toBe("VERIFICATION_FAILED");
       expect(run.tokenIdentity).toBeNull();
+      expect(run.operations[0].stage).toBe("BRICKKEN_CORRELATED");
     });
 
     it("fails closed when authoritative tokenizer identity mismatches the approved signer", async () => {
       const h = createHarness({ readBack: true });
       h.readBack.walletAddress = "0x5555555555555555555555555555555555555555";
 
-      await expect(setupFinalizedCorrelatedRun(h)).rejects.toThrow(OrchestrationError);
-      const durable = (await h.repository.getById(
-        "11111111-1111-4111-8111-111111111111",
-      )) as ExecutionRunV4;
+      const durable = await setupFinalizedCorrelatedRun(h);
+      expect(durable.status).toBe("FAILED");
+      expect(durable.terminalOutcome).toBe("VERIFICATION_FAILED");
       expect(durable.phase).toBe("TOKENIZATION");
       expect(durable.tokenIdentity).toBeNull();
       expect(durable.operations[0].stage).toBe("BRICKKEN_CORRELATED");
+    });
+  });
+});
+
+describe("pre-live audit regressions", () => {
+  function restart(h: ReturnType<typeof createHarness>) {
+    return new ExecutionV4Orchestrator({ repository: h.repository, clock: h.clock, ids: h.ids,
+      rpc: createTrustedSepoliaRpcClient(h.fakeRpcTransport), semanticAuthorization: h.semanticAuth });
+  }
+  async function promptFixture(h: ReturnType<typeof createHarness>) {
+    const v2 = await createPreparedV2Run(h);
+    const v4 = await h.v4.promotePreparedRunToV4(v2.id, v2.revision);
+    return h.v4.recordWalletPrompt(v4.id, v4.revision);
+  }
+
+  it.each(["nonce", "balance", "base fee", "expired report", "unavailable RPC", "chain", "semantic policy"])("rechecks %s after interruption at WALLET_PROMPT_RECORDED", async (changed) => {
+    const h = createHarness();
+    const prompt = await promptFixture(h);
+    if (changed === "nonce") h.fakeRpcTransport.on("eth_getTransactionCount", () => "0x6");
+    if (changed === "balance") h.fakeRpcTransport.on("eth_getBalance", () => "0x0");
+    if (changed === "chain") h.fakeRpcTransport.on("eth_chainId", () => "0x1");
+    if (changed === "unavailable RPC") h.fakeRpcTransport.on("eth_getBalance", () => { throw new Error("offline"); });
+    if (changed === "semantic policy") h.semanticAuth.allow = false;
+    if (["base fee", "expired report"].includes(changed)) h.fakeRpcTransport.on("eth_getBlockByNumber", () => ({
+      number: "0x10", hash: BLOCK_HASH, parentHash: FINALIZED_BLOCK_HASH,
+      timestamp: changed === "expired report" ? "0x77359401" : "0x66e44000",
+      baseFeePerGas: changed === "base fee" ? "0xffffffffffff" : "0x10",
+    }));
+    await expect(restart(h).releaseSendAuthority(prompt.id, prompt.revision)).rejects.toThrow();
+    const durable = await h.repository.getById(prompt.id) as ExecutionRunV4;
+    expect(durable.operations[0].walletPromptAuthorization?.authorityReleasedAt ?? null).toBeNull();
+    expect(durable.events.filter((e) => e.type === "AUTHORIZE_PROVIDER_INVOCATION")).toHaveLength(0);
+  });
+
+  it("fresh resumed evidence has one authority winner and is persisted anew", async () => {
+    const h = createHarness();
+    const prompt = await promptFixture(h);
+    const results = await Promise.allSettled([
+      restart(h).releaseSendAuthority(prompt.id, prompt.revision),
+      restart(h).releaseSendAuthority(prompt.id, prompt.revision),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const durable = await h.repository.getById(prompt.id) as ExecutionRunV4;
+    expect(durable.events.filter((e) => e.type === "AUTHORIZE_PROVIDER_INVOCATION")).toHaveLength(1);
+    expect(durable.operations[0].preparationAttempts[0].freshnessEvaluatedAt)
+      .not.toBe(prompt.operations[0].preparationAttempts[0].freshnessEvaluatedAt);
+  });
+
+  it("allows only one replacement external dispatch, including concurrent stale cycles", async () => {
+    const prepare = vi.fn().mockResolvedValue({ ok: true, value: { txId: "replacement-tx", transaction: {
+      normalizedChainId: "11155111", from: TOKENIZER_ADDRESS, to: TO, data: VALID_TOKENIZE_CALLDATA,
+      rawUnsigned: { ...UNSIGNED_TOKENIZE_TX, nonce: "0x6" },
+    } } });
+    const h = createHarness({ brickkenPrepare: { prepareTokenization: prepare,
+      prepareWhitelist: vi.fn(), prepareMint: vi.fn() } });
+    const v2 = await createPreparedV2Run(h);
+    const first = await h.v4.promotePreparedRunToV4(v2.id, v2.revision);
+    expect(first.operations[0].preparationAttempts).toHaveLength(1);
+    h.fakeRpcTransport.on("eth_getTransactionCount", () => "0x6");
+    const stale = (await h.v4.evaluateAndApplyPreparedFreshness(first.id, first.revision)).run;
+    const results = await Promise.allSettled([h.v4.reprepareOperation(stale.id, stale.revision), h.v4.reprepareOperation(stale.id, stale.revision)]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    const replacement = await h.repository.getById(first.id) as ExecutionRunV4;
+    expect(replacement.operations[0].preparationAttempts).toHaveLength(2);
+    h.fakeRpcTransport.on("eth_getTransactionCount", () => "0x7");
+    const staleAgain = (await h.v4.evaluateAndApplyPreparedFreshness(first.id, replacement.revision)).run;
+    const blocked = await Promise.allSettled([h.v4.reprepareOperation(first.id, staleAgain.revision), h.v4.reprepareOperation(first.id, staleAgain.revision)]);
+    expect(blocked.every((r) => r.status === "rejected")).toBe(true);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect((await projectPublicRun(staleAgain)).execution?.reprepareEligible).toBe(false);
+  });
+
+  it("tracking budget survives restarts, revisions, missing transactions and concurrency", async () => {
+    const h = createHarness();
+    const prompt = await promptFixture(h);
+    const released = await h.v4.releaseSendAuthority(prompt.id, prompt.revision);
+    let current = await h.v4.ingestBroadcastHash(prompt.id, { expectedRevision: released.run.revision,
+      invocationAttemptId: released.envelope.invocationAttemptId,
+      walletIntentHash: released.envelope.walletIntentHash, txHash: TX_HASH });
+    h.fakeRpcTransport.on("eth_getTransactionByHash", () => null);
+    const original = current.operations[0];
+    for (let count = 0; count < 30; count++) {
+      h.clock.nowIso(); h.clock.nowIso();
+      const races = await Promise.allSettled([restart(h).trackExecution(current.id, current.revision), restart(h).trackExecution(current.id, current.revision)]);
+      expect(races.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      current = await h.repository.getById(current.id) as ExecutionRunV4;
+    }
+    expect(current.events.filter((e) => e.type === "TRACK_EXECUTION_RESERVED")).toHaveLength(30);
+    expect(current.operations[0]).toEqual(original);
+    const calls = h.fakeRpcTransport.calls.length;
+    await expect(restart(h).trackExecution(current.id, current.revision)).rejects.toMatchObject({ code: "TRACKING_BUDGET_EXHAUSTED" });
+    expect(h.fakeRpcTransport.calls).toHaveLength(calls);
+    expect(h.correlationSender.calls).toHaveLength(0);
+    expect((await projectPublicRun(current)).trackingRemaining).toBe(0);
+  });
+
+  describe("Price-report expiry routing and error taxonomy regressions (A-H)", () => {
+    it("A: static invalidity (changed name/symbol/supply/destination) throws AUTHORIZATION_POLICY_REFUSED and cannot reprepare", async () => {
+      const h = createHarness();
+      h.semanticAuth.requiresProtocolValidation = true;
+
+      // Create calldata with wrong destination or modified asset name
+      const invalidCalldata = "0x" + "00".repeat(200); // Invalid selector/calldata
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: invalidCalldata },
+      });
+
+      await expect(
+        h.v4.promotePreparedRunToV4(runV2.id, runV2.revision),
+      ).rejects.toMatchObject({ code: "AUTHORIZATION_POLICY_REFUSED" });
+
+      const unchanged = await h.repository.getById(runV2.id);
+      expect(unchanged.schemaVersion).toBe("2.0");
+      expect(unchanged.operations[0].stage).toBe("PREPARED");
+    });
+
+    it("B, F: V2 PREPARED with valid static semantics + expired report promotes to V4, detects FRESHNESS_CHECK_FAILED -> PREPARED_STALE, and allows one legal reprepare", async () => {
+      const prepare = vi.fn().mockResolvedValue({
+        ok: true,
+        value: {
+          txId: "fresh-tx-2",
+          transaction: {
+            normalizedChainId: "11155111",
+            from: TOKENIZER_ADDRESS,
+            to: TO,
+            data: VALID_TOKENIZE_CALLDATA,
+            rawUnsigned: { ...UNSIGNED_TOKENIZE_TX, nonce: "0x5" },
+          },
+        },
+      });
+      const h = createHarness({
+        brickkenPrepare: {
+          prepareTokenization: prepare,
+          prepareWhitelist: vi.fn(),
+          prepareMint: vi.fn(),
+        },
+      });
+      h.semanticAuth.requiresProtocolValidation = true;
+
+      // Expired price report (deadline = 1000 < current block timestamp 0x66e44000 = 1726234624)
+      const expiredCalldata = createValidTokenizeCalldata(1000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+
+      // F. V2 promotion succeeds without semantic refusal
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      expect(v4Run.schemaVersion).toBe("4.0");
+      expect(v4Run.operations[0].stage).toBe("PREPARED");
+
+      // Preflight returns FRESHNESS_CHECK_FAILED, not AUTHORIZATION_DENIED
+      const preflight = await h.v4.preflightWalletAuthorization(v4Run.id, v4Run.revision);
+      expect(preflight.authorized).toBe(false);
+      if (!preflight.authorized) {
+        expect(preflight.reason).toBe("FRESHNESS_CHECK_FAILED");
+        expect(preflight.detail).toBe("PRICE_REPORT_EXPIRED");
+      }
+
+      // B. Freshness evaluation marks PREPARED_STALE
+      const freshnessResult = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      expect(freshnessResult.evaluation.outcome).toBe("PRICE_REPORT_EXPIRED");
+      expect(freshnessResult.run.operations[0].stage).toBe("PREPARED_STALE");
+      const staleRun = freshnessResult.run as ExecutionRunV4;
+      expect(staleRun.operations[0].preparationAttempts[0].staleReason).toBe("PRICE_REPORT_EXPIRED");
+
+      // One legal reprepare succeeds
+      const reprepared = await h.v4.reprepareOperation(staleRun.id, staleRun.revision);
+      expect(reprepared.operations[0].stage).toBe("PREPARED");
+      expect(reprepared.operations[0].preparationAttempts).toHaveLength(2);
+      expect(reprepared.operations[0].activePreparationAttemptId).not.toBe(
+        staleRun.operations[0].preparationAttempts[0].attemptId,
+      );
+      expect(prepare).toHaveBeenCalledOnce();
+    });
+
+    it("C: report within 300s safety buffer promotes, fails freshness, and allows reprepare", async () => {
+      const h = createHarness({
+        brickkenPrepare: {
+          prepareTokenization: vi.fn().mockResolvedValue({
+            ok: true,
+            value: {
+              txId: "fresh-tx-buffer",
+              transaction: {
+                normalizedChainId: "11155111",
+                from: TOKENIZER_ADDRESS,
+                to: TO,
+                data: VALID_TOKENIZE_CALLDATA,
+                rawUnsigned: { ...UNSIGNED_TOKENIZE_TX, nonce: "0x5" },
+              },
+            },
+          }),
+          prepareWhitelist: vi.fn(),
+          prepareMint: vi.fn(),
+        },
+      });
+      h.semanticAuth.requiresProtocolValidation = true;
+
+      // Current block timestamp is 0x66e44000 = 1726234624
+      // Deadline 100s in the future (within 300s safety buffer)
+      const nearExpiryDeadline = BigInt("0x66e44000") + 100n;
+      const bufferCalldata = createValidTokenizeCalldata(nearExpiryDeadline);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: bufferCalldata },
+      });
+
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+      expect(v4Run.schemaVersion).toBe("4.0");
+
+      const preflight = await h.v4.preflightWalletAuthorization(v4Run.id, v4Run.revision);
+      expect(preflight.authorized).toBe(false);
+      if (!preflight.authorized) {
+        expect(preflight.reason).toBe("FRESHNESS_CHECK_FAILED");
+        expect(preflight.detail).toBe("PRICE_REPORT_TOO_CLOSE_TO_EXPIRY");
+      }
+
+      const freshnessResult = await h.v4.evaluateAndApplyPreparedFreshness(v4Run.id, v4Run.revision);
+      expect(freshnessResult.evaluation.outcome).toBe("PRICE_REPORT_TOO_CLOSE_TO_EXPIRY");
+      expect(freshnessResult.run.operations[0].stage).toBe("PREPARED_STALE");
+    });
+
+    it("G: releaseSendAuthority with expired report marks PREPARED_STALE and throws FRESHNESS_CHECK_FAILED, never releasing authority", async () => {
+      const h = createHarness();
+      h.semanticAuth.requiresProtocolValidation = true;
+
+      const expiredCalldata = createValidTokenizeCalldata(1000n);
+      const runV2 = await createPreparedV2Run(h, {
+        unsignedTransaction: { ...UNSIGNED_TOKENIZE_TX, data: expiredCalldata },
+      });
+      const v4Run = await h.v4.promotePreparedRunToV4(runV2.id, runV2.revision);
+
+      await expect(
+        h.v4.releaseSendAuthority(v4Run.id, v4Run.revision),
+      ).rejects.toMatchObject({ code: "FRESHNESS_CHECK_FAILED" });
+
+      const updated = (await h.repository.getById(v4Run.id)) as ExecutionRunV4;
+      expect(updated.operations[0].stage).toBe("PREPARED_STALE");
+      expect(updated.operations[0].walletPromptAuthorization).toBeNull();
+      expect(updated.operations[0].preparationAttempts[0].state).toBe("STALE");
+      expect(updated.operations[0].preparationAttempts[0].staleReason).toBe("PRICE_REPORT_EXPIRED");
+    });
+  });
+
+  describe("Part P: WHITELIST and MINT Lifecycle", () => {
+    it("orchestrates full execution through WHITELIST and MINT to final verification", async () => {
+      const brickkenPrepare = {
+        prepareTokenization: vi.fn(),
+        prepareWhitelist: vi.fn(async () => ({
+          ok: true as const,
+          value: {
+            txId: "brickken-wl-1",
+            executionMode: "client-broadcast" as const,
+            transaction: {
+              from: TOKENIZER_ADDRESS,
+              to: TOKEN_ADDRESS,
+              data: "0x11223344",
+              value: "0x0",
+              nonce: "0x5",
+              type: "0x2",
+              gasLimit: "0x100",
+              maxFeePerGas: "0x20",
+              maxPriorityFeePerGas: "0x4",
+              gasPrice: null,
+              normalizedChainId: "11155111" as const,
+              chainId: "0xaa36a7",
+              rawUnsigned: {
+                from: TOKENIZER_ADDRESS,
+                to: TOKEN_ADDRESS,
+                data: "0x11223344",
+                value: "0x0",
+                nonce: "0x5",
+                type: "0x2",
+                gasLimit: "0x100",
+                maxFeePerGas: "0x20",
+                maxPriorityFeePerGas: "0x4",
+                chainId: "0xaa36a7",
+              },
+            },
+          },
+        })),
+        prepareMint: vi.fn(async () => ({
+          ok: true as const,
+          value: {
+            txId: "brickken-mint-1",
+            executionMode: "client-broadcast" as const,
+            transaction: {
+              from: TOKENIZER_ADDRESS,
+              to: TOKEN_ADDRESS,
+              data: "0x55667788",
+              value: "0x0",
+              nonce: "0x5",
+              type: "0x2",
+              gasLimit: "0x100",
+              maxFeePerGas: "0x20",
+              maxPriorityFeePerGas: "0x4",
+              gasPrice: null,
+              normalizedChainId: "11155111" as const,
+              chainId: "0xaa36a7",
+              rawUnsigned: {
+                from: TOKENIZER_ADDRESS,
+                to: TOKEN_ADDRESS,
+                data: "0x55667788",
+                value: "0x0",
+                nonce: "0x5",
+                type: "0x2",
+                gasLimit: "0x100",
+                maxFeePerGas: "0x20",
+                maxPriorityFeePerGas: "0x4",
+                chainId: "0xaa36a7",
+              },
+            },
+          },
+        })),
+      };
+
+      const h = createHarness({ readBack: true, brickkenPrepare });
+      // 1. Complete TOKENIZATION operation
+      const wlPendingRun = await setupFinalizedCorrelatedRun(h, "success");
+      expect(wlPendingRun.phase).toBe("WHITELIST");
+      expect(wlPendingRun.status).toBe("PREPARING");
+      expect(wlPendingRun.operations[0].stage).toBe("READ_BACK_VERIFIED");
+      expect(wlPendingRun.operations[1].stage).toBe("NOT_STARTED");
+
+      // 2. Prepare WHITELIST operation
+      const wlPrepared = await h.v4.prepareOperation(wlPendingRun.id, wlPendingRun.revision);
+      expect(wlPrepared.phase).toBe("WHITELIST");
+      expect(wlPrepared.status).toBe("AWAITING_WALLET");
+      expect(wlPrepared.operations[1].stage).toBe("PREPARED");
+      expect(brickkenPrepare.prepareWhitelist).toHaveBeenCalledOnce();
+
+      // 3. Release authority for WHITELIST
+      const wlAuthority = await h.v4.releaseSendAuthority(wlPrepared.id, wlPrepared.revision);
+      expect(wlAuthority.envelope.requiredSigner).toBe(TOKENIZER_ADDRESS);
+
+      // 4. Record broadcast hash
+      const wlBroadcastHash = "0x" + "a".repeat(64);
+      const wlBroadcast = await h.v4.ingestBroadcastHash(wlAuthority.run.id, {
+        expectedRevision: wlAuthority.run.revision,
+        invocationAttemptId: wlAuthority.envelope.invocationAttemptId,
+        walletIntentHash: wlAuthority.envelope.walletIntentHash,
+        txHash: wlBroadcastHash,
+      });
+      expect(wlBroadcast.operations[1].blockchainTxHash).toBe(wlBroadcastHash);
+
+      // 5. Setup RPC and correlation for WHITELIST tx
+      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+        hash: wlBroadcastHash,
+        chainId: "0xaa36a7",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        input: "0x11223344",
+        value: "0x0",
+        nonce: "0x5",
+        type: "0x2",
+        gas: "0x100",
+        gasPrice: null,
+        maxFeePerGas: "0x20",
+        maxPriorityFeePerGas: "0x4",
+        accessList: [],
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+      }));
+
+      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+        transactionHash: wlBroadcastHash,
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        cumulativeGasUsed: "0x50",
+        gasUsed: "0x50",
+        effectiveGasPrice: "0x15",
+        contractAddress: null,
+        type: "0x2",
+        status: "0x1",
+        logs: [],
+      }));
+
+      h.correlationSender.response = {
+        status: 202,
+        data: {
+          results: [{
+            result: {
+              transactionHash: wlBroadcastHash,
+              status: "pending" as const,
+              executionMode: "client-broadcast" as const,
+            },
+          }],
+        },
+      };
+      h.statusFetcher.response = {
+        status: 200,
+        data: { status: "success", transactionHash: wlBroadcastHash },
+      };
+
+      // 6. Track and read-back WHITELIST
+      const wlTracked = await h.v4.trackExecution(wlBroadcast.id, wlBroadcast.revision);
+      expect(wlTracked.run.phase).toBe("MINT");
+      expect(wlTracked.run.status).toBe("PREPARING");
+      expect(wlTracked.run.operations[1].stage).toBe("READ_BACK_VERIFIED");
+      expect(wlTracked.run.receiptEligible).toBe(false);
+
+      // 7. Prepare MINT operation
+      const mintPrepared = await h.v4.prepareOperation(wlTracked.run.id, wlTracked.run.revision);
+      expect(mintPrepared.phase).toBe("MINT");
+      expect(mintPrepared.status).toBe("AWAITING_WALLET");
+      expect(mintPrepared.operations[2].stage).toBe("PREPARED");
+      expect(brickkenPrepare.prepareMint).toHaveBeenCalledOnce();
+
+      // 8. Release authority for MINT
+      const mintAuthority = await h.v4.releaseSendAuthority(mintPrepared.id, mintPrepared.revision);
+      expect(mintAuthority.envelope.requiredSigner).toBe(TOKENIZER_ADDRESS);
+
+      // 9. Ingest broadcast hash for MINT
+      const mintBroadcastHash = "0x" + "b".repeat(64);
+      const mintBroadcast = await h.v4.ingestBroadcastHash(mintAuthority.run.id, {
+        expectedRevision: mintAuthority.run.revision,
+        invocationAttemptId: mintAuthority.envelope.invocationAttemptId,
+        walletIntentHash: mintAuthority.envelope.walletIntentHash,
+        txHash: mintBroadcastHash,
+      });
+
+      // 10. Setup RPC and correlation for MINT tx
+      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+        hash: mintBroadcastHash,
+        chainId: "0xaa36a7",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        input: "0x55667788",
+        value: "0x0",
+        nonce: "0x5",
+        type: "0x2",
+        gas: "0x100",
+        gasPrice: null,
+        maxFeePerGas: "0x20",
+        maxPriorityFeePerGas: "0x4",
+        accessList: [],
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+      }));
+
+      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+        transactionHash: mintBroadcastHash,
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        cumulativeGasUsed: "0x50",
+        gasUsed: "0x50",
+        effectiveGasPrice: "0x15",
+        contractAddress: null,
+        type: "0x2",
+        status: "0x1",
+        logs: [],
+      }));
+
+      h.correlationSender.response = {
+        status: 202,
+        data: {
+          results: [{
+            result: {
+              transactionHash: mintBroadcastHash,
+              status: "pending" as const,
+              executionMode: "client-broadcast" as const,
+            },
+          }],
+        },
+      };
+      h.statusFetcher.response = {
+        status: 200,
+        data: { status: "success", transactionHash: mintBroadcastHash },
+      };
+
+      // 11. Track and read-back MINT -> SUCCEEDED & receiptEligible: true
+      const mintTracked = await h.v4.trackExecution(mintBroadcast.id, mintBroadcast.revision);
+      expect(mintTracked.run.phase).toBe("VERIFICATION");
+      expect(mintTracked.run.status).toBe("SUCCEEDED");
+      expect(mintTracked.run.operations[2].stage).toBe("READ_BACK_VERIFIED");
+      expect(mintTracked.run.receiptEligible).toBe(true);
+    });
+
+    it("refuses WHITELIST preparation when the approved plan hash no longer matches", async () => {
+      const brickkenPrepare = {
+        prepareTokenization: vi.fn(),
+        prepareWhitelist: vi.fn(),
+        prepareMint: vi.fn(),
+      };
+      const h = createHarness({ readBack: true, brickkenPrepare });
+      const wlPendingRun = await setupFinalizedCorrelatedRun(h, "success");
+      const drifted = await h.repository.update(wlPendingRun.id, wlPendingRun.revision, {
+        ...wlPendingRun,
+        plan: { ...wlPendingRun.plan, executionScope: "TOKENIZE_ONLY" },
+      }) as ExecutionRunV4;
+      await expect(
+        h.v4.prepareOperation(drifted.id, drifted.revision),
+      ).rejects.toMatchObject({ code: "EXECUTION_INVARIANT_FAILED" });
+      expect(brickkenPrepare.prepareWhitelist).not.toHaveBeenCalled();
+    });
+
+    it("fails closed when whitelist read-back returns a different investor address", async () => {
+      const brickkenPrepare = {
+        prepareTokenization: vi.fn(),
+        prepareWhitelist: vi.fn(async () => ({
+          ok: true as const,
+          value: {
+            txId: "brickken-wl-1",
+            executionMode: "client-broadcast" as const,
+            transaction: {
+              from: TOKENIZER_ADDRESS,
+              to: TOKEN_ADDRESS,
+              data: "0x11223344",
+              value: "0x0",
+              nonce: "0x5",
+              type: "0x2",
+              gasLimit: "0x100",
+              maxFeePerGas: "0x20",
+              maxPriorityFeePerGas: "0x4",
+              gasPrice: null,
+              normalizedChainId: "11155111" as const,
+              chainId: "0xaa36a7",
+              rawUnsigned: {
+                from: TOKENIZER_ADDRESS,
+                to: TOKEN_ADDRESS,
+                data: "0x11223344",
+                value: "0x0",
+                nonce: "0x5",
+                type: "0x2",
+                gasLimit: "0x100",
+                maxFeePerGas: "0x20",
+                maxPriorityFeePerGas: "0x4",
+                chainId: "0xaa36a7",
+              },
+            },
+          },
+        })),
+        prepareMint: vi.fn(),
+      };
+      const h = createHarness({ readBack: true, brickkenPrepare });
+      const wlPendingRun = await setupFinalizedCorrelatedRun(h, "success");
+      const wlPrepared = await h.v4.prepareOperation(wlPendingRun.id, wlPendingRun.revision);
+      const wlAuthority = await h.v4.releaseSendAuthority(wlPrepared.id, wlPrepared.revision);
+      const wlBroadcastHash = "0x" + "a".repeat(64);
+      const wlBroadcast = await h.v4.ingestBroadcastHash(wlAuthority.run.id, {
+        expectedRevision: wlAuthority.run.revision,
+        invocationAttemptId: wlAuthority.envelope.invocationAttemptId,
+        walletIntentHash: wlAuthority.envelope.walletIntentHash,
+        txHash: wlBroadcastHash,
+      });
+      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+        hash: wlBroadcastHash,
+        chainId: "0xaa36a7",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        input: "0x11223344",
+        value: "0x0",
+        nonce: "0x5",
+        type: "0x2",
+        gas: "0x100",
+        gasPrice: null,
+        maxFeePerGas: "0x20",
+        maxPriorityFeePerGas: "0x4",
+        accessList: [],
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+      }));
+      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+        transactionHash: wlBroadcastHash,
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        cumulativeGasUsed: "0x50",
+        gasUsed: "0x50",
+        effectiveGasPrice: "0x15",
+        contractAddress: null,
+        type: "0x2",
+        status: "0x1",
+        logs: [],
+      }));
+      h.correlationSender.response = {
+        status: 202,
+        data: {
+          results: [{
+            result: {
+              transactionHash: wlBroadcastHash,
+              status: "pending" as const,
+              executionMode: "client-broadcast" as const,
+            },
+          }],
+        },
+      };
+      h.statusFetcher.response = {
+        status: 200,
+        data: { status: "success", transactionHash: wlBroadcastHash },
+      };
+      h.readBack.getWhitelistStatus = async () => ({
+        ok: true as const,
+        value: {
+          isWhitelisted: true,
+          source: "blockchain" as const,
+          tokenSymbol: "ED1",
+          address: "0x9999999999999999999999999999999999999999",
+        },
+      });
+      const tracked = await h.v4.trackExecution(wlBroadcast.id, wlBroadcast.revision);
+      expect(tracked.run.status).toBe("FAILED");
+      expect(tracked.run.terminalOutcome).toBe("VERIFICATION_FAILED");
+      expect(tracked.run.operations[1].stage).toBe("BRICKKEN_CORRELATED");
+      expect(brickkenPrepare.prepareMint).not.toHaveBeenCalled();
     });
   });
 });

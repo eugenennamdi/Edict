@@ -18,7 +18,7 @@ import {
   type BrickkenRuntimeConfig,
 } from "./config";
 import { BrickkenAdapterError, safeErrorMessage } from "./errors";
-import { parsePreparedOperation } from "./prepared-transaction";
+import { normalizeSepoliaChainId, parsePreparedOperation } from "./prepared-transaction";
 import {
   brickkenCorrelationRequestSchema,
   classifyCorrelationResponse,
@@ -190,7 +190,11 @@ export function createBrickkenServerAdapter(
     },
 
     async prepareWhitelist(input) {
-      return withClient(async (client, apiKey) => {
+      return withClient(async (client, apiKey, config) => {
+        if (!config.tokenizerEmail) return fail("CONFIGURATION_MISSING", apiKey);
+        if (input.investorEmail.toLowerCase() === config.tokenizerEmail.toLowerCase()) {
+          return fail("INVALID_REQUEST", apiKey);
+        }
         const result = await client.tokenization.whitelist(
           {
             chainId: SEPOLIA_CHAIN_ID,
@@ -200,6 +204,7 @@ export function createBrickkenServerAdapter(
                 investorAddress: input.investorAddress,
                 investorEmail: input.investorEmail,
                 whitelistStatus: true,
+                needKyc: false,
               },
             ],
           },
@@ -222,7 +227,7 @@ export function createBrickkenServerAdapter(
       }
       return withClient(async (client, apiKey, config) => {
         if (!config.tokenizerEmail) return fail("CONFIGURATION_MISSING", apiKey);
-        if (input.investorEmail.toLowerCase() === config.tokenizerEmail) {
+        if (input.investorEmail.toLowerCase() === config.tokenizerEmail.toLowerCase()) {
           return fail("INVALID_REQUEST", apiKey);
         }
         const result = await client.tokenization.mint(
@@ -235,6 +240,7 @@ export function createBrickkenServerAdapter(
                 investorAddress: input.investorAddress,
                 amount: input.amount,
                 needWhitelist: false,
+                needKyc: false,
               },
             ],
           },
@@ -373,7 +379,10 @@ export function createBrickkenServerAdapter(
 
     async getTokenInfo(query) {
       return withClient(async (client, apiKey) => {
-        const raw = await client.tokenization.info({ tokenSymbol: query.tokenSymbol });
+        const raw = await client.tokenization.info({
+          tokenSymbol: query.tokenSymbol,
+          chainId: query.chainId ?? SEPOLIA_CHAIN_ID,
+        } as never);
         assertBoundedBrickkenResponse(raw);
         const parsed = tokenInfoAssetSchema.safeParse(raw);
         if (!parsed.success) return fail("INVALID_EXTERNAL_RESPONSE", apiKey);
@@ -387,7 +396,9 @@ export function createBrickkenServerAdapter(
             tokenizerEmail: parsed.data.tokenizerEmail ?? null,
             companyWalletAddress: parsed.data.companyWalletAddress ?? null,
             maxTokenSupply: parsed.data.maxTokenSupply ?? null,
-            paymentChainId: parsed.data.paymentToken?.blockchain?.chainId ?? null,
+            paymentChainId:
+              normalizeSepoliaChainId(parsed.data.paymentToken?.blockchain?.chainId) ??
+              (parsed.data.paymentToken?.blockchain?.chainId ?? null),
           } satisfies TokenInfoView,
         };
       });

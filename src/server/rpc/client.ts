@@ -31,17 +31,33 @@ import {
 export class TrustedSepoliaRpcClientImpl implements TrustedSepoliaRpcClient {
   readonly chainId = SEPOLIA_DECIMAL_CHAIN_ID;
   readonly #transport: RpcTransport;
-  #chainVerified = false;
+
 
   constructor(transport: RpcTransport) {
     this.#transport = transport;
   }
 
   async verifyChain(): Promise<void> {
-    if (this.#chainVerified) return;
+
     const rawChainId = await this.#transport.request("eth_chainId");
     parseSepoliaChainId(rawChainId);
-    this.#chainVerified = true;
+
+  }
+
+  async call(request: { to: string; data: string; from?: string }, blockNumber: string): Promise<string> {
+    await this.verifyChain();
+    const to = rpcAddressSchema.parse(request.to);
+    if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(request.data) || request.data.length > 262144) throw new Error("INVALID_RPC_CALL");
+    const raw = await this.#transport.request("eth_call", [{ to, data: request.data, ...(request.from ? { from: rpcAddressSchema.parse(request.from) } : {}) }, rpcQuantitySchema.parse(blockNumber)]);
+    if (typeof raw !== "string" || !/^0x(?:[0-9a-fA-F]{2})*$/.test(raw) || raw.length > 262144) throw new Error("INVALID_RPC_RESULT");
+    return raw.toLowerCase();
+  }
+
+  async getCode(address: string, blockNumber: string): Promise<string> {
+    await this.verifyChain();
+    const raw = await this.#transport.request("eth_getCode", [rpcAddressSchema.parse(address), rpcQuantitySchema.parse(blockNumber)]);
+    if (typeof raw !== "string" || !/^0x(?:[0-9a-fA-F]{2})*$/.test(raw)) throw new Error("INVALID_RPC_RESULT");
+    return raw.toLowerCase();
   }
 
   async getPendingNonce(address: string): Promise<string> {

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 describe("public run API boundary", () => {
   const root = path.resolve(__dirname, "../../..");
 
-  it("exposes exactly the nine approved route modules", () => {
+  it("exposes exactly the thirteen approved route modules", () => {
     const api = path.join(root, "src/app/api");
     const routes: string[] = [];
     const walk = (directory: string) => {
@@ -22,6 +22,7 @@ describe("public run API boundary", () => {
       "runs/[runId]/broadcast-hash/route.ts",
       "runs/[runId]/broadcast-unknown/route.ts",
       "runs/[runId]/cancel/route.ts",
+      "runs/[runId]/execute/route.ts",
       "runs/[runId]/prepare/route.ts",
       "runs/[runId]/promote/route.ts",
       "runs/[runId]/readiness/route.ts",

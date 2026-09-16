@@ -53,13 +53,19 @@ const documentationUrlSchema = z
   .refine((value) => parseDocumentationUrl(value) !== null)
   .transform((value) => parseDocumentationUrl(value)!.href);
 
+const investorSchema = z.strictObject({
+  email: normalizedEmailSchema,
+  walletAddress: walletAddressSchema,
+  mintAmount: positiveDecimalIntegerSchema,
+});
+
 const assetManifestV1Schema = z
   .strictObject({
     schemaVersion: z.literal("1.0"),
     environment: z.literal("sandbox"),
     chainId: z.literal("11155111"),
     tokenizer: z.strictObject({
-      email: normalizedEmailSchema,
+      email: normalizedEmailSchema.optional(),
       walletAddress: walletAddressSchema,
     }),
     asset: z.strictObject({
@@ -69,31 +75,31 @@ const assetManifestV1Schema = z
       supplyCap: positiveDecimalIntegerSchema,
       documentationUrl: documentationUrlSchema,
     }),
-    investor: z.strictObject({
-      email: normalizedEmailSchema,
-      walletAddress: walletAddressSchema,
-      mintAmount: positiveDecimalIntegerSchema,
-    }),
+    investor: investorSchema.optional(),
   })
   .superRefine((manifest, context) => {
-    if (manifest.tokenizer.email === manifest.investor.email) {
-      context.addIssue({
-        code: "custom",
-        path: ["investor", "email"],
-        message: "EMAILS_MUST_DIFFER",
-      });
+    if (manifest.tokenizer.email && manifest.investor?.email) {
+      if (manifest.tokenizer.email === manifest.investor.email) {
+        context.addIssue({
+          code: "custom",
+          path: ["investor", "email"],
+          message: "EMAILS_MUST_DIFFER",
+        });
+      }
     }
 
-    if (
-      /^[1-9][0-9]*$/.test(manifest.investor.mintAmount) &&
-      /^[1-9][0-9]*$/.test(manifest.asset.supplyCap) &&
-      BigInt(manifest.investor.mintAmount) > BigInt(manifest.asset.supplyCap)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["investor", "mintAmount"],
-        message: "MINT_EXCEEDS_SUPPLY",
-      });
+    if (manifest.investor) {
+      if (
+        /^[1-9][0-9]*$/.test(manifest.investor.mintAmount) &&
+        /^[1-9][0-9]*$/.test(manifest.asset.supplyCap) &&
+        BigInt(manifest.investor.mintAmount) > BigInt(manifest.asset.supplyCap)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["investor", "mintAmount"],
+          message: "MINT_EXCEEDS_SUPPLY",
+        });
+      }
     }
   });
 
@@ -259,7 +265,7 @@ function copyManifest(manifest: AssetManifestV1Data): AssetManifestV1Data {
     environment: manifest.environment,
     chainId: manifest.chainId,
     tokenizer: {
-      email: manifest.tokenizer.email,
+      ...(manifest.tokenizer.email ? { email: manifest.tokenizer.email } : {}),
       walletAddress: manifest.tokenizer.walletAddress,
     },
     asset: {
@@ -269,11 +275,15 @@ function copyManifest(manifest: AssetManifestV1Data): AssetManifestV1Data {
       supplyCap: manifest.asset.supplyCap,
       documentationUrl: manifest.asset.documentationUrl,
     },
-    investor: {
-      email: manifest.investor.email,
-      walletAddress: manifest.investor.walletAddress,
-      mintAmount: manifest.investor.mintAmount,
-    },
+    ...(manifest.investor
+      ? {
+          investor: {
+            email: manifest.investor.email,
+            walletAddress: manifest.investor.walletAddress,
+            mintAmount: manifest.investor.mintAmount,
+          },
+        }
+      : {}),
   };
 }
 
@@ -316,9 +326,13 @@ export function getTrustedManifestSnapshot(
     candidate.asset.tokenType === normalized.asset.tokenType &&
     candidate.asset.supplyCap === normalized.asset.supplyCap &&
     candidate.asset.documentationUrl === normalized.asset.documentationUrl &&
-    candidate.investor.email === normalized.investor.email &&
-    candidate.investor.walletAddress === normalized.investor.walletAddress &&
-    candidate.investor.mintAmount === normalized.investor.mintAmount;
+    (candidate.investor === undefined && normalized.investor === undefined
+      ? true
+      : candidate.investor !== undefined &&
+        normalized.investor !== undefined &&
+        candidate.investor.email === normalized.investor.email &&
+        candidate.investor.walletAddress === normalized.investor.walletAddress &&
+        candidate.investor.mintAmount === normalized.investor.mintAmount);
 
   return unchanged ? copyManifest(normalized) : null;
 }

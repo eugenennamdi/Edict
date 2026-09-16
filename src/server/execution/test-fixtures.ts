@@ -1,5 +1,5 @@
 import type { ApprovalProofV1, ExecutionRun } from "./types";
-import { encodeFunctionData, parseAbi } from "viem";
+import { encodeFunctionData, parseAbi, toFunctionSelector, zeroAddress, zeroHash } from "viem";
 import { REVIEWED_TOKENIZE_FUNCTION_SIGNATURE } from "../orchestration/tokenize-receipt-binding";
 
 export const PUBLIC_EIP712_SIGNATURE_VECTOR =
@@ -42,9 +42,25 @@ export function createValidTokenizeCalldata(
     abi: TOKENIZE_ABI,
     functionName: "newTokenization",
     args: [
-      ["Token", "TKN", "ipfs://meta", 1000000n, signer, to, false, [], []],
-      [to, 100n, to, signer, deadline, 1n, "0x1234"],
-      [100n, to, to, 10n, 0, `0x${"00".repeat(32)}`, `0x${"00".repeat(32)}`],
+      ["https://docs.example.com/asset?b=2&a=1", "Café Receivables", "ED1", 1000n * 10n ** 18n, to, to, false, [], []],
+      [to, 0n, signer, signer, deadline, 1n, PUBLIC_EIP712_SIGNATURE_VECTOR],
+      [0n, zeroAddress, zeroAddress, 0n, 0, zeroHash, zeroHash],
     ],
   });
+}
+
+/** Synthetic read responses only; never evidence of deployed Brickken behavior. */
+export function syntheticTokenizeProtocolRpc(method: string, params?: readonly unknown[]): unknown {
+  if (method === "eth_getCode") return "0x6000";
+  if (method === "eth_getStorageAt") return `0x${"0".repeat(24)}2c24f3fe7665ea83b2280bb5a7e66072c869ad89`;
+  if (method === "eth_call") {
+    const data = (params?.[0] as { data: string }).data;
+    if (data.startsWith(toFunctionSelector("stoBeaconToken()")) || data.startsWith(toFunctionSelector("implementation()"))) return `0x${"0".repeat(24)}3333333333333333333333333333333333333333`;
+    if (data.startsWith("0x313ce567")) return `0x${"0".repeat(62)}12`;
+    if (data.startsWith("0xf3d02cfd")) return "0x";
+    // nonces(address)
+    if (data.startsWith("0x7ecebe00")) return `0x${"0".repeat(63)}1`;
+    return `0x${"0".repeat(64)}${"0".repeat(24)}3333333333333333333333333333333333333333`;
+  }
+  return undefined;
 }

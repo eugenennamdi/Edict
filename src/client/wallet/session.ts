@@ -185,6 +185,79 @@ export class SelectedWalletSession {
     return this.inspect(requiredSigner);
   }
 
+  async getPassiveSnapshot(): Promise<{ readonly accounts: readonly string[]; readonly chainId: string | null }> {
+    this.#assertAvailable();
+    const generation = this.#generation;
+    const accountsRaw = await this.#request("eth_accounts");
+    this.assertGeneration(generation);
+    const chainRaw = await this.#request("eth_chainId");
+    this.assertGeneration(generation);
+    if (!Array.isArray(accountsRaw) || accountsRaw.length > WALLET_BOUNDARY_LIMITS.accountCount) {
+      throw new WalletBoundaryError("PROVIDER_UNAVAILABLE");
+    }
+    const accounts = accountsRaw.map(normalizeAddress);
+    if (accounts.some((account) => account === null)) {
+      throw new WalletBoundaryError("PROVIDER_UNAVAILABLE");
+    }
+    return Object.freeze({
+      accounts: Object.freeze(accounts as string[]),
+      chainId: normalizeChain(chainRaw),
+    });
+  }
+
+  async requestAccountsGlobally(): Promise<{ readonly accounts: readonly string[]; readonly chainId: string | null }> {
+    this.#assertAvailable();
+    const generation = this.#generation;
+    let accountsRaw: unknown;
+    try {
+      accountsRaw = await this.#invoke({ method: "eth_requestAccounts" }, this.#deadlines.accountAccess);
+    } catch (error) {
+      if (error instanceof WalletBoundaryError) throw error;
+      const code = providerErrorCode(error);
+      if (code === 4001) throw new WalletBoundaryError("ACCOUNT_AUTHORIZATION_REJECTED");
+      if (code === 4100) throw new WalletBoundaryError("REQUIRED_ACCOUNT_UNAVAILABLE");
+      if (code === 4200) throw new WalletBoundaryError("UNSUPPORTED_METHOD");
+      if (code === 4900 || code === 4901) throw new WalletBoundaryError("WALLET_DISCONNECTED");
+      throw new WalletBoundaryError("PROVIDER_UNAVAILABLE");
+    }
+    this.assertGeneration(generation);
+    const chainRaw = await this.#request("eth_chainId");
+    this.assertGeneration(generation);
+    if (!Array.isArray(accountsRaw) || accountsRaw.length > WALLET_BOUNDARY_LIMITS.accountCount) {
+      throw new WalletBoundaryError("PROVIDER_UNAVAILABLE");
+    }
+    const accounts = accountsRaw.map(normalizeAddress);
+    if (accounts.some((account) => account === null)) {
+      throw new WalletBoundaryError("PROVIDER_UNAVAILABLE");
+    }
+    return Object.freeze({
+      accounts: Object.freeze(accounts as string[]),
+      chainId: normalizeChain(chainRaw),
+    });
+  }
+
+  async switchChainToSepolia(): Promise<string | null> {
+    this.#assertAvailable();
+    const generation = this.#generation;
+    try {
+      await this.#invoke(
+        { method: "wallet_switchEthereumChain", params: [{ chainId: SEPOLIA_HEX }] },
+        this.#deadlines.chainSwitch,
+      );
+    } catch (error) {
+      if (error instanceof WalletBoundaryError) throw error;
+      const code = providerErrorCode(error);
+      if (code === 4001) throw new WalletBoundaryError("CHAIN_SWITCH_REJECTED");
+      if (code === 4200) throw new WalletBoundaryError("CHAIN_SWITCH_UNSUPPORTED");
+      if (code === 4900 || code === 4901) throw new WalletBoundaryError("WALLET_DISCONNECTED");
+      throw new WalletBoundaryError("CHAIN_SWITCH_UNSUPPORTED");
+    }
+    this.assertGeneration(generation);
+    const chainRaw = await this.#request("eth_chainId");
+    this.assertGeneration(generation);
+    return normalizeChain(chainRaw);
+  }
+
   async requestExplicit(method: "eth_signTypedData_v4", params: readonly unknown[]) {
     this.#assertAvailable();
     return this.#invoke({ method, params }, this.#deadlines.typedDataSignature);

@@ -103,7 +103,7 @@ export async function evaluatePreparedFreshness(
   input: EvaluatePreparedFreshnessInput,
 ): Promise<FreshnessEvaluation> {
   const operation = input.run.operations[operationIndex(input.kind)];
-  if (operation.stage !== "PREPARED") {
+  if (operation.stage !== "PREPARED" && operation.stage !== "WALLET_PROMPT_RECORDED") {
     return Object.freeze({
       outcome: "INVALID_ATTEMPT",
       eligible: false,
@@ -200,7 +200,7 @@ export async function evaluatePreparedFreshness(
     });
   }
 
-  if (blockTimestamp === null || blockTimestampSeconds === null) {
+  if (blockTimestamp === null || blockTimestampSeconds === null || observedBaseFeeWei === null) {
     return Object.freeze({
       outcome: "RPC_UNAVAILABLE",
       eligible: false,

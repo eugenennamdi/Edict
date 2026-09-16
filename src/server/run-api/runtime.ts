@@ -7,7 +7,6 @@ import {
   ExecutionOrchestrator,
   ExecutionV4Orchestrator,
   TOKENIZE_ALLOWED_DESTINATION,
-  TOKENIZE_CALLDATA_COMMITMENT,
   TOKENIZE_EXECUTION_GATE,
   TOKENIZE_FUNCTION_SIGNATURE,
   createProductionSemanticAuthorizationEvaluator,
@@ -28,6 +27,7 @@ import {
 import type { SemanticAuthorizationEvaluator } from "../orchestration";
 
 export interface RunApiRuntime {
+  readonly executionEnabled?: boolean;
   readonly runs: ExecutionRunService;
   readonly access: RunAccessService;
   readonly approvals: WalletApprovalService;
@@ -40,6 +40,9 @@ export interface RunApiRuntime {
     | "promotePreparedRunToV4"
     | "evaluateAndApplyPreparedFreshness"
     | "trackExecution"
+    | "reconcileSubmittedRun"
+    | "reprepareOperation"
+    | "prepareOperation"
   >;
   readonly nowIso: () => string;
 }
@@ -50,7 +53,6 @@ function tokenizeAuthorizationEnvironmentFromServerEnv() {
     [TOKENIZE_EXECUTION_GATE]: env.EDICT_TOKENIZE_EXECUTION_ENABLED,
     [TOKENIZE_ALLOWED_DESTINATION]: env.EDICT_TOKENIZE_ALLOWED_DESTINATION,
     [TOKENIZE_FUNCTION_SIGNATURE]: env.EDICT_TOKENIZE_FUNCTION_SIGNATURE,
-    [TOKENIZE_CALLDATA_COMMITMENT]: env.EDICT_TOKENIZE_CALLDATA_COMMITMENT,
   });
 }
 
@@ -73,20 +75,24 @@ export function createRunApiRuntime(): RunApiRuntime {
     clock: systemClock(),
     ids: cryptoIdGenerator(),
   });
-  const preparationEnabled = getServerEnv().EDICT_TRANSACTION_PREPARATION_ENABLED === "1";
+  const executionEnabled = getServerEnv().EDICT_TOKENIZE_EXECUTION_ENABLED === "1";
+  const preparationEnabled = executionEnabled && getServerEnv().EDICT_TRANSACTION_PREPARATION_ENABLED === "1";
   const ids = cryptoIdGenerator();
   const clock = systemClock();
+  const execution = new ExecutionOrchestrator({
+    repository,
+    runs,
+    brickken,
+    writeGate: createPreparationOnlyBrickkenWriteGate(preparationEnabled),
+    brickkenTokenizerEmail: brickkenConfig.tokenizerEmail ?? "",
+  });
+
   return Object.freeze({
     runs,
+    executionEnabled,
     access: new RunAccessService({ mac, clock: systemTokenClock, nonces: cryptoNonceSource }),
     approvals: new WalletApprovalService({ mac, clock: systemTokenClock, nonces: cryptoNonceSource }),
-    execution: new ExecutionOrchestrator({
-      repository,
-      runs,
-      brickken,
-      writeGate: createPreparationOnlyBrickkenWriteGate(preparationEnabled),
-      brickkenTokenizerEmail: brickkenConfig.tokenizerEmail ?? "",
-    }),
+    execution,
     walletExecution: new ExecutionV4Orchestrator({
       repository,
       clock,
@@ -117,6 +123,8 @@ export function createRunApiRuntime(): RunApiRuntime {
       },
       brickkenReadBack: brickken,
       brickkenTokenizerEmail: brickkenConfig.tokenizerEmail,
+      brickkenPrepare: brickken,
+      writeGate: createPreparationOnlyBrickkenWriteGate(preparationEnabled),
     }),
     nowIso: () => new Date().toISOString(),
   });

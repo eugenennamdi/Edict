@@ -71,15 +71,15 @@ describe("buildExecutionPlanV1", () => {
   it("makes confirmation, read-back, standalone whitelist, and final verification explicit", async () => {
     const plan = await buildExecutionPlanV1(validManifest());
     expect(plan.operations[1].intent.reads).toEqual(["TOKEN_INFO", "TOKENIZER_INFO"]);
-    expect(plan.operations[3].intent.reads).toEqual(["WHITELIST_STATUS"]);
-    expect(plan.operations[4].intent.whitelistPolicy).toBe(
+    expect(plan.operations[3]!.intent.reads).toEqual(["WHITELIST_STATUS"]);
+    expect(plan.operations[4]!.intent.whitelistPolicy).toBe(
       "REQUIRE_CONFIRMED_STANDALONE_WHITELIST",
     );
-    expect(plan.operations[5].intent.reads).toEqual(["BALANCE_AND_WHITELIST"]);
-    expect(plan.operations[5].intent.expected.balancePolicy).toBe(
+    expect(plan.operations[5]!.intent.reads).toEqual(["BALANCE_AND_WHITELIST"]);
+    expect(plan.operations[5]!.intent.expected.balancePolicy).toBe(
       "EQUALS_MINT_AMOUNT_FOR_NEW_INVESTOR",
     );
-    expect(plan.operations[6].intent.requires).toEqual([
+    expect(plan.operations[6]!.intent.requires).toEqual([
       "TOKENIZATION_CONFIRMED",
       "TOKEN_READ_BACK_MATCHED",
       "WHITELIST_CONFIRMED",
@@ -108,7 +108,7 @@ describe("buildExecutionPlanV1", () => {
     const plan = await buildExecutionPlanV1(manifest);
     expect(plan.operations[0].intent.asset).not.toBe(manifest.asset);
     expect(plan.operations[0].intent.tokenizer).not.toBe(manifest.tokenizer);
-    expect(plan.operations[2].intent.investor).not.toBe(manifest.investor);
+    expect(plan.operations[2]!.intent.investor).not.toBe(manifest.investor);
     expectDeepFrozen(plan);
 
     expect(Reflect.set(plan, "planVersion", "2.0")).toBe(false);
@@ -122,9 +122,10 @@ describe("buildExecutionPlanV1", () => {
     const manifest = validManifest();
     expectDeepFrozen(manifest);
     expect(Reflect.set(manifest.asset, "name", "Mutated")).toBe(false);
-    expect(Reflect.set(manifest.investor, "mintAmount", "999")).toBe(false);
+    expect(manifest.investor).toBeDefined();
+    expect(Reflect.set(manifest.investor!, "mintAmount", "999")).toBe(false);
     expect(manifest.asset.name).toBe("Café Receivables");
-    expect(manifest.investor.mintAmount).toBe("25");
+    expect(manifest.investor!.mintAmount).toBe("25");
   });
 
   it("hashes the body without planHash and includes summaries in that body", async () => {
@@ -156,5 +157,60 @@ describe("buildExecutionPlanV1", () => {
   it("exposes a deeply readonly public plan type", async () => {
     const plan: ExecutionPlanV1 = await buildExecutionPlanV1(validManifest());
     expect(plan.planVersion).toBe("1.0");
+  });
+
+  it("builds a 2-operation plan for TOKENIZE_ONLY scope when manifest omits investor and tokenizer email", async () => {
+    const raw = {
+      schemaVersion: "1.0",
+      environment: "sandbox",
+      chainId: "11155111",
+      tokenizer: {
+        walletAddress: "0x1111111111111111111111111111111111111111",
+      },
+      asset: {
+        name: "Test Asset",
+        symbol: "TST",
+        tokenType: "RWA_TOKEN",
+        supplyCap: "1000",
+        documentationUrl: "https://example.com/doc",
+      },
+    };
+    const validated = validateAssetManifestV1(raw);
+    if (!validated.ok) throw new Error("Validation failed");
+
+    const plan = await buildExecutionPlanV1(validated.value, "TOKENIZE_ONLY");
+    expect(plan.operations).toHaveLength(2);
+    expect(plan.operations.map((op) => op.id)).toEqual(["tokenize", "confirm-tokenization"]);
+    expect(plan.operations[0].intent.tokenizer).toEqual({
+      walletAddress: "0x1111111111111111111111111111111111111111",
+    });
+    expect(plan.operations[1].intent.expected.tokenizer).toEqual({
+      walletAddress: "0x1111111111111111111111111111111111111111",
+    });
+    expect(plan.requiredSigner.walletAddress).toBe("0x1111111111111111111111111111111111111111");
+  });
+
+  it("rejects LEGACY_FULL scope when manifest omits investor", async () => {
+    const raw = {
+      schemaVersion: "1.0",
+      environment: "sandbox",
+      chainId: "11155111",
+      tokenizer: {
+        walletAddress: "0x1111111111111111111111111111111111111111",
+      },
+      asset: {
+        name: "Test Asset",
+        symbol: "TST",
+        tokenType: "RWA_TOKEN",
+        supplyCap: "1000",
+        documentationUrl: "https://example.com/doc",
+      },
+    };
+    const validated = validateAssetManifestV1(raw);
+    if (!validated.ok) throw new Error("Validation failed");
+
+    await expect(buildExecutionPlanV1(validated.value, "LEGACY_FULL")).rejects.toMatchObject({
+      code: "INTERNAL_PLAN_INVARIANT",
+    });
   });
 });

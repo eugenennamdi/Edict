@@ -10,13 +10,39 @@ import {
 
 export function creationRequest(form: Pick<FormData, "get">) {
   const text = (name: string) => String(form.get(name) ?? "");
-  return { manifest: {
-    schemaVersion: "1.0", environment: "sandbox", chainId: "11155111",
-    tokenizer: { email: text("tokenizerEmail"), walletAddress: text("tokenizerWallet") },
-    asset: { name: text("assetName"), symbol: text("symbol"), tokenType: "RWA_TOKEN",
-      supplyCap: text("supplyCap"), documentationUrl: text("documentationUrl") },
-    investor: { email: text("investorEmail"), walletAddress: text("investorWallet"), mintAmount: text("mintAmount") },
-  } };
+  const tokenizerEmail = text("tokenizerEmail");
+  const investorEmail = text("investorEmail");
+  const investorWallet = text("investorWallet");
+  const mintAmount = text("mintAmount");
+  const hasInvestor = investorEmail.trim() !== "" || investorWallet.trim() !== "" || mintAmount.trim() !== "";
+
+  return {
+    manifest: {
+      schemaVersion: "1.0",
+      environment: "sandbox",
+      chainId: "11155111",
+      tokenizer: {
+        ...(tokenizerEmail !== "" ? { email: tokenizerEmail } : {}),
+        walletAddress: text("tokenizerWallet"),
+      },
+      asset: {
+        name: text("assetName"),
+        symbol: text("symbol"),
+        tokenType: "RWA_TOKEN",
+        supplyCap: text("supplyCap"),
+        documentationUrl: text("documentationUrl"),
+      },
+      ...(hasInvestor
+        ? {
+            investor: {
+              email: investorEmail,
+              walletAddress: investorWallet,
+              mintAmount,
+            },
+          }
+        : {}),
+    },
+  };
 }
 
 export type PlanningView = {
@@ -279,20 +305,25 @@ export function createPlanningWorkspace(
                 durable.run.execution?.preparationStatus === "PREPARED_FOR_REVIEW";
               const durablePreparationFailed =
                 durable.run.execution?.preparationStatus === "PREPARATION_FAILED";
+              const durablePreparationStale =
+                durable.run.execution?.preparationStatus === "PREPARED_STALE";
+              const resolved = recoveredPrepared || durablePreparationFailed || durablePreparationStale;
               update({
                 view: durable,
                 notice: recoveredPrepared
                   ? "Transaction preparation was recovered from the durable record. Wallet confirmation has not been requested."
                   : durablePreparationFailed
                     ? "Preparation failed durably. No prepared transaction or wallet action exists for this run."
-                    : "The durable preparation state is now shown. Review it before taking another action.",
-                error: recoveredPrepared || durablePreparationFailed
+                    : durablePreparationStale
+                      ? "The prepared transaction expired before execution. No transaction was submitted to the network."
+                      : "The durable preparation state is now shown. Review it before taking another action.",
+                error: resolved
                   ? null
                   : messages.PREPARATION_UNCONFIRMED,
-                errorCode: recoveredPrepared || durablePreparationFailed
+                errorCode: resolved
                   ? null
                   : "PREPARATION_UNCONFIRMED",
-                preparationUnconfirmed: !recoveredPrepared && !durablePreparationFailed,
+                preparationUnconfirmed: !resolved,
               });
             } catch {
               update({
@@ -378,6 +409,41 @@ export function createPlanningWorkspace(
     }
   }
 
+  function applyDurableRun(run: PublicRunProjection): boolean {
+    if (!state.view) return false;
+    try {
+      const view = mergeDurableRun(state.view, run);
+      update({
+        view,
+        error: null,
+        errorCode: null,
+        retrievedAt: new Date().toISOString(),
+        preparationUnconfirmed: false,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function pullLatest(): Promise<void> {
+    const previous = state.view;
+    if (!previous) return;
+    try {
+      const view = readProjection(await request(transport, runPath(previous)), previous);
+      if (state.view?.run.id !== previous.run.id) return;
+      update({
+        view,
+        error: null,
+        errorCode: null,
+        retrievedAt: new Date().toISOString(),
+        preparationUnconfirmed: false,
+      });
+    } catch {
+      // Poller retries; leave the displayed durable run in place.
+    }
+  }
+
   return {
     create: (form: Pick<FormData, "get">) => act("create", form),
     recover,
@@ -385,5 +451,7 @@ export function createPlanningWorkspace(
     cancel: () => act("cancel"),
     prepareNextOperation: () => act("prepare"),
     acceptDurableRun,
+    applyDurableRun,
+    pullLatest,
   };
 }

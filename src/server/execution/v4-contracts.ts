@@ -53,6 +53,7 @@ export const preparationAttemptV1Schema = z.strictObject({
   txId: z.string().min(1).max(256).nullable(),
   unsignedTransaction: z.record(z.string(), jsonValueSchema).nullable(),
   preparationFingerprint: hash.nullable(),
+  calldataCommitment: hash.nullable().optional(),
   immutableIdentity: immutableExecutionIdentityV1Schema.nullable(),
   feeAuthorization: feeAuthorizationV1Schema.nullable(),
   preparedAt: isoUtc.nullable(),
@@ -80,8 +81,8 @@ export const preparationAttemptV1Schema = z.strictObject({
     ["REPREPARE_INTENT", "PREPARE_UNKNOWN", "REFUSED"].includes(attempt.state) &&
     [attempt.txId, attempt.unsignedTransaction, attempt.preparationFingerprint,
       attempt.immutableIdentity, attempt.feeAuthorization, attempt.preparedAt,
-      attempt.preparedRunRevision,
-      attempt.nonceFreshnessEvidence, attempt.staleAt, attempt.staleReason].some((value) => value !== null)
+      attempt.preparedRunRevision, attempt.calldataCommitment,
+      attempt.nonceFreshnessEvidence, attempt.staleAt, attempt.staleReason].some((value) => value !== null && value !== undefined)
   ) {
     context.addIssue({ code: "custom", message: "empty preparation attempt contains output" });
   }
@@ -202,6 +203,8 @@ export const brickkenStatusEvidenceV1Schema = z.strictObject({
 });
 
 export const tokenIdentityV1Schema = z.strictObject({
+  escrowAddress: address.optional(),
+  tokenizationId: z.string().regex(/^[1-9][0-9]*$/).optional(),
   identityVersion: z.literal("1.0"),
   chainId: z.literal("11155111"),
   tokenAddress: address,

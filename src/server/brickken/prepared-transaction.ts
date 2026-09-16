@@ -1,4 +1,4 @@
-import { SEPOLIA_CHAIN_ID, SEPOLIA_CHAIN_ID_HEX } from "./config";
+import { SEPOLIA_CHAIN_ID } from "./config";
 import { assertBoundedWalletValue, WALLET_BOUNDARY_LIMITS } from "@/shared/wallet";
 import { BrickkenAdapterError, safeErrorMessage } from "./errors";
 import type { AdapterResult, EdictPreparedTransaction, PreparedOperation } from "./types";
@@ -30,8 +30,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function normalizeSepoliaChainId(value: unknown): "11155111" | null {
   if (value === 11155111 || value === SEPOLIA_CHAIN_ID) return SEPOLIA_CHAIN_ID;
-  if (typeof value === "string" && value.toLowerCase() === SEPOLIA_CHAIN_ID_HEX) {
-    return SEPOLIA_CHAIN_ID;
+  if (typeof value === "string") {
+    const clean = value.toLowerCase().replace(/^0x/, "");
+    if (clean === "aa36a7" || clean === SEPOLIA_CHAIN_ID) return SEPOLIA_CHAIN_ID;
   }
   return null;
 }

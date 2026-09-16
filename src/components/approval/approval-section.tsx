@@ -9,6 +9,7 @@ import {
   type ApprovalReadinessState,
   type ApprovalReadinessTarget,
 } from "./approval-controller";
+import { useGlobalWallet } from "@/client/wallet/global-wallet-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,11 +40,13 @@ function AuthorityFacts({ view }: { readonly view: PlanningView }) {
         <span className="text-muted-foreground font-medium">Required tokenizer signer</span>
         <code className="block break-all text-[11px] text-foreground">{view.run.requiredSigner.walletAddress}</code>
       </div>
-      <div className="rounded-lg border bg-muted/30 p-3 space-y-1 min-w-0">
-        <span className="text-muted-foreground font-medium">Investor allocation</span>
-        <code className="block break-all text-[11px] text-foreground">{view.manifest.investor.walletAddress}</code>
-        <p className="font-mono text-[11px] text-muted-foreground">{view.manifest.investor.mintAmount} tokens</p>
-      </div>
+      {view.manifest.investor && (
+        <div className="rounded-lg border bg-muted/30 p-3 space-y-1 min-w-0">
+          <span className="text-muted-foreground font-medium">Future allocation · not executed</span>
+          <code className="block break-all text-[11px] text-foreground">{view.manifest.investor.walletAddress}</code>
+          <p className="font-mono text-[11px] text-muted-foreground">{view.manifest.investor.mintAmount} tokens</p>
+        </div>
+      )}
       <div className="rounded-lg border bg-muted/30 p-3 space-y-1 sm:col-span-2 min-w-0">
         <span className="text-muted-foreground font-medium">Immutable plan hash</span>
         <code className="block break-all text-[11px] text-foreground">{view.run.planHash}</code>
@@ -105,6 +108,7 @@ function ActiveReadiness({ view, target, acceptDurableRun }: {
   const controller = useRef<ReturnType<typeof createBrowserApprovalReadinessController> | null>(null);
   const approveButton = useRef<HTMLButtonElement>(null);
   const approvalMessage = useRef<HTMLDivElement>(null);
+  const globalWallet = useGlobalWallet();
   const [state, setState] = useState(() => initialApprovalReadinessState(target));
 
   useEffect(() => {
@@ -124,6 +128,12 @@ function ActiveReadiness({ view, target, acceptDurableRun }: {
   useEffect(() => {
     controller.current?.updateTarget(target);
   }, [target]);
+
+  useEffect(() => {
+    if (globalWallet.connectorId && controller.current) {
+      controller.current.chooseProvider(globalWallet.connectorId);
+    }
+  }, [globalWallet.connectorId]);
 
   const selected = state.selectedProviderId !== null;
   const chosen = state.candidateSelectionId !== null;
@@ -167,13 +177,13 @@ function ActiveReadiness({ view, target, acceptDurableRun }: {
       <CardHeader className="pb-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <Badge variant="outline" className="w-fit font-mono text-[10px] uppercase tracking-wider">
-            Approval authority
+            Mandate approval
           </Badge>
           <Badge variant={state.status === "READY" ? "success" : "secondary"} className="w-fit text-[10px] uppercase">
-            {state.status === "READY" ? "Ready to approve" : "Readiness required"}
+            {state.status === "READY" ? "Ready to approve" : "Wallet setup"}
           </Badge>
         </div>
-        <CardTitle className="text-xl font-bold tracking-tight">Plan approval readiness</CardTitle>
+        <CardTitle className="text-xl font-bold tracking-tight">Approve mandate</CardTitle>
         <CardDescription className="text-xs leading-relaxed max-w-2xl">
           Verify the exact tokenizer signer and Ethereum Sepolia before plan approval becomes available.
         </CardDescription>
@@ -183,7 +193,7 @@ function ActiveReadiness({ view, target, acceptDurableRun }: {
 
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-800 dark:text-amber-300">
           <strong className="font-semibold">No transaction is submitted here.</strong>{" "}
-          Approving this plan does not submit an on-chain transaction. Tokenization, whitelist, and mint will each require separate wallet confirmations later.
+          Approving this plan does not submit an on-chain transaction. Execution requests wallet confirmation only when a blockchain write is required.
         </div>
 
         <Separator />
@@ -347,6 +357,7 @@ export function ApprovalReadinessSection({
     terminalOutcome: view.run.terminalOutcome,
   };
 
+  if (view.run.executablePlan === false) return <p role="status">This historical plan includes unavailable operations and cannot be approved or executed. Create a new tokenization mandate.</p>;
   if (target.approved) {
     return (
       <Card className="shadow-xs border-emerald-500/30">
@@ -354,7 +365,7 @@ export function ApprovalReadinessSection({
           <Badge variant="success" className="w-fit text-[10px] uppercase">Approval recorded</Badge>
           <CardTitle className="text-xl font-bold tracking-tight">Plan approval recorded</CardTitle>
           <CardDescription className="text-xs">
-            Durable server state confirms this plan approval. Wallet confirmation and transaction submission remain unavailable.
+            Durable server state confirms this mandate approval. You can now execute the mandate.
           </CardDescription>
         </CardHeader>
         <CardContent><AuthorityFacts view={view} /></CardContent>
@@ -367,7 +378,7 @@ export function ApprovalReadinessSection({
       <Card className="shadow-xs border-border/80">
         <CardHeader>
           <Badge variant="secondary" className="w-fit text-[10px] uppercase">Approval unavailable</Badge>
-          <CardTitle className="text-xl font-bold tracking-tight">Plan approval readiness</CardTitle>
+          <CardTitle className="text-xl font-bold tracking-tight">Approve mandate</CardTitle>
           <CardDescription className="text-xs">
             This run is not currently eligible for plan approval. No wallet action is available.
           </CardDescription>

@@ -57,7 +57,7 @@ export const feeAuthorizationV1Schema = z.strictObject({
   preparedDefaults: feeValues,
   authorizedCaps: feeValues.extend({ maximumNetworkFeeWei: quantity }),
   preparedAccessList: accessList,
-  adjustmentPolicy: z.literal("BOUNDED_NO_INCREASE"),
+  adjustmentPolicy: z.enum(["BOUNDED_NO_INCREASE", "SERVER_BOUNDED_HEADROOM"]),
 }).superRefine((authorization, context) => {
   const defaults = authorization.preparedDefaults;
   const caps = authorization.authorizedCaps;
@@ -74,7 +74,9 @@ export const feeAuthorizationV1Schema = z.strictObject({
   const product = capGas! * capMax!;
   if (
     defaultPriority! > defaultMax! || capPriority! > capMax! ||
-    defaultGas! !== capGas! || defaultMax! !== capMax! || defaultPriority! !== capPriority! ||
+    defaultGas! > capGas! || defaultMax! > capMax! || defaultPriority! > capPriority! ||
+    (authorization.adjustmentPolicy === "BOUNDED_NO_INCREASE" &&
+      (defaultGas! !== capGas! || defaultMax! !== capMax! || defaultPriority! !== capPriority!)) ||
     product > MAX_UINT256 || product !== capNetwork!
   ) {
     context.addIssue({ code: "custom", message: "invalid fee authorization" });
@@ -208,7 +210,10 @@ const actualFeeFieldsSchema = z.strictObject({
   gasLimit: quantity,
   maxFeePerGas: quantity,
   maxPriorityFeePerGas: quantity,
-  gasPrice: z.null().optional(),
+  // Mined EIP-1559 RPC responses commonly include the effective gas price.
+  // Transaction type and max-fee fields, not this compatibility field, own
+  // fee-model classification.
+  gasPrice: quantity.nullable().optional(),
   accessList,
 });
 
@@ -220,12 +225,12 @@ export function evaluateFeeAuthorizationV1(
   if (typeof actualRaw === "object" && actualRaw !== null) {
     if (
       "transactionType" in actualRaw &&
+      (actualRaw as { transactionType?: unknown }).transactionType === "0x0"
+    ) return Object.freeze({ accepted: false, code: "LEGACY_GAS_PRICE" });
+    if (
+      "transactionType" in actualRaw &&
       (actualRaw as { transactionType?: unknown }).transactionType !== authorization.transactionType
     ) return Object.freeze({ accepted: false, code: "FEE_MODEL_CHANGED" });
-    if (
-    "gasPrice" in actualRaw && (actualRaw as { gasPrice?: unknown }).gasPrice !== null &&
-    (actualRaw as { gasPrice?: unknown }).gasPrice !== undefined
-    ) return Object.freeze({ accepted: false, code: "LEGACY_GAS_PRICE" });
   }
   const actual = actualFeeFieldsSchema.parse(actualRaw);
   if (actual.transactionType !== authorization.transactionType) {
