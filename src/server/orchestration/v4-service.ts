@@ -1996,7 +1996,26 @@ export class ExecutionV4Orchestrator {
     let contradictionDetected = false;
 
     try {
-      const rawResponse = await this.#statusFetcher.fetch(locator);
+      const rawResponse = await withQuickTimeout(this.#statusFetcher.fetch(locator), 1500);
+      if (rawResponse === null) {
+        const lastEvidence = op.brickkenStatusEvidence.at(-1);
+        const observedAt = this.#deps.clock.nowIso();
+        const fallbackResult: BrickkenTransactionStatusResult = {
+          httpStatus: 200,
+          responseByteCount: 0,
+          contentType: "application/json",
+          transactionHash: op.blockchainTxHash,
+          rawStatusText: lastEvidence?.status ?? null,
+          diagnosticError: null,
+          error: null,
+        };
+        const durableEvidence = buildStatusDurableEvidence({
+          diagnostic: fallbackResult,
+          locator,
+          observedAt,
+        });
+        return { statusResult: fallbackResult, durableEvidence, run: current };
+      }
       if ("rawStatusText" in rawResponse) {
         statusResult = rawResponse;
       } else {
@@ -2317,12 +2336,18 @@ export class ExecutionV4Orchestrator {
       currentOp.rpcTransactionEvidence?.immutableIdentityStatus === "MATCH" &&
       currentOp.rpcTransactionEvidence.feeAuthorizationStatus === "WITHIN_ENVELOPE"
     ) {
-      current = await this.#completeReadBackOrFailClosed(
-        current,
-        () => this.recordTokenIdentityFromReadBack(runId, current.revision),
-      );
-      if (current.terminalOutcome === null && current.status !== "RECONCILIATION_REQUIRED") {
-        currentOp = deriveActiveOperation(current).operation;
+      try {
+        current = await this.#completeReadBackOrFailClosed(
+          current,
+          () => this.recordTokenIdentityFromReadBack(runId, current.revision),
+        );
+        if (current.terminalOutcome === null && current.status !== "RECONCILIATION_REQUIRED") {
+          currentOp = deriveActiveOperation(current).operation;
+        }
+      } catch (error) {
+        const code = error instanceof OrchestrationError ? error.code : null;
+        if (code !== "READ_BACK_FAILED") throw error;
+        // Transient RPC read failure: allow retry on subsequent tracking poll without deterministic failure
       }
     }
 
@@ -2337,20 +2362,26 @@ export class ExecutionV4Orchestrator {
       currentOp.rpcTransactionEvidence?.immutableIdentityStatus === "MATCH" &&
       currentOp.rpcTransactionEvidence.feeAuthorizationStatus === "WITHIN_ENVELOPE"
     ) {
-      current = await this.#completeReadBackOrFailClosed(
-        current,
-        () => this.recordLifecycleReadBack(
-          runId,
-          current.revision,
-          deriveActiveOperation(current).kind as "WHITELIST" | "MINT",
-        ),
-      );
-      if (
-        current.phase !== "VERIFICATION" &&
-        current.terminalOutcome === null &&
-        current.status !== "RECONCILIATION_REQUIRED"
-      ) {
-        currentOp = deriveActiveOperation(current).operation;
+      try {
+        current = await this.#completeReadBackOrFailClosed(
+          current,
+          () => this.recordLifecycleReadBack(
+            runId,
+            current.revision,
+            deriveActiveOperation(current).kind as "WHITELIST" | "MINT",
+          ),
+        );
+        if (
+          current.phase !== "VERIFICATION" &&
+          current.terminalOutcome === null &&
+          current.status !== "RECONCILIATION_REQUIRED"
+        ) {
+          currentOp = deriveActiveOperation(current).operation;
+        }
+      } catch (error) {
+        const code = error instanceof OrchestrationError ? error.code : null;
+        if (code !== "READ_BACK_FAILED") throw error;
+        // Transient RPC read failure: allow retry on subsequent tracking poll without deterministic failure
       }
     }
 
@@ -2553,7 +2584,7 @@ export class ExecutionV4Orchestrator {
             this.#readBack.getTokenInfo({ tokenSymbol }),
             this.#readBack.getTokenizerInfo({ tokenSymbol }),
           ]),
-          2000,
+          1500,
         );
         if (results && results[0].ok && results[1].ok) {
           token = results[0].value;
@@ -2753,7 +2784,7 @@ export class ExecutionV4Orchestrator {
               tokenSymbol: manifest.asset.symbol,
               address: manifest.investor.walletAddress,
             }),
-            2000,
+            1500,
           );
           if (whitelist && whitelist.ok) {
             if (
@@ -2828,7 +2859,7 @@ export class ExecutionV4Orchestrator {
                 investorEmail: manifest.investor.email,
               }),
             ]),
-            2000,
+            1500,
           );
           if (results && results[0].ok && results[1].ok) {
             const tokenizer = results[0].value;
