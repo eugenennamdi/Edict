@@ -753,6 +753,12 @@ export function recordRpcTransactionV4(input: {
   } catch {
     // The immutable transaction exists and matches; invalid fee evidence is a policy violation.
   }
+  const actualFeeObj = typeof input.actualFeeFields === "object" && input.actualFeeFields !== null
+    ? (input.actualFeeFields as Record<string, unknown>)
+    : null;
+  const observedPriorityFee = typeof actualFeeObj?.maxPriorityFeePerGas === "string"
+    ? actualFeeObj.maxPriorityFeePerGas
+    : null;
   if (feeDecision === null || !feeDecision.accepted) {
     const evidence: RpcTransactionAuthorizationEvidenceV1 = {
       evidenceVersion: "1.0",
@@ -763,6 +769,7 @@ export function recordRpcTransactionV4(input: {
       feeAuthorizationStatus: "POLICY_VIOLATION",
       feePolicyViolationCode: feeDecision?.code ?? "INVALID_FEE_EVIDENCE",
       observedMaximumNetworkFeeWei: null,
+      observedPriorityFeePerGas: observedPriorityFee,
     };
     return appendEvent(
       replaceOperation({ ...run, status: "RECONCILIATION_REQUIRED" }, input.kind, {
@@ -783,6 +790,7 @@ export function recordRpcTransactionV4(input: {
     feeAuthorizationStatus: "WITHIN_ENVELOPE",
     feePolicyViolationCode: null,
     observedMaximumNetworkFeeWei: feeDecision.maximumNetworkFeeWei,
+    observedPriorityFeePerGas: observedPriorityFee,
   };
   return appendEvent(
     replaceOperation({ ...run, status: "BROADCAST_RECORDED" }, input.kind, {

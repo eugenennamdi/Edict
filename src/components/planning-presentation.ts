@@ -6,7 +6,7 @@ export const fields = [
   { name: "symbol", path: "asset.symbol", label: "Token symbol", section: "asset", hint: "3–5 letters or digits. Normalized to uppercase.", placeholder: "e.g. RWA", type: "text" },
   { name: "supplyCap", path: "asset.supplyCap", label: "Supply cap", section: "asset", hint: "Maximum supply, in whole tokens.", placeholder: "0", type: "text", numeric: true },
   { name: "documentationUrl", path: "asset.documentationUrl", label: "Documentation URL", section: "asset", hint: "An HTTPS document URL without embedded credentials.", placeholder: "https://", type: "url", wide: true },
-  { name: "tokenizerWallet", path: "tokenizer.walletAddress", label: "Required signer address", section: "authority", hint: "The tokenizer’s public Ethereum address. No wallet connection needed to plan.", placeholder: "0x…", type: "text", wide: true, mono: true },
+  { name: "tokenizerWallet", path: "tokenizer.walletAddress", label: "Required signer address", section: "authority", hint: "The tokenizer’s public Ethereum address.", placeholder: "0x…", type: "text", wide: true, mono: true },
   { name: "investorEmail", path: "investor.email", label: "Investor email", section: "allocation", hint: "Must differ from tokenizer email.", placeholder: "investor@example.com", type: "email" },
   { name: "investorWallet", path: "investor.walletAddress", label: "Investor wallet address", section: "allocation", hint: "The investor's public Ethereum address for whitelist and mint.", placeholder: "0x…", type: "text", mono: true },
   { name: "mintAmount", path: "investor.mintAmount", label: "Mint amount", section: "allocation", hint: "Whole tokens, up to the supply cap.", placeholder: "0", type: "text", numeric: true },
@@ -31,7 +31,7 @@ export function issueMessage(issue: PlanningIssue) {
     case "INVALID_TOKEN_SYMBOL": return "Use 3–5 letters or digits.";
     case "INVALID_WALLET_ADDRESS": return "Use 0x followed by 40 hexadecimal characters.";
     case "MINT_EXCEEDS_SUPPLY": return "The mint amount must not exceed the supply cap.";
-    case "REQUIRED_FIELD": return "Complete this field.";
+    case "REQUIRED_FIELD": return issue.path?.startsWith("investor") ? "Complete this required allocation field." : "Complete this field.";
     default: return "Check this field and try again.";
   }
 }

@@ -564,7 +564,6 @@ function parseSnapshot(value: unknown): ExecutionRun {
     const tokenIdentityInvalid = parsed.tokenIdentity !== null && (
       parsed.operations[0].stage !== "READ_BACK_VERIFIED" ||
       parsed.operations[0].rpcTransactionEvidence?.feeAuthorizationStatus !== "WITHIN_ENVELOPE" ||
-      parsed.status === "RECONCILIATION_REQUIRED" ||
       parsed.tokenIdentity.chainId !== parsed.chainId ||
       parsed.tokenIdentity.tokenSymbol !== parsed.manifest.asset.symbol ||
       parsed.tokenIdentity.tokenizerWalletAddress !== parsed.requiredSigner.walletAddress ||

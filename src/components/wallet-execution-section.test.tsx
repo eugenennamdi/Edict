@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { PublicRunProjection } from "@/shared/run";
 import { WalletExecutionSection } from "./wallet-execution-section";
 import { classifyWalletExecutionErrorDetail, classifyWalletExecutionFailure, initialWalletExecutionUiModel, reduceWalletExecutionUi } from "./wallet-execution-ui-state";
+import { updateMonotonicBlockDepth } from "./wallet-execution-verification";
 
 function fixture(patch: Partial<PublicRunProjection> = {}): PublicRunProjection {
   const operations: PublicRunProjection["operations"] = [
@@ -33,9 +34,9 @@ describe("wallet execution product surface", () => {
     const exampleEnvironment = fs.readFileSync(path.resolve(__dirname, "../../.env.example"), "utf8");
     expect(source).toContain("Execute mandate");
     expect(source).toContain("Technical details");
-    expect(source).toContain("verifying it automatically");
-    expect(source).toContain("Reviewed Brickken tokenization contract");
-    expect(source).toContain("0.1 ETH policy ceiling");
+    expect(source).toContain("Edict will continue automatically");
+    expect(source).toContain("Brickken Tokenization Factory");
+    expect(source).toContain("Server-capped · max 0.1 ETH");
     for (const internal of ["Prepare transaction for review", "Promote to execution state", "Check server readiness", "Refresh prepared transaction", "Track transaction status", "Request server authorization"])
       expect(source).not.toContain(internal);
     expect(source).not.toMatch(/BRICKKEN_API_KEY|DATABASE_URL|privateKey|seed phrase|eth_sendRawTransaction/u);
@@ -69,6 +70,56 @@ describe("wallet execution product surface", () => {
     expect(html).toContain("Needs attention");
     expect(html).toContain("Edict will not submit another transaction");
     expect(html).not.toContain(">Execute mandate</button>");
+  });
+
+  it("renders the precise policy mismatch card and lifecycle progression when fee policy is exceeded", () => {
+    const base = fixture();
+    const policyMismatchRun = fixture({
+      schemaVersion: "4.0",
+      phase: "MINT",
+      status: "RECONCILIATION_REQUIRED",
+      operations: [
+        {
+          ...base.operations[0],
+          stage: "READ_BACK_VERIFIED",
+          blockchainTxHash: "0xcd837b344b4929493be0070a740164539068179601b6634c68165b986f52d1a9",
+          authorizedPriorityFeePerGas: "0x77359400",
+          observedPriorityFeePerGas: null,
+        },
+        {
+          ...base.operations[1],
+          stage: "READ_BACK_VERIFIED",
+          blockchainTxHash: "0x8191a8a382ca0e8279c307b42f018ee32a1179a016dcd5bed6ef5a04ad7dca41",
+          authorizedPriorityFeePerGas: "0x77359400",
+          observedPriorityFeePerGas: null,
+        },
+        {
+          ...base.operations[2],
+          stage: "BRICKKEN_CORRELATED",
+          blockchainTxHash: "0x3173106fa06e452ad5957f32581d97d8da2df9812ea32b6c12b8a0b4796d31a8",
+          feePolicyViolationCode: "PRIORITY_FEE_CAP_EXCEEDED",
+          authorizedPriorityFeePerGas: "0x77359400",
+          observedPriorityFeePerGas: "0x80b14f63",
+        },
+      ],
+    });
+
+    const html = renderToStaticMarkup(createElement(WalletExecutionSection, { run: policyMismatchRun, onRefresh: async () => undefined }));
+
+    expect(html).toContain("Transaction completed with a policy mismatch");
+    expect(html).toContain("The transaction was confirmed on Ethereum Sepolia, but the wallet used a network priority fee above Edict’s authorized limit. No additional transaction will be submitted.");
+    expect(html).toContain("Authorized priority fee");
+    expect(html).toContain("2.0 gwei");
+    expect(html).toContain("Observed priority fee");
+    expect(html).toContain("2.159 gwei");
+    expect(html).toContain("0x3173106fa06e452ad5957f32581d97d8da2df9812ea32b6c12b8a0b4796d31a8");
+    expect(html).toContain("https://sepolia.etherscan.io/tx/0x3173106fa06e452ad5957f32581d97d8da2df9812ea32b6c12b8a0b4796d31a8");
+
+    // Lifecycle progression shows Create asset ✓, Authorize investor ✓, Issue allocation ⚠
+    expect(html).toContain("① Create asset");
+    expect(html).toContain("② Authorize investor");
+    expect(html).toContain("③ Issue allocation");
+    expect(html).toContain("⚠");
   });
 
   it("serializes rapid starts and locks post-authority ambiguity", () => {
@@ -180,20 +231,59 @@ describe("wallet execution product surface", () => {
 });
 
 describe("verified tokenization result", () => {
-  it.each(["TOKENIZATION", "WHITELIST", "MINT"] as const)("remains visible in %s without offering another send", (phase) => {
+  it("remains visible in TOKENIZATION without offering another send", () => {
     const base = fixture();
-    const run = fixture({ schemaVersion: "4.0", phase, status: phase === "TOKENIZATION" ? "SUCCEEDED" : "PREPARING",
-      executablePlan: true, tokenizationResult: {
+    const run = fixture({
+      schemaVersion: "4.0",
+      phase: "TOKENIZATION",
+      status: "SUCCEEDED",
+      executablePlan: true,
+      tokenizationResult: {
         tokenAddress: "0x3333333333333333333333333333333333333333",
-        escrowAddress: "0x4444444444444444444444444444444444444444", tokenizationId: "17",
-        transactionHash: `0x${"ab".repeat(32)}`, verificationStatus: "VERIFIED", verifiedAt: base.updatedAt,
-      }, operations: [{ ...base.operations[0], stage: "READ_BACK_VERIFIED", blockchainTxHash: `0x${"ab".repeat(32)}` }, base.operations[1], base.operations[2]],
+        escrowAddress: "0x4444444444444444444444444444444444444444",
+        tokenizationId: "17",
+        transactionHash: `0x${"ab".repeat(32)}`,
+        verificationStatus: "VERIFIED",
+        verifiedAt: base.updatedAt,
+      },
+      operations: [
+        { ...base.operations[0], stage: "READ_BACK_VERIFIED", blockchainTxHash: `0x${"ab".repeat(32)}` },
+        base.operations[1],
+        base.operations[2],
+      ],
     });
     const html = renderToStaticMarkup(createElement(WalletExecutionSection, { run, onRefresh: async () => undefined }));
     expect(html).toContain("Tokenized asset created");
     expect(html).toContain(run.tokenizationResult!.tokenAddress);
     expect(html).toContain(run.tokenizationResult!.escrowAddress);
     expect(html).toContain("VERIFIED");
+    expect(html).not.toContain("Choose the wallet");
+  });
+
+  it.each(["WHITELIST", "MINT"] as const)("is hidden in %s while doing subsequent operations", (phase) => {
+    const base = fixture();
+    const run = fixture({
+      schemaVersion: "4.0",
+      phase,
+      status: "PREPARING",
+      executablePlan: true,
+      tokenizationResult: {
+        tokenAddress: "0x3333333333333333333333333333333333333333",
+        escrowAddress: "0x4444444444444444444444444444444444444444",
+        tokenizationId: "17",
+        transactionHash: `0x${"ab".repeat(32)}`,
+        verificationStatus: "VERIFIED",
+        verifiedAt: base.updatedAt,
+      },
+      operations: [
+        { ...base.operations[0], stage: "READ_BACK_VERIFIED", blockchainTxHash: `0x${"ab".repeat(32)}` },
+        base.operations[1],
+        base.operations[2],
+      ],
+    });
+    const html = renderToStaticMarkup(createElement(WalletExecutionSection, { run, onRefresh: async () => undefined }));
+    expect(html).not.toContain("Tokenized asset created and verified.");
+    expect(html).not.toContain(run.tokenizationResult!.escrowAddress);
     expect(html).not.toContain("Choose the wallet");
   });
 });
@@ -239,12 +329,12 @@ describe("post-submit progress stepper", () => {
     expect(html).toContain("Included on Ethereum Sepolia");
     expect(html).toContain("Finalized on Ethereum Sepolia");
     expect(html).toContain("Verifying lifecycle state");
-    expect(html).toContain("Waiting for Brickken verification...");
+    expect(html).toContain("Verifying finalized on-chain state...");
   });
 
   it("shows a longer wait message in source and a clear verification-failure attention state", () => {
     const source = fs.readFileSync(path.resolve(__dirname, "wallet-execution-verification.ts"), "utf8");
-    expect(source).toContain("Waiting for Brickken verification...");
+    expect(source).toContain("Verifying finalized on-chain state...");
     expect(source).toContain("Verification is taking longer than expected. Edict is still checking automatically.");
     const base = fixture();
     const failed = fixture({
@@ -260,6 +350,151 @@ describe("post-submit progress stepper", () => {
     const html = renderToStaticMarkup(createElement(WalletExecutionSection, { run: failed, onRefresh: async () => undefined }));
     expect(html).toContain("Needs attention");
     expect(html).toContain("contradicted the approved mandate");
-    expect(html).not.toContain("Waiting for Brickken verification...");
+    expect(html).not.toContain("Verifying finalized on-chain state...");
+  });
+
+  it("renders 'Waiting for Ethereum finality' with block depth and no X / 2 when minimum confirmation depth is satisfied", () => {
+    const base = fixture();
+    const txHash = `0x${"42".repeat(32)}`;
+    const trackingRun = fixture({
+      schemaVersion: "4.0",
+      status: "CONFIRMING",
+      operations: [
+        { ...base.operations[0], stage: "RPC_TRANSACTION_VERIFIED", blockchainTxHash: txHash },
+        base.operations[1],
+        base.operations[2],
+      ],
+    });
+
+    const html = renderToStaticMarkup(
+      createElement(WalletExecutionSection, {
+        run: trackingRun,
+        onRefresh: async () => undefined,
+        initialConfirmations: 60,
+      })
+    );
+    expect(html).toContain("Waiting for Ethereum finality");
+    expect(html).toContain("Minimum confirmation depth satisfied");
+    expect(html).toContain("60 blocks deep");
+    expect(html).toContain("Waiting for Ethereum consensus finality. This typically takes ~13–15 minutes.");
+    expect(html).not.toContain("60 / 2");
+    expect(html).not.toContain("/ 2 required confirmations");
+  });
+
+  it("renders 'Finalizing — 1 / 2 required confirmations' before minimum confirmation depth is satisfied", () => {
+    const base = fixture();
+    const txHash = `0x${"42".repeat(32)}`;
+    const trackingRun = fixture({
+      schemaVersion: "4.0",
+      status: "CONFIRMING",
+      operations: [
+        { ...base.operations[0], stage: "RPC_TRANSACTION_VERIFIED", blockchainTxHash: txHash },
+        base.operations[1],
+        base.operations[2],
+      ],
+    });
+
+    const html = renderToStaticMarkup(
+      createElement(WalletExecutionSection, {
+        run: trackingRun,
+        onRefresh: async () => undefined,
+        initialConfirmations: 1,
+      })
+    );
+    expect(html).toContain("Finalizing — 1 / 2 required confirmations");
+    expect(html).not.toContain("Waiting for Ethereum finality");
+  });
+});
+
+describe("updateMonotonicBlockDepth", () => {
+  it("preserves monotonicity across fluctuating RPC replica block numbers (50 -> 40 -> 54 -> 52 -> 60)", () => {
+    const txHash = `0x${"11".repeat(32)}`;
+    const receiptBlockHash = `0x${"22".repeat(32)}`;
+    const receiptBlockNumber = 1000n;
+
+    // Simulation of 5 consecutive RPC checks where load-balanced node replicas report:
+    // depths 50, 40, 54, 52, 60
+    // receiptBlockNumber is 1000n, so latest blocks correspond to:
+    // 1049n (diff 50)
+    // 1039n (diff 40)
+    // 1053n (diff 54)
+    // 1051n (diff 52)
+    // 1059n (diff 60)
+    const replicaReports = [1049n, 1039n, 1053n, 1051n, 1059n];
+    let observation = null;
+    const depths: number[] = [];
+
+    for (const latestBlockNumber of replicaReports) {
+      const result = updateMonotonicBlockDepth({
+        currentObservation: observation,
+        txHash,
+        receiptBlockHash,
+        receiptBlockNumber,
+        latestBlockNumber,
+      });
+      depths.push(result.depth);
+      expect(result.reorgDetected).toBe(false);
+      observation = result.nextObservation;
+    }
+
+    // Monotonic progression: never regresses backwards
+    expect(depths).toEqual([50, 50, 54, 54, 60]);
+  });
+
+  it("detects an actual reorg when blockHash changes, resetting clamp and recalculating depth", () => {
+    const txHash = `0x${"11".repeat(32)}`;
+    const initialReceiptBlockHash = `0x${"22".repeat(32)}`;
+    const initialReceiptBlockNumber = 1000n;
+
+    // First observation: block 1050 (depth 51)
+    const first = updateMonotonicBlockDepth({
+      currentObservation: null,
+      txHash,
+      receiptBlockHash: initialReceiptBlockHash,
+      receiptBlockNumber: initialReceiptBlockNumber,
+      latestBlockNumber: 1050n,
+    });
+    expect(first.depth).toBe(51);
+    expect(first.reorgDetected).toBe(false);
+
+    // Reorg occurs: transaction is re-mined into block 1005 with a new blockHash
+    const reorgedReceiptBlockHash = `0x${"33".repeat(32)}`;
+    const reorgedReceiptBlockNumber = 1005n;
+    const reorgResult = updateMonotonicBlockDepth({
+      currentObservation: first.nextObservation,
+      txHash,
+      receiptBlockHash: reorgedReceiptBlockHash,
+      receiptBlockNumber: reorgedReceiptBlockNumber,
+      latestBlockNumber: 1048n,
+    });
+
+    expect(reorgResult.reorgDetected).toBe(true);
+    // Depth is 1048 - 1005 + 1 = 44, not clamped to stale 51 from previous fork
+    expect(reorgResult.depth).toBe(44);
+    expect(reorgResult.nextObservation.receiptBlockHash).toBe(reorgedReceiptBlockHash);
+  });
+
+  it("detects an actual reorg when blockNumber changes", () => {
+    const txHash = `0x${"11".repeat(32)}`;
+    const blockHash = `0x${"22".repeat(32)}`;
+
+    const first = updateMonotonicBlockDepth({
+      currentObservation: null,
+      txHash,
+      receiptBlockHash: blockHash,
+      receiptBlockNumber: 1000n,
+      latestBlockNumber: 1050n,
+    });
+    expect(first.depth).toBe(51);
+
+    const reorgResult = updateMonotonicBlockDepth({
+      currentObservation: first.nextObservation,
+      txHash,
+      receiptBlockHash: blockHash,
+      receiptBlockNumber: 1002n, // Block number changed
+      latestBlockNumber: 1051n,
+    });
+    expect(reorgResult.reorgDetected).toBe(true);
+    expect(reorgResult.depth).toBe(50);
   });
 });

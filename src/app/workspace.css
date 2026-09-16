@@ -1,12 +1,17 @@
 /* Edict subtle animations and scroll enhancements */
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
 :is(input, button, summary, a) {
   scroll-margin-block: 24px;
 }
 
 @keyframes record-arrival {
   from {
-    opacity: 0.3;
-    transform: translateY(3px);
+    opacity: 0;
+    transform: translateY(4px);
   }
   to {
     opacity: 1;
@@ -15,6 +20,24 @@
 }
 
 .recorded-artifact {
-  animation: record-arrival 180ms ease-out;
+  animation: record-arrival 180ms var(--ease-out);
+}
+
+/* Emil Kowalski motion principles: responsive press feedback & fast settle */
+button:not(:disabled):active,
+[role="button"]:not([aria-disabled="true"]):active {
+  transform: scale(0.98);
+}
+
+/* Reduced motion preference respect */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 

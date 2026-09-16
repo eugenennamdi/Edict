@@ -130,7 +130,7 @@ describe("verification polling", () => {
 
   it("shows Brickken wait copy after finality and a longer message after unusual delay", () => {
     expect(brickkenVerificationCopy(false, 3)).toBeNull();
-    expect(brickkenVerificationCopy(true, 1)).toBe("Waiting for Brickken verification...");
+    expect(brickkenVerificationCopy(true, 1)).toBe("Verifying finalized on-chain state...");
     expect(brickkenVerificationCopy(true, 6)).toBe(
       "Verification is taking longer than expected. Edict is still checking automatically.",
     );

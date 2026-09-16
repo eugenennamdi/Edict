@@ -13,7 +13,6 @@ import {
   FileCode,
   ChevronDown,
   ChevronRight,
-  CheckCircle2,
 } from "lucide-react";
 
 export function CopyValue({
@@ -44,11 +43,11 @@ export function CopyValue({
   return (
     <div className={compact ? "space-y-1" : "space-y-1.5"}>
       <div className="flex items-center justify-between text-xs">
-        <span className="text-muted-foreground font-medium">{label}</span>
+        <span className="text-muted-foreground font-medium text-[11px]">{label}</span>
         <button
           type="button"
           onClick={copy}
-          className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground font-mono transition-colors focus-visible:outline-none"
+          className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground font-mono transition-colors focus-visible:outline-none cursor-pointer"
           aria-label={`Copy ${label}`}
         >
           {copied ? (
@@ -58,13 +57,13 @@ export function CopyValue({
             </>
           ) : (
             <>
-              <Copy className="h-3 w-3" />
+              <Copy className="h-3 w-3 opacity-70" />
               <span>Copy</span>
             </>
           )}
         </button>
       </div>
-      <div className="flex items-center justify-between gap-2 rounded-lg bg-muted/60 px-3 py-1.5 border border-border/60">
+      <div className="flex items-center justify-between gap-2 rounded-md bg-secondary/40 hover:bg-secondary/60 px-2.5 py-1.5 border border-border/70 transition-colors">
         <code className="font-mono text-xs text-foreground truncate select-all">{value}</code>
       </div>
     </div>
@@ -103,36 +102,49 @@ export function DraftSummary({
   ready: boolean;
   filled: number;
 }) {
+  const mandateFilled = Math.min(
+    5,
+    Math.max(
+      0,
+      typeof filled === "number"
+        ? Math.min(5, filled)
+        : [
+            draft.assetName,
+            draft.symbol,
+            draft.supplyCap,
+            draft.documentationUrl,
+            draft.tokenizerWallet,
+          ].filter((val) => val.trim().length > 0).length
+    )
+  );
+
   return (
-    <div className="space-y-5 lg:pt-10">
-      <Card className="shadow-xs border-border/80">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <Badge variant="outline" className="font-mono text-[10px] tracking-wider uppercase">
-              Provisional Preview
-            </Badge>
+    <div className="space-y-5 lg:pt-8">
+      <Card className="border-border/70 bg-card/90 shadow-2xs">
+        <CardHeader className="pb-3 pt-5 px-5">
+          <div className="flex items-center justify-end">
             <Badge variant={ready ? "success" : "secondary"} className="text-[11px]">
-              {ready ? "Ready to record" : `${filled}/5 fields`}
+              {ready ? "Ready to record" : `${mandateFilled}/5 fields`}
             </Badge>
           </div>
-          <CardTitle className="text-lg font-semibold pt-1">Draft Preview</CardTitle>
-          <CardDescription className="text-xs">
-            Normalized manifest and hashes are computed on submission.
+          <CardTitle className="text-base font-semibold pt-1 tracking-tight">Mandate Preview</CardTitle>
+          <CardDescription className="text-xs text-muted-foreground/80">
+            Preview the mandate Edict will turn into an execution plan.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4 pt-1">
+        <CardContent className="space-y-4 pt-1 px-5 pb-5">
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>Mandate completeness</span>
-              <span className="font-mono font-medium text-foreground">{Math.round((filled / 5) * 100)}%</span>
+              <span className="text-[11px]">Mandate completeness</span>
+              <span className="font-mono text-[11px] font-medium text-foreground">{Math.round((mandateFilled / 5) * 100)}%</span>
             </div>
-            <Progress value={filled} max={5} indicatorClassName={ready ? "bg-emerald-600 dark:bg-emerald-500" : "bg-primary"} />
+            <Progress value={mandateFilled} max={5} indicatorClassName={ready ? "bg-emerald-600 dark:bg-emerald-500" : "bg-primary"} />
           </div>
 
-          <Separator />
+          <Separator className="bg-border/60" />
 
           <div className="space-y-1">
-            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
               01 · Asset parameters
             </span>
             <Row label="Asset name">{draft.assetName}</Row>
@@ -141,19 +153,19 @@ export function DraftSummary({
             <Row label="Documentation">{draft.documentationUrl}</Row>
           </div>
 
-          <Separator />
+          <Separator className="bg-border/60" />
 
           <div className="space-y-1">
-            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
               02 · Signing Authority
             </span>
             <Row label="Signer" mono>{draft.tokenizerWallet ? `${draft.tokenizerWallet.slice(0, 8)}…${draft.tokenizerWallet.slice(-6)}` : ""}</Row>
           </div>
 
-          <Separator />
+          <Separator className="bg-border/60" />
 
           <div className="space-y-1">
-            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
               03 · Allocation
             </span>
             <p className="text-xs text-muted-foreground leading-relaxed">
@@ -161,7 +173,7 @@ export function DraftSummary({
             </p>
           </div>
 
-          <div className="rounded-lg bg-muted/40 p-2.5 border flex items-center justify-between text-xs text-muted-foreground font-mono">
+          <div className="rounded-md bg-secondary/50 p-2 border border-border/60 flex items-center justify-between text-xs text-muted-foreground font-mono">
             <span>RWA_TOKEN</span>
             <span>Sepolia · 11155111</span>
           </div>
@@ -177,22 +189,16 @@ export function RecordedManifest({ view }: { view: PlanningView }) {
 
   return (
     <div className="space-y-5">
-      <Card className="shadow-xs border-border/80">
-        <CardHeader className="pb-3">
-          <div className="flex items-center">
-            <Badge variant="success" className="gap-1 text-[10px] uppercase font-mono tracking-wider">
-              <CheckCircle2 className="h-3 w-3" />
-              Recorded
-            </Badge>
-          </div>
-          <CardTitle className="text-lg font-semibold pt-1">Normalized Manifest</CardTitle>
-          <CardDescription className="text-xs">
+      <Card className="border-border/70 bg-card/90 shadow-2xs">
+        <CardHeader className="pb-3 pt-5 px-5">
+          <CardTitle className="text-base font-semibold tracking-tight">Normalized Manifest</CardTitle>
+          <CardDescription className="text-xs text-muted-foreground/80">
             Server-recorded, canonical representation of your tokenization mandate.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4 pt-1">
+        <CardContent className="space-y-4 pt-1 px-5 pb-5">
           <div className="space-y-1">
-            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block pb-1">
               01 · Asset
             </span>
             <Row label="Asset name">{m.asset.name}</Row>
@@ -201,10 +207,10 @@ export function RecordedManifest({ view }: { view: PlanningView }) {
             <Row label="Documentation">{m.asset.documentationUrl}</Row>
           </div>
 
-          <Separator />
+          <Separator className="bg-border/60" />
 
           <div className="space-y-2">
-            <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block">
               02 · Signing Authority
             </span>
             {m.tokenizer.email && <Row label="Tokenizer email">{m.tokenizer.email}</Row>}
@@ -213,10 +219,10 @@ export function RecordedManifest({ view }: { view: PlanningView }) {
 
           {m.investor && (
             <>
-              <Separator />
+              <Separator className="bg-border/60" />
               <div className="space-y-2">
-                <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
-                  03 · Future allocation · unavailable
+                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block">
+                  03 · Future allocation
                 </span>
                 <Row label="Investor email">{m.investor.email}</Row>
                 <CopyValue label="Recipient address" value={m.investor.walletAddress} compact />
@@ -225,27 +231,27 @@ export function RecordedManifest({ view }: { view: PlanningView }) {
             </>
           )}
 
-          <div className="rounded-lg bg-muted/40 p-2.5 border flex items-center justify-between text-xs text-muted-foreground font-mono">
+          <div className="rounded-md bg-secondary/50 p-2 border border-border/60 flex items-center justify-between text-xs text-muted-foreground font-mono">
             <span>{m.asset.tokenType}</span>
             <span>Sepolia · {m.chainId}</span>
           </div>
 
           <CopyValue label="Manifest hash" value={run.manifestHash} />
 
-          <div className="border rounded-lg overflow-hidden">
+          <div className="border border-border/70 rounded-md overflow-hidden">
             <button
               type="button"
               onClick={() => setJsonOpen(!jsonOpen)}
-              className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium bg-muted/30 hover:bg-muted/60 transition-colors"
+              className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium bg-secondary/40 hover:bg-secondary/70 transition-colors cursor-pointer"
             >
-              <span className="flex items-center gap-1.5 font-mono">
+              <span className="flex items-center gap-1.5 font-mono text-muted-foreground hover:text-foreground">
                 <FileCode className="h-3.5 w-3.5 text-muted-foreground" />
                 Inspect normalized JSON
               </span>
               {jsonOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
             </button>
             {jsonOpen && (
-              <pre className="p-3 text-[11px] font-mono bg-muted/80 overflow-x-auto text-foreground border-t max-h-60">
+              <pre className="p-3 text-[11px] font-mono bg-secondary/30 overflow-x-auto text-foreground border-t border-border/60 max-h-60">
                 <code>{JSON.stringify(m, null, 2)}</code>
               </pre>
             )}
@@ -265,7 +271,7 @@ export function PlanDocument({ view }: { view: PlanningView }) {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <Badge variant="brand" className="font-mono text-[11px] font-semibold tracking-wide">
+        <Badge variant="brand" className="font-mono text-[10px] font-semibold tracking-wide">
           MANDATE PLAN
         </Badge>
         <span className="text-xs text-muted-foreground font-mono">
@@ -273,30 +279,30 @@ export function PlanDocument({ view }: { view: PlanningView }) {
         </span>
       </div>
 
-      <Card className="shadow-xs">
-        <CardHeader className="pb-4">
-          <CardTitle className="text-xl font-bold tracking-tight">
+      <Card className="border-border/70 bg-card/90 shadow-2xs">
+        <CardHeader className="pb-4 pt-5 px-5">
+          <CardTitle className="text-lg font-bold tracking-tight">
             What Edict will accomplish
           </CardTitle>
-          <CardDescription className="text-xs leading-relaxed max-w-xl">
+          <CardDescription className="text-xs text-muted-foreground/80 leading-relaxed max-w-xl">
             A deterministic, approved outcome plan. Edict handles preparation, durable transitions, and verification internally.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6 pt-0">
-          <div className="rounded-lg bg-muted/40 p-4 border space-y-2">
-            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider block">
+        <CardContent className="space-y-6 pt-0 px-5 pb-5">
+          <div className="rounded-lg bg-secondary/40 p-3.5 border border-border/70 space-y-2">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block">
               Required signer authority
             </span>
             <CopyValue label="Tokenizer public key" value={view.run.requiredSigner.walletAddress} compact />
           </div>
 
-          <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-3 before:bottom-3 before:w-[2px] before:bg-border">
+          <div className="relative pl-6 space-y-5 before:absolute before:left-2.5 before:top-3 before:bottom-3 before:w-[2px] before:bg-border/60">
             {outcomes.map((outcome, index) => {
               const isFinal = index === outcomes.length - 1;
               return (
                 <div key={outcome.title} className="relative group">
                   <div
-                    className={`absolute -left-6 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border bg-background text-[10px] font-mono font-bold transition-all shadow-2xs ${
+                    className={`absolute -left-6 top-1 flex h-5 w-5 items-center justify-center rounded-full border bg-background text-[10px] font-mono font-bold transition-all shadow-2xs ${
                       isFinal
                         ? "border-emerald-500 text-emerald-600 dark:text-emerald-400 ring-2 ring-emerald-500/20"
                         : "border-border text-muted-foreground"
@@ -305,26 +311,26 @@ export function PlanDocument({ view }: { view: PlanningView }) {
                     {String(index + 1).padStart(2, "0")}
                   </div>
 
-                  <Card className="p-4 bg-card/60 hover:bg-card transition-colors">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2">
-                      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <div className="p-3.5 rounded-lg border border-border/60 bg-secondary/30 hover:bg-secondary/50 transition-colors">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 pb-1">
+                      <h3 className="text-xs font-semibold text-foreground flex items-center gap-2">
                         {outcome.title}
                       </h3>
                       <Badge
                         variant={isFinal ? "success" : "secondary"}
-                        className="text-[10px] shrink-0 font-medium tracking-wide"
+                        className="text-[10px] shrink-0 font-medium tracking-wide w-fit"
                       >
                         {isFinal ? "Verified result" : "Mandate outcome"}
                       </Badge>
                     </div>
                     <p className="text-xs text-muted-foreground leading-relaxed">{outcome.summary}</p>
-                  </Card>
+                  </div>
                 </div>
               );
             })}
           </div>
 
-          <Separator />
+          <Separator className="bg-border/60" />
 
           <div className="space-y-2">
             <CopyValue label="Plan hash" value={view.run.planHash} />
@@ -349,19 +355,19 @@ export function RecordDetails({
 
   return (
     <div className="space-y-6">
-      <Card className="shadow-xs">
-        <CardHeader className="pb-4">
-          <CardTitle className="text-xl font-bold tracking-tight">Run Identity & State</CardTitle>
-          <CardDescription className="text-xs">
+      <Card className="border-border/70 bg-card/90 shadow-2xs">
+        <CardHeader className="pb-4 pt-5 px-5">
+          <CardTitle className="text-lg font-bold tracking-tight">Run Identity & State</CardTitle>
+          <CardDescription className="text-xs text-muted-foreground/80">
             Persistent identifiers and verification timestamps for this planning run.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-5 pt-0">
+        <CardContent className="space-y-5 pt-0 px-5 pb-5">
           <CopyValue label="Run ID" value={run.id} />
           <CopyValue label="Plan hash" value={run.planHash} />
           <CopyValue label="Manifest hash" value={run.manifestHash} />
 
-          <Separator />
+          <Separator className="bg-border/60" />
 
           <div className="space-y-1">
             <Row label="Status">{recordStatus(run)}</Row>

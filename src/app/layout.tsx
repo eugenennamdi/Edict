@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AppWalletProviders } from "@/components/wallet";
+import { Toaster } from "@/components/ui/sonner";
 import "./tokens.css";
 import "./globals.css";
 import "./workspace.css";
@@ -17,8 +18,12 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <AppWalletProviders>{children}</AppWalletProviders>
+        <AppWalletProviders>
+          {children}
+          <Toaster position="bottom-right" richColors />
+        </AppWalletProviders>
       </body>
     </html>
   );
 }
+

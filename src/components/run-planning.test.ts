@@ -542,8 +542,14 @@ describe("run planning workspace", () => {
     const { default: Workspace } = await import("./run-planning-workspace");
     const html = renderToStaticMarkup(createElement(Workspace));
     expect(fetch).not.toHaveBeenCalled();
-    expect(html).toContain("Tokenization Planning Workspace");
-    expect(html).toContain("Create execution plan");
+    expect(html).toContain("Tokenization, as code");
+    expect(html).toContain("Review execution plan");
+    expect(html).toContain("Define the asset and token parameters Edict will execute.");
+    expect(html).toContain("Choose the address authorized to execute this mandate.");
+    expect(html).toContain("Mandate Preview");
+    expect(html).toContain("Preview the mandate Edict will turn into an execution plan.");
+    expect(html).toContain("Ready to generate your plan");
+    expect(html).not.toContain("No wallet connection needed to plan");
     const activeNames = [
       "assetName",
       "symbol",
@@ -558,6 +564,71 @@ describe("run planning workspace", () => {
     expect(html.match(/<input /g)).toHaveLength(8);
     expect(html).toContain("Initial Allocation · Optional");
   }, 15_000);
+
+  it("clearly requires all allocation fields when any allocation field is entered", async () => {
+    const { MandateForm } = await import("./planning-form");
+    const draft = {
+      assetName: "Test Asset",
+      symbol: "TEST",
+      supplyCap: "1000",
+      documentationUrl: "https://example.com/doc",
+      tokenizerWallet: "0x1111111111111111111111111111111111111111",
+      investorEmail: "investor@example.com",
+      investorWallet: "",
+      mintAmount: "",
+    };
+    const html = renderToStaticMarkup(
+      createElement(MandateForm, {
+        draft,
+        setDraft: () => undefined,
+        errors: [],
+        onBlur: () => undefined,
+        pending: false,
+        unavailable: false,
+        onSubmit: () => undefined,
+      })
+    );
+    expect(html).toContain("All 3 fields required");
+  });
+
+  it("does not track initial allocation inputs in the mandate preview", async () => {
+    const { DraftSummary } = await import("./planning-artifacts");
+    const baseDraft = {
+      assetName: "Test Asset",
+      symbol: "TEST",
+      supplyCap: "1000",
+      documentationUrl: "https://example.com/doc",
+      tokenizerWallet: "0x1111111111111111111111111111111111111111",
+      investorEmail: "",
+      investorWallet: "",
+      mintAmount: "",
+    };
+    const htmlBefore = renderToStaticMarkup(
+      createElement(DraftSummary, { draft: baseDraft, ready: true, filled: 5 })
+    );
+    expect(htmlBefore).toContain("Mandate Preview");
+    expect(htmlBefore).toContain("Ready to record");
+    expect(htmlBefore).toContain("100%");
+    expect(htmlBefore).toContain("Optional after token creation. Excluded from this mandate.");
+
+    // Entering details into initial allocation must not be tracked in Mandate Preview
+    const draftWithAllocation = {
+      ...baseDraft,
+      investorEmail: "investor@example.com",
+      investorWallet: "0x2222222222222222222222222222222222222222",
+      mintAmount: "500",
+    };
+    const htmlWithAllocation = renderToStaticMarkup(
+      createElement(DraftSummary, { draft: draftWithAllocation, ready: true, filled: 8 })
+    );
+    expect(htmlWithAllocation).not.toContain("investor@example.com");
+    expect(htmlWithAllocation).not.toContain("0x2222222222222222222222222222222222222222");
+    expect(htmlWithAllocation).not.toContain("500 tokens");
+    expect(htmlWithAllocation).not.toContain("8/5 fields");
+    expect(htmlWithAllocation).not.toContain("160%");
+    expect(htmlWithAllocation).toContain("100%");
+    expect(htmlWithAllocation).toContain("Optional after token creation. Excluded from this mandate.");
+  });
 
   it("renders safe valid and malformed durable route shells without server-side effects", async () => {
     const fetch = vi.fn(() => { throw new Error("Unexpected network"); }); vi.stubGlobal("fetch", fetch);

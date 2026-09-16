@@ -61,6 +61,9 @@ function publicOperationSchema(kind: "TOKENIZE" | "WHITELIST" | "MINT") {
     blockchainTxHash: transactionHashSchema.nullable(),
     brickkenStatus: z.enum(["pending", "success", "rejected"]).nullable(),
     timeout: z.boolean(),
+    feePolicyViolationCode: z.string().nullable().optional(),
+    authorizedPriorityFeePerGas: z.string().nullable().optional(),
+    observedPriorityFeePerGas: z.string().nullable().optional(),
   });
 }
 

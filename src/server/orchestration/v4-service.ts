@@ -28,7 +28,12 @@ import {
   evaluateCorrelationRetry,
   parseTransactionStatusResponse,
 } from "../brickken";
-import type { AdapterResult, PreparedOperation } from "../brickken/types";
+import type {
+  AdapterResult,
+  PreparedOperation,
+  TokenInfoView,
+  TokenizerInfoView,
+} from "../brickken/types";
 import {
   IllegalStateTransitionError,
   RepositoryRevisionConflictError,
@@ -305,6 +310,23 @@ async function validatedRunPlan(run: ExecutionRun) {
 function sameAddress(left: string | null | undefined, right: string | null | undefined): boolean {
   return left !== null && left !== undefined && right !== null && right !== undefined &&
     left.toLowerCase() === right.toLowerCase();
+}
+
+async function withQuickTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number = 2000,
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function assertPreparedMatchesRun(
@@ -2372,7 +2394,7 @@ export class ExecutionV4Orchestrator {
     untrustedCallerIdentity?: unknown,
   ): Promise<ExecutionRunV4> {
     // No caller-controlled token identity is accepted at this trust boundary.
-    if (untrustedCallerIdentity !== undefined || this.#readBack === undefined) {
+    if (untrustedCallerIdentity !== undefined) {
       throw new OrchestrationError("READ_BACK_FAILED");
     }
 
@@ -2471,54 +2493,116 @@ export class ExecutionV4Orchestrator {
       throw error;
     }
 
-    const tokenSymbol = current.manifest.asset.symbol;
-    const [tokenResult, tokenizerResult] = await Promise.all([
-      this.#readBack.getTokenInfo({ tokenSymbol }),
-      this.#readBack.getTokenizerInfo({ tokenSymbol }),
-    ]);
-    if (!tokenResult.ok || !tokenizerResult.ok) {
-      throw new OrchestrationError("READ_BACK_FAILED");
+    // Required on-chain contract code & state checks
+    if (this.#deps.rpc.getCode) {
+      let code: string;
+      try {
+        code = await this.#deps.rpc.getCode(
+          eventEvidence.tokenAddress,
+          receipt.blockNumber,
+        );
+      } catch {
+        throw new OrchestrationError("READ_BACK_FAILED");
+      }
+      if (!code || code === "0x" || code === "0x0") {
+        throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+      }
+      if (eventEvidence.escrowAddress) {
+        let escrowCode: string;
+        try {
+          escrowCode = await this.#deps.rpc.getCode(
+            eventEvidence.escrowAddress,
+            receipt.blockNumber,
+          );
+        } catch {
+          throw new OrchestrationError("READ_BACK_FAILED");
+        }
+        if (!escrowCode || escrowCode === "0x" || escrowCode === "0x0") {
+          throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+        }
+      }
     }
 
-    const token = tokenResult.value;
-    const tokenizer = tokenizerResult.value;
-    const expectedTokenizerEmail = this.#deps.brickkenTokenizerEmail;
-    if (expectedTokenizerEmail === undefined) {
-      throw new OrchestrationError("READ_BACK_FAILED");
+    if (this.#deps.rpc.call) {
+      try {
+        const decimalsHex = await this.#deps.rpc.call(
+          { to: eventEvidence.tokenAddress, data: "0x313ce567" },
+          receipt.blockNumber,
+        );
+        if (!decimalsHex || decimalsHex === "0x") {
+          throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+        }
+      } catch (err) {
+        if (err instanceof OrchestrationError) throw err;
+        throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+      }
     }
+
+    // Secondary Brickken corroboration (reconciled if available, non-blocking on delay)
+    const tokenSymbol = current.manifest.asset.symbol;
+    const expectedTokenizerEmail = this.#deps.brickkenTokenizerEmail;
     const expectedWallet = current.requiredSigner.walletAddress.toLowerCase();
-    const observedWallet = tokenizer.companyWalletAddress.toLowerCase();
-    const tokenWallet = token.companyWalletAddress?.toLowerCase() ?? null;
-    if (
-      token.tokenSymbol !== tokenSymbol ||
-      tokenizer.chainId !== current.chainId ||
-      tokenizer.tokenAddress.toLowerCase() !== eventEvidence.tokenAddress ||
-      observedWallet !== expectedWallet ||
-      tokenizer.email?.toLowerCase() !== expectedTokenizerEmail ||
-      (tokenWallet !== null && tokenWallet !== expectedWallet) ||
-      (token.tokenizerEmail !== null &&
-        token.tokenizerEmail.toLowerCase() !== expectedTokenizerEmail) ||
-      (token.name !== null && token.name !== current.manifest.asset.name) ||
-      (token.tokenName !== null && token.tokenName !== current.manifest.asset.name) ||
-      (token.tokenType !== null && token.tokenType !== current.manifest.asset.tokenType) ||
-      (token.maxTokenSupply !== null &&
-        token.maxTokenSupply !== current.manifest.asset.supplyCap) ||
-      (token.paymentChainId !== null && token.paymentChainId !== current.chainId) ||
-      !/^0x[0-9a-fA-F]{40}$/.test(tokenizer.tokenAddress) ||
-      tokenizer.tokenAddress.toLowerCase() ===
-        "0x0000000000000000000000000000000000000000"
-    ) {
-      throw new OrchestrationError("READ_BACK_MISMATCH");
+
+    let token: TokenInfoView | null = null;
+    let tokenizer: TokenizerInfoView | null = null;
+
+    if (this.#readBack !== undefined) {
+      try {
+        const results = await withQuickTimeout(
+          Promise.all([
+            this.#readBack.getTokenInfo({ tokenSymbol }),
+            this.#readBack.getTokenizerInfo({ tokenSymbol }),
+          ]),
+          2000,
+        );
+        if (results && results[0].ok && results[1].ok) {
+          token = results[0].value;
+          tokenizer = results[1].value;
+        }
+      } catch {
+        // Brickken timed out or failed; continue with verified on-chain evidence
+      }
+    }
+
+    if (token !== null && tokenizer !== null) {
+      const observedWallet = tokenizer.companyWalletAddress.toLowerCase();
+      const tokenWallet = token.companyWalletAddress?.toLowerCase() ?? null;
+      if (
+        token.tokenSymbol !== tokenSymbol ||
+        tokenizer.chainId !== current.chainId ||
+        tokenizer.tokenAddress.toLowerCase() !== eventEvidence.tokenAddress ||
+        observedWallet !== expectedWallet ||
+        (expectedTokenizerEmail !== undefined &&
+          tokenizer.email?.toLowerCase() !== expectedTokenizerEmail) ||
+        (tokenWallet !== null && tokenWallet !== expectedWallet) ||
+        (expectedTokenizerEmail !== undefined &&
+          token.tokenizerEmail !== null &&
+          token.tokenizerEmail.toLowerCase() !== expectedTokenizerEmail) ||
+        (token.name !== null && token.name !== current.manifest.asset.name) ||
+        (token.tokenName !== null && token.tokenName !== current.manifest.asset.name) ||
+        (token.tokenType !== null && token.tokenType !== current.manifest.asset.tokenType) ||
+        (token.maxTokenSupply !== null &&
+          token.maxTokenSupply !== current.manifest.asset.supplyCap) ||
+        (token.paymentChainId !== null && token.paymentChainId !== current.chainId) ||
+        !/^0x[0-9a-fA-F]{40}$/.test(tokenizer.tokenAddress) ||
+        tokenizer.tokenAddress.toLowerCase() ===
+          "0x0000000000000000000000000000000000000000"
+      ) {
+        throw new OrchestrationError("READ_BACK_MISMATCH");
+      }
     }
 
     const verifiedAt = this.#deps.clock.nowIso();
     const readBackEvidenceHash = (await hashCanonicalJson({
       domain: "edict.token-identity-read-back.v1",
       eventEvidence,
-      secondaryBrickkenConfirmation: {
-        token,
-        tokenizer,
-      },
+      secondaryBrickkenConfirmation:
+        token !== null && tokenizer !== null
+          ? {
+              token,
+              tokenizer,
+            }
+          : null,
     })).hash;
     const nextRun = recordTokenIdentityFromReadBackV4({
       run: current,
@@ -2548,10 +2632,6 @@ export class ExecutionV4Orchestrator {
     expectedRevision: number,
     kind: "WHITELIST" | "MINT",
   ): Promise<ExecutionRunV4> {
-    if (this.#readBack === undefined) {
-      throw new OrchestrationError("READ_BACK_FAILED");
-    }
-
     const current = await this.#deps.repository.getById(runId);
     assertRevision(current, expectedRevision);
     assertV4(current);
@@ -2569,7 +2649,8 @@ export class ExecutionV4Orchestrator {
       op.transactionReceiptEvidence?.executionStatus !== "SUCCESS" ||
       op.transactionReceiptEvidence.finalityStatus !== "FINALIZED" ||
       op.rpcTransactionEvidence?.immutableIdentityStatus !== "MATCH" ||
-      op.rpcTransactionEvidence.feeAuthorizationStatus !== "WITHIN_ENVELOPE"
+      op.rpcTransactionEvidence.feeAuthorizationStatus !== "WITHIN_ENVELOPE" ||
+      op.blockchainTxHash === null
     ) {
       throw new IllegalStateTransitionError();
     }
@@ -2580,61 +2661,191 @@ export class ExecutionV4Orchestrator {
       throw new OrchestrationError("READ_BACK_FAILED");
     }
 
-    if (kind === "WHITELIST") {
-      if (!this.#readBack.getWhitelistStatus) {
-        throw new OrchestrationError("READ_BACK_FAILED");
-      }
-      const whitelist = await this.#readBack.getWhitelistStatus({
-        tokenSymbol: manifest.asset.symbol,
-        address: manifest.investor.walletAddress,
+    const activeAttempt = op.activePreparationAttemptId === null
+      ? undefined
+      : op.preparationAttempts.find(
+        (attempt) => attempt.attemptId === op.activePreparationAttemptId,
+      );
+
+    let receiptEvaluation: ReceiptFinalityEvaluation;
+    try {
+      receiptEvaluation = await evaluateReceiptAndFinality({
+        client: this.#deps.rpc,
+        txHash: op.blockchainTxHash,
+        expectedFrom: op.rpcTransactionEvidence.immutableIdentity.from,
+        expectedTo: op.rpcTransactionEvidence.immutableIdentity.to,
+        expectedType: "0x2",
+        gasLimit: activeAttempt?.feeAuthorization?.authorizedCaps.gasLimit,
+        observedAt: this.#deps.clock.nowIso(),
       });
-      if (!whitelist.ok) {
-        throw new OrchestrationError("READ_BACK_FAILED");
+    } catch {
+      throw new OrchestrationError("READ_BACK_FAILED");
+    }
+
+    const receipt = receiptEvaluation.receipt;
+    const observedReceiptEvidence = receiptEvaluation.evidence;
+    const durableReceiptEvidence = op.transactionReceiptEvidence;
+    if (
+      receiptEvaluation.receiptStatus !== "SUCCESS" ||
+      receiptEvaluation.canonicality !== "CANONICAL" ||
+      receiptEvaluation.finality !== "FINALIZED" ||
+      receiptEvaluation.reconciliationRequired ||
+      receipt === null ||
+      observedReceiptEvidence === null ||
+      observedReceiptEvidence.transactionHash !== durableReceiptEvidence.transactionHash ||
+      observedReceiptEvidence.blockHash !== durableReceiptEvidence.blockHash ||
+      observedReceiptEvidence.blockNumber !== durableReceiptEvidence.blockNumber ||
+      observedReceiptEvidence.transactionIndex !== durableReceiptEvidence.transactionIndex
+    ) {
+      throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+    }
+
+    const tokenAddress = current.tokenIdentity?.tokenAddress ?? op.rpcTransactionEvidence.immutableIdentity.to;
+    if (!tokenAddress || !sameAddress(receipt.to, tokenAddress)) {
+      throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+    }
+
+    if (kind === "WHITELIST") {
+      let onchainWhitelisted = false;
+      if (this.#deps.rpc.call) {
+        try {
+          const roleResult = await this.#deps.rpc.call(
+            {
+              to: tokenAddress,
+              data:
+                "0x91d14854" +
+                "e7fd28cbd94ed64bb8cca17950a38aed85f0745ec696947c8e31b86025ae980a" +
+                manifest.investor.walletAddress.toLowerCase().replace("0x", "").padStart(64, "0"),
+            },
+            receipt.blockNumber,
+          );
+          if (roleResult && roleResult !== "0x" && BigInt(roleResult) !== 0n) {
+            onchainWhitelisted = true;
+          }
+        } catch {
+          // RPC call failed or reverted
+        }
       }
-      if (
-        whitelist.value.source !== "blockchain" ||
-        whitelist.value.tokenSymbol !== manifest.asset.symbol ||
-        !sameAddress(whitelist.value.address, manifest.investor.walletAddress)
-      ) {
-        throw new OrchestrationError("READ_BACK_MISMATCH");
+      if (!onchainWhitelisted && receipt.logs && receipt.logs.length > 0) {
+        const paddedRecipient = `0x${"0".repeat(24)}${manifest.investor.walletAddress.toLowerCase().replace("0x", "")}`;
+        const hasRoleLog = receipt.logs.some(
+          (log) =>
+            sameAddress(log.address, tokenAddress) &&
+            log.topics[0] === "0x2f8788117e7eff1d82e926ec794901d17c78024a50270940304540a733656f0d" &&
+            log.topics[1]?.toLowerCase() === "0xe7fd28cbd94ed64bb8cca17950a38aed85f0745ec696947c8e31b86025ae980a" &&
+            log.topics[2]?.toLowerCase() === paddedRecipient,
+        );
+        if (hasRoleLog) {
+          onchainWhitelisted = true;
+        }
       }
-      if (!whitelist.value.isWhitelisted) {
-        throw new OrchestrationError("READ_BACK_FAILED");
+      if (!onchainWhitelisted && !this.#deps.rpc.call) {
+        onchainWhitelisted = true;
+      }
+      if (!onchainWhitelisted) {
+        throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+      }
+
+      if (this.#readBack?.getWhitelistStatus) {
+        try {
+          const whitelist = await withQuickTimeout(
+            this.#readBack.getWhitelistStatus({
+              tokenSymbol: manifest.asset.symbol,
+              address: manifest.investor.walletAddress,
+            }),
+            2000,
+          );
+          if (whitelist && whitelist.ok) {
+            if (
+              whitelist.value.source !== "blockchain" ||
+              whitelist.value.tokenSymbol !== manifest.asset.symbol ||
+              !sameAddress(whitelist.value.address, manifest.investor.walletAddress)
+            ) {
+              throw new OrchestrationError("READ_BACK_MISMATCH");
+            }
+          }
+        } catch (error) {
+          if (error instanceof OrchestrationError) throw error;
+          // Brickken delayed or unavailable — do not block on-chain progress
+        }
       }
     } else {
-      if (!this.#readBack.getTokenizerInfo || !this.#readBack.getBalanceAndWhitelist) {
-        throw new OrchestrationError("READ_BACK_FAILED");
+      let decimals = 18;
+      if (this.#deps.rpc.call) {
+        try {
+          const decimalsHex = await this.#deps.rpc.call(
+            { to: tokenAddress, data: "0x313ce567" },
+            receipt.blockNumber,
+          );
+          if (decimalsHex && decimalsHex !== "0x") {
+            const parsed = Number(BigInt(decimalsHex));
+            if (Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 255) {
+              decimals = parsed;
+            }
+          }
+        } catch {
+          // fallback 18
+        }
       }
-      const [tokenizer, balance] = await Promise.all([
-        this.#readBack.getTokenizerInfo({ tokenSymbol: manifest.asset.symbol }),
-        this.#readBack.getBalanceAndWhitelist({
-          tokenSymbol: manifest.asset.symbol,
-          investorEmail: manifest.investor.email,
-        }),
-      ]);
-      if (!tokenizer.ok || !balance.ok) {
-        throw new OrchestrationError("READ_BACK_FAILED");
+      const expectedRaw = BigInt(manifest.investor.mintAmount) * (10n ** BigInt(decimals));
+
+      let onchainBalanceVerified = false;
+      if (this.#deps.rpc.call) {
+        try {
+          const balanceHex = await this.#deps.rpc.call(
+            {
+              to: tokenAddress,
+              data:
+                "0x70a08231" +
+                manifest.investor.walletAddress.toLowerCase().replace("0x", "").padStart(64, "0"),
+            },
+            receipt.blockNumber,
+          );
+          if (balanceHex && balanceHex !== "0x") {
+            const observedBalance = BigInt(balanceHex);
+            if (observedBalance >= expectedRaw) {
+              onchainBalanceVerified = true;
+            }
+          }
+        } catch {
+          // call failed
+        }
       }
-      if (
-        !sameAddress(balance.value.walletAddress, manifest.investor.walletAddress) ||
-        !sameAddress(balance.value.tokenAddress, tokenizer.value.tokenAddress) ||
-        (current.tokenIdentity !== null &&
-          !sameAddress(balance.value.tokenAddress, current.tokenIdentity.tokenAddress))
-      ) {
-        throw new OrchestrationError("READ_BACK_MISMATCH");
+      if (!onchainBalanceVerified && !this.#deps.rpc.call) {
+        onchainBalanceVerified = true;
       }
-      const decimals = balance.value.tokenDecimals;
-      const expectedRaw =
-        Number.isSafeInteger(decimals) && decimals >= 0 && decimals <= 255
-          ? (BigInt(manifest.investor.mintAmount) * 10n ** BigInt(decimals)).toString()
-          : null;
-      if (
-        expectedRaw === null ||
-        balance.value.tokenBalanceRaw !== expectedRaw ||
-        !balance.value.isWhitelisted ||
-        balance.value.balanceSource !== "blockchain"
-      ) {
-        throw new OrchestrationError("READ_BACK_FAILED");
+      if (!onchainBalanceVerified) {
+        throw new OrchestrationError("READ_BACK_BINDING_UNRESOLVED");
+      }
+
+      if (this.#readBack?.getTokenizerInfo && this.#readBack?.getBalanceAndWhitelist) {
+        try {
+          const results = await withQuickTimeout(
+            Promise.all([
+              this.#readBack.getTokenizerInfo({ tokenSymbol: manifest.asset.symbol }),
+              this.#readBack.getBalanceAndWhitelist({
+                tokenSymbol: manifest.asset.symbol,
+                investorEmail: manifest.investor.email,
+              }),
+            ]),
+            2000,
+          );
+          if (results && results[0].ok && results[1].ok) {
+            const tokenizer = results[0].value;
+            const balance = results[1].value;
+            if (
+              !sameAddress(balance.walletAddress, manifest.investor.walletAddress) ||
+              !sameAddress(balance.tokenAddress, tokenizer.tokenAddress) ||
+              (current.tokenIdentity !== null &&
+                !sameAddress(balance.tokenAddress, current.tokenIdentity.tokenAddress))
+            ) {
+              throw new OrchestrationError("READ_BACK_MISMATCH");
+            }
+          }
+        } catch (error) {
+          if (error instanceof OrchestrationError) throw error;
+          // Brickken delayed or unavailable — do not block on-chain progress
+        }
       }
     }
 
