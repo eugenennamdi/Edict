@@ -1,108 +1,299 @@
 # Edict
 
-## Overview
+**Tokenization, as code.**
 
-Edict is “Tokenization, as code”: a deterministic orchestration and verification layer over Brickken's sandbox Dapp API on Ethereum Sepolia. The current verified capability is TOKENIZE: manifest/form → validation → two-step execution plan → approval → tokenization → automatic transaction tracking → read-back verification → durable tokenized-asset result. WHITELIST and MINT remain in the long-term MVP lifecycle but are disabled until their calldata and read-back semantics are independently verified.
+Edict turns a declarative RWA tokenization mandate into a deterministic, human-approved execution plan, executes the lifecycle through Brickken Sandbox, and independently verifies the resulting on-chain state.
 
-The product workflow is intentionally smaller than its internal ledger: **create a mandate → review the outcome plan → approve → execute mandate → confirm in the wallet → receive a verified result**. A normal user never edits configuration, runs a review CLI, promotes a schema, performs a readiness check, or manually tracks RPC state. The global execution flag is an operator emergency kill switch, not per-transaction authorization.
+Built for the Brickken Build Programme.
 
-## Security Rules
+Challenge classification:
+**API Challenge**
 
-> **WARNING:** `BRICKKEN_API_KEY` is strictly server-only. Never expose it through a `NEXT_PUBLIC_*` variable, client bundle, browser storage, log, error payload, fixture, screenshot, or source control. Edict must never request, receive, read, store, log, or fabricate a private key or seed phrase; signing is performed exclusively by the connected browser wallet.
+Edict uses Brickken's Sandbox API directly with API-key authentication. It is not an x402/Agentic Challenge submission.
 
-## Local Setup
+---
+
+## What Edict does
+
+A user defines:
+- Asset name
+- Token symbol
+- Supply cap
+- Supporting documentation URL
+- Authorized signer (wallet address and email)
+- Optional initial investor allocation (recipient email, address, and amount)
+
+Edict then:
+1. Normalizes the mandate into an immutable manifest
+2. Builds a deterministic execution plan
+3. Binds human approval to that plan
+4. Creates the tokenized asset through Brickken
+5. Authorizes the investor when allocation is requested
+6. Mints the approved allocation
+7. Waits for Ethereum finality
+8. Verifies the resulting contract state
+9. Produces a durable verified lifecycle record
+
+---
+
+## Execution lifecycle
+
+```mermaid
+flowchart LR
+    A["Define mandate"] --> B["Deterministic plan"]
+    B --> C["Approve plan"]
+    C --> D["Create asset"]
+    D --> E["Verify on-chain"]
+    E --> F["Authorize investor"]
+    F --> G["Verify on-chain"]
+    G --> H["Issue allocation"]
+    H --> I["Verify on-chain"]
+    I --> J["Lifecycle complete"]
+```
+
+---
+
+## Brickken integration
+
+Brickken Sandbox is mandatory throughout the entire execution lifecycle.
+
+### Core methods
+
+- `newTokenization` (`POST /prepare-transactions`): prepares the factory transaction creating the RWA token.
+- `whitelist` (`POST /prepare-transactions`): prepares the investor onboarding and whitelisting transaction on the token contract.
+- `mintToken` (`POST /prepare-transactions`): prepares the initial allocation minting transaction to the authorized investor.
+
+### Core surfaces used
+
+- **Transaction preparation**: Brickken prepares unsigned transaction calldata, gas estimates, and a tracking `txId` with `executionMode: "client-broadcast"`.
+- **Transaction correlation**: `POST /send-transactions` binds `{ txId, txHash }` for Brickken indexing and backend reconciliation.
+- **Transaction status**: `GET /transaction-status` provides secondary upstream status tracking.
+- **Secondary read-back**: `GET /get-token-info`, `GET /get-tokenizer-info`, `GET /get-whitelist-status`, and `GET /get-balance-and-whitelist` corroborate on-chain state.
+
+### Execution model
+
+1. **Brickken Sandbox prepares the operation** with server-side API authentication.
+2. **Edict validates the prepared payload** against the approved mandate (destination, selector, calldata hash, signer, and fee caps).
+3. **The connected wallet confirms each operation** in browser (`eth_sendTransaction`).
+4. **Ethereum Sepolia executes the transaction**.
+5. **Edict correlates the broadcast** with Brickken via `POST /send-transactions`.
+6. **Edict verifies finalized on-chain state** upon Ethereum consensus finality.
+
+### Deployment boundaries
+
+- **Sandbox only**: uses `https://api.sandbox.brickken.com` exclusively.
+- **Ethereum Sepolia**: chain ID `11155111` (`0xaa36a7`).
+- **No production Brickken API usage**.
+- **API key is server-only**: never exposed to client bundles or browser storage.
+- **Zero private-key custody**: private keys and seed phrases never enter Edict.
+
+---
+
+## Architecture and trust boundaries
+
+```mermaid
+flowchart TB
+    subgraph Browser["User / Browser"]
+        UI["Mandate Specification & Preview"]
+        Approve["EIP-712 Plan Approval"]
+        Wallet["Browser Wallet (eth_sendTransaction)"]
+    end
+
+    subgraph Server["Edict Server"]
+        Core["Manifest Normalization & Deterministic Plan"]
+        Policy["Policy & Semantic Validation Engine"]
+        Orchestrator["Execution Orchestrator (V4 State Machine)"]
+        Verifier["On-Chain State Verifier"]
+    end
+
+    subgraph External["External Systems"]
+        Brickken["Brickken Sandbox API (/prepare, /send, read-back)"]
+        Sepolia["Ethereum Sepolia (Factory, Token, Consensus)"]
+        Database[("Neon Postgres (Durable State)")]
+    end
+
+    UI --> Core
+    Approve --> Policy
+    Policy --> Database
+    Orchestrator <--> Database
+    Orchestrator --> Brickken
+    Brickken --> Orchestrator
+    Orchestrator --> Wallet
+    Wallet --> Sepolia
+    Sepolia --> Verifier
+    Verifier --> Orchestrator
+```
+
+---
+
+## Execution safety
+
+- **Deterministic manifest and plan hashes**: canonical SHA-256 hashes (`manifestHash`, `planHash`) bind input to execution.
+- **Explicit human plan approval**: requires an EIP-712 signature from the designated tokenizer wallet before any transaction can be prepared.
+- **Exact required signer enforcement**: only the designated wallet address can approve or execute mandate operations.
+- **Ethereum Sepolia enforcement**: chain ID `11155111` is enforced across the server, wallet, and RPC layers.
+- **Brickken-prepared transaction validation**: destination address, function selector, and calldata are verified against server policy before wallet presentation.
+- **Bounded server-owned fee policy**: Edict enforces strict EIP-1559 priority fee and gas limits; excessive wallet fees trigger policy alerts.
+- **Zero private-key custody**: signing occurs exclusively in the user's browser wallet.
+- **Per-operation submission boundary**: wallet confirmation is required for each on-chain operation; Edict automatically handles preparation, tracking, reconciliation, and verification around those confirmations, ensuring exactly one `eth_sendTransaction` invocation per approved step.
+- **No automatic resend**: ambiguous submissions fail closed to prevent accidental double-broadcasts.
+- **Durable compare-and-swap transitions**: optimistic revision locking on Postgres prevents race conditions.
+- **Ethereum finalized-state verification**: read-back evaluation occurs after Ethereum consensus finality.
+- **Derivation integrity**: downstream `WHITELIST` and `MINT` operations dynamically target the verified token address derived from `TOKENIZE`.
+- **Server-side secrets**: API keys, signing secrets, and database credentials remain strictly within server boundaries.
+
+---
+
+## Verification model
+
+Brickken remains mandatory for preparation and lifecycle integration. After execution, Edict relies on authoritative finalized Ethereum state to verify the requested outcome, ensuring progression does not stall on secondary indexing delays.
+
+- **TOKENIZE verification**:
+  - Finalized successful receipt on Ethereum Sepolia
+  - Reviewed Brickken Factory proxy (`0x23B04b6410D72Fa66A77a9e0146DF6634Ad4C462`)
+  - ERC-1967 storage slot implementation verification at the receipt block
+  - Canonical `NewTokenization` event extraction (`tokenAddress`, `escrowAddress`, `tokenizationId`)
+  - Direct token contract bytecode and `decimals()` verification
+- **WHITELIST verification**:
+  - Finalized successful transaction receipt
+  - Direct on-chain role verification (`hasRole(WHITELISTED_ROLE, investor)` or `RoleGranted` event)
+- **MINT verification**:
+  - Finalized successful transaction receipt
+  - Direct on-chain balance verification (`balanceOf(investor) >= expectedRaw`)
+
+Brickken read endpoints provide secondary corroboration with a bounded timeout; delayed off-chain indexing does not block UI progression when authoritative on-chain state is verified. Genuine data contradictions fail closed.
+
+---
+
+## Verified Sandbox execution
+
+Live full-lifecycle run verified on Ethereum Sepolia (Chain ID `11155111`):
+
+| Parameter | Value |
+| --- | --- |
+| **Network** | Ethereum Sepolia (Chain ID `11155111`) |
+| **Token Contract** | [`0xc65145124d0b25dfa32e4b0385bd9b953045f50e`](https://sepolia.etherscan.io/address/0xc65145124d0b25dfa32e4b0385bd9b953045f50e) |
+| **Tokenization ID** | `597` |
+| **Investor** | `0x5c53414e1f15d7668c2b9ec0a92482a64845f5f6` |
+| **Allocation** | `100 DPI` |
+| **TOKENIZE Transaction** | [`0xbb76a942d3d30edd5b441764d9489a2def122bbf6f6e7dc67526dd1591ad3a0b`](https://sepolia.etherscan.io/tx/0xbb76a942d3d30edd5b441764d9489a2def122bbf6f6e7dc67526dd1591ad3a0b) |
+| **WHITELIST Transaction** | [`0x15c9a373a3e6381d2a050924b420001c8d3a3523d294770aea8ae68b855ca84c`](https://sepolia.etherscan.io/tx/0x15c9a373a3e6381d2a050924b420001c8d3a3523d294770aea8ae68b855ca84c) |
+| **MINT Transaction** | [`0x73ca036ffaaaf7749030831c925d597a268098679632c9e849bd0108f4845797`](https://sepolia.etherscan.io/tx/0x73ca036ffaaaf7749030831c925d597a268098679632c9e849bd0108f4845797) |
+| **Lifecycle Status** | `SUCCEEDED` (All operations `READ_BACK_VERIFIED`) |
+
+---
+
+## Quick start
 
 ### Prerequisites
 
-- Node.js 24 LTS (see `.nvmrc`)
+- Node.js 24 LTS (see `.nvmrc` and `package.json`)
 - npm
+- Brickken Sandbox API key
+- Ethereum Sepolia RPC URL
+- Neon Postgres database
+- Browser wallet with Sepolia ETH
 
 ### Installation
 
 ```sh
-npm install
+npm ci
 ```
 
-### Environment Configuration
+### Configuration
 
-Inspect `.env.example` for approved environment variables. For local development, server variables may be placed in an uncommitted `.env.local` file (which is gitignored). Never populate secret values in `.env.example` or commit credentials.
+Copy the example configuration:
 
-`.env.example` is documentation; Next.js does not load it as runtime configuration. For local run planning, configure the four core server-only variables below; the fifth flag is optional and enables only the separately gated preparation/review milestone:
+```sh
+cp .env.example .env.local
+```
 
-| Variable | Required format |
-| --- | --- |
-| `EDICT_RUN_API_ENABLED` | Exactly `1`; empty, `0`, `true`, or whitespace-padded values do not enable the gate. |
-| `EDICT_TRUSTED_ORIGIN` | The exact browser origin: scheme, hostname and port, with no trailing slash, path, query, fragment or embedded credentials. `http://localhost:3000` is supported; use the actual local port. HTTPS origins are also supported. |
-| `EDICT_RUN_SECURITY_SECRET` | **Secret:** unpadded base64url (`A–Z`, `a–z`, `0–9`, `_`, `-`) encoding at least 32 cryptographically random bytes. Never use a sample or predictable string. |
-| `DATABASE_URL` | **Secret:** the actual Neon Postgres connection URI, starting with `postgresql://` or `postgres://`, without surrounding whitespace. The existing run tables must be available and the database reachable for real persistence. |
-| `EDICT_TRANSACTION_PREPARATION_ENABLED` | Server-only exact `1` required for TOKENIZE preparation. The emergency execution kill switch must also be enabled. Preparation requires `BRICKKEN_API_KEY` and `BRICKKEN_TOKENIZER_EMAIL`. |
-| `EDICT_TOKENIZE_EXECUTION_ENABLED` | Server-only exact `1`. Global operator emergency kill switch for TOKENIZE preparation and wallet authority. A normal user never toggles it. |
-| `EDICT_TOKENIZE_ALLOWED_DESTINATION` | Exact reviewed Sepolia factory: `0x23B04b6410D72Fa66A77a9e0146DF6634Ad4C462`. |
-| `EDICT_TOKENIZE_FUNCTION_SIGNATURE` | Exact canonical reviewed `newTokenization` ABI signature documented in `.env.example`. |
-| `BRICKKEN_TOKENIZER_EMAIL` | Server-only normalized lowercase email for the licensed Brickken sandbox account. It is independent of the manifest's project/issuer contact email and must never use a `NEXT_PUBLIC_*` name. |
+Configure required variables in `.env.local`:
 
-Stop and restart `npm run dev` after local configuration changes; launch it from the environment containing the settings and use the matching browser origin. Do not paste the secret or database URI into chat, screenshots, logs or commits. Explicit HTTP loopback origins in development/test use the separate `edict_run_access_dev` HttpOnly, SameSite=Strict cookie with `Path=/`, no Domain and no Secure attribute. HTTPS and production retain `__Host-edict_run_access` with Secure. Changing the security secret and restarting invalidates prior capabilities; reload and create a fresh run.
+- `BRICKKEN_API_KEY`: Server-only Brickken sandbox API key.
+- `BRICKKEN_TOKENIZER_EMAIL`: Licensed Brickken sandbox account email.
+- `DATABASE_URL`: Neon Postgres connection string (`postgresql://...`).
+- `EDICT_RUN_SECURITY_SECRET`: 32+ byte unpadded base64url secret for capability signing.
+- `EDICT_RUN_API_ENABLED`: Set to `1`.
+- `EDICT_TRUSTED_ORIGIN`: Exact application origin (e.g. `http://localhost:3000`).
+- `EDICT_TRANSACTION_PREPARATION_ENABLED`: Set to `1`.
+- `EDICT_TOKENIZE_EXECUTION_ENABLED`: Set to `1`.
+- `EDICT_TOKENIZE_ALLOWED_DESTINATION`: Reviewed factory address (`0x23B04b6410D72Fa66A77a9e0146DF6634Ad4C462`).
+- `EDICT_TOKENIZE_FUNCTION_SIGNATURE`: Canonical reviewed `newTokenization` function signature.
+- `EDICT_SEPOLIA_RPC_URL`: HTTPS JSON-RPC endpoint for Sepolia.
 
-`Run creation is not enabled in this environment.` means the server returned `API_DISABLED`: the flag was not exactly `1`, or the configured origin was missing or invalid. A configured trailing slash disables the gate; a valid origin with a different browser port instead returns `FORBIDDEN`. Missing capability or database configuration is checked later and does not produce `API_DISABLED`. Configure all four variables before creating a run.
+### Database setup
 
-Planning can be enabled independently of execution. No Brickken API key is required to create a plan. Approval is limited to the server-owned TOKENIZE-only capability plan. **Execute mandate** performs at most one initial preparation and one durable pre-authority replacement, then releases one wallet request only after current server RPC, factory, implementation, ABI, calldata, report, nonce, balance and fee checks pass. Post-broadcast tracking is automatic, read/reconciliation-only, server-rate-limited and incapable of preparing or sending another transaction.
+Apply committed database migrations:
 
-## Available Scripts
+```sh
+npm run db:migrate
+```
 
-| Command | Description |
-| --- | --- |
-| `npm run dev` | Start the Next.js development server |
-| `npm run build` | Build the production application |
-| `npm run lint` | Run ESLint across the codebase |
-| `npm run typecheck` | Run TypeScript strict compiler checks (`tsc --noEmit`) |
-| `npm run test` | Run Vitest unit and architectural assertion tests |
-| `npm run test:brickken-live-read` | Opt-in credential-bearing Brickken sandbox network-info read; excluded from default tests |
-| `npm run db:generate` | Generate reviewable Drizzle SQL migrations without connecting to a database |
-| `npm run db:migrate` | Apply committed migrations using ignored runtime `DATABASE_URL` configuration |
-| `npm run test:database-live` | Opt-in Neon create/read/CAS/cleanup verification; excluded from default tests |
-| `npm run test:phase8` | Run only the offline Phase 8 adversarial and harness tests |
-| `npm run check:phase8-harness` | Compile-check the isolated harness, which is excluded from the production application build |
-| `npm run audit:phase8-client-bundle` | Build an isolated tracked-source snapshot with network denied, then scan build logs, browser artifacts and the real pre-bootstrap harness page |
-| `npm run phase8:brickken-read` | Separately authorized interactive sandbox network-information action; do not run as an offline check |
-| `npm run check` | Run all checks (`lint`, `typecheck`, `test`, `build`) in sequence |
+### Run
 
-## Phase Status
+```sh
+npm run dev
+```
 
-- **Phase 0: Discovery & Architecture** — Completed and verified.
-- **Phase 1: Application Foundation** — Complete. Scaffolding, strict TypeScript App Router, Tailwind CSS, Vitest, pinned `brickken-sdk@0.2.1`, and server-only boundaries established.
-- **Phase 2: Deterministic Core Domain** — Complete. The versioned normalized manifest, strict validation, canonical JSON, SHA-256 identities, immutable execution plan, and golden tests are specified in [`docs/CORE_DOMAIN_SPEC.md`](docs/CORE_DOMAIN_SPEC.md).
-- **Phase 3: Brickken Wire-Contract Audit** — Complete. The adversarial review, conflict register, retry matrix, and sourced fixtures are in [`docs/BRICKKEN_WIRE_CONTRACT_AUDIT.md`](docs/BRICKKEN_WIRE_CONTRACT_AUDIT.md) and `src/server/brickken/test-vectors/`.
-- **Phase 4: Execution Safety and Brickken Adapter** — Complete. The application-owned run state machine and in-memory repository are committed, and the server-only sandbox adapter is covered by injected transport tests. A historical opt-in credential-bearing network-info read recorded `Sepolia ETH`; it did not establish authentication semantics and no authenticated write occurred. At Phase 4 completion, live writes were blocked on durable persistence.
-- **Phase 5: Durable Execution Persistence** — Complete and verified. Neon Postgres and Drizzle are contained behind the existing server repository interface, with a versioned JSONB run snapshot, strict codec, atomic optimistic concurrency, deterministic SQL migration, and credential-free default tests. On 2026-09-04, the migration and opt-in Neon test passed create, read, compare-and-swap update, stale-revision refusal, and deletion of the unique smoke-test run.
-- **Phase 6: Secure Run APIs and Durable Orchestration** — Complete. The deny-by-default, same-origin API exposes only run creation/read, approval challenge/verification and cancellation. Run capabilities use a hardened HttpOnly cookie; plan approval preserves EIP-712 EOA evidence in versioned V2 snapshots; internal orchestration enforces CAS intent ordering, double write gates and ambiguity blocking with injected Brickken behavior. See [`docs/RUN_API_SPEC.md`](docs/RUN_API_SPEC.md).
-- **Phase 7: Browser Wallet Authorization and Transaction Boundary** — Complete offline. The vendor-neutral EIP-6963/EIP-1193 boundary provides explicit provider selection, exact server-issued EIP-712 approval requests, strict immutable transaction projection, canonical wallet-intent integrity, and durable prompt-before-send/hash-handoff ordering. No named wallet or live write is verified. See [`docs/WALLET_EXECUTION_SPEC.md`](docs/WALLET_EXECUTION_SPEC.md).
-- **Phase 8: Adversarial Boundary and Compatibility Harness** — Complete offline. Provider hardening, bounded deadlines, exact trusted-RPC transaction/receipt evidence, backward-compatible persistence, and isolated client-bundle auditing are implemented. See [`docs/PHASE_8_OPERATOR_PLAYBOOK.md`](docs/PHASE_8_OPERATOR_PLAYBOOK.md).
-- **Phase 9: Offline TOKENIZE Representational Compatibility** — Historical checkpoint. The current implementation adds server-derived canonical semantic authorization and does not depend on opaque calldata. See [the wallet contract](docs/WALLET_EXECUTION_SPEC.md).
-- **Run Planning Workspace checkpoint** — Closed after offline verification. The root page provides a guided mandate form, server-normalized manifest and deterministic plan review, public status/revision and hashes, manual refresh, and legal cancellation with the exact expected revision.
-- **TOKENIZE execution checkpoint** — Implemented for independent re-audit. The browser has one `eth_sendTransaction` call site, every authority release follows a final durable CAS, and transaction tracking/read-back are automatic. No live TOKENIZE write has been performed during this audit fix.
-- **Durable recovery checkpoint:** The root page remains the new-mandate surface and `/records/[runId]` is the canonical recorded-run surface. Create and authorized GET return the same strict complete planning record. Reload and same-browser tabs reconstruct from durable server state without changing revision. The run ID is only a locator; the existing one-active-run HttpOnly capability remains the authority.
-- **Approval readiness checkpoint:** The recorded-plan surface passively discovers injected EIP-6963 providers and supports explicit provider/legacy selection, account access, exact tokenizer-signer inspection, Sepolia switching, recheck, invalidation and cleanup. It stops at **Ready to approve**. No provider is preferred or labeled verified.
-- **Approval recording checkpoint:** From **Ready to approve**, one explicit action performs a durable preflight, fresh bounded EIP-712 challenge, readiness recheck, exact typed-data signature, proof submission, and one durable reconciliation read. Only the exact approved revision `N+1` state is presented as recorded; uncertainty blocks another signature until read-only status refresh.
-- **Current boundary:** TOKENIZE is enabled only when the operator kill switch and preparation gate are configured. WHITELIST, MINT and a full deployment receipt remain disabled. The historical preparation diagnostics produced no transaction.
+---
 
-## Run planning workspace
+## Testing
 
-The product exposes create/read/cancel, approval, legacy preparation/review, the product-level `POST /api/runs/[runId]/execute`, broadcast result ingestion, and read-only automatic tracking. The canonical user-facing route remains `/records/[runId]`. The browser submits only the expected durable revision to Execute Mandate; the server selects TOKENIZE and derives all authority from the persisted approved plan.
+```sh
+npm test              # Run unit and architectural tests with Vitest
+npm run typecheck     # Strict TypeScript compiler verification (tsc --noEmit)
+npm run lint          # Run ESLint across the codebase
+npm run build         # Next.js production build verification
+```
 
-After a successful create response, the browser replaces the root URL with `/records/[runId]`. That route independently reloads the complete server-normalized manifest, deterministic plan and public run state through authorized GET. The existing HttpOnly capability cookie authorizes reads and mutations; the run ID itself grants nothing. Browser GET reads may omit `Origin`; present origins must match and cross-site Fetch Metadata is refused. Mutations still require the exact trusted origin. No capability or security material is placed in the URL, React props or browser storage. Creating another run replaces access to the earlier run under the unchanged one-active-run policy. See [`docs/RUN_API_SPEC.md`](docs/RUN_API_SPEC.md).
+### Additional verification
 
-## Durable Database Gate
+```sh
+npm run test:brickken-live-read     # Opt-in live Brickken sandbox connectivity check
+npm run test:database-live          # Opt-in live Neon Postgres CAS verification
+npm run test:phase8                 # Offline adversarial boundary harness tests
+npm run audit:phase8-client-bundle  # Client-bundle boundary audit
+```
 
-The deployed repository uses Neon Postgres through Drizzle's Neon HTTP adapter. Local/in-memory storage is for tests and demonstrations only and must never back deployed write execution.
+---
 
-The persistence packages are pinned exactly: [`drizzle-orm@0.45.2`](https://www.npmjs.com/package/drizzle-orm/v/0.45.2), [`@neondatabase/serverless@1.1.0`](https://www.npmjs.com/package/@neondatabase/serverless/v/1.1.0), and [`drizzle-kit@0.31.10`](https://www.npmjs.com/package/drizzle-kit/v/0.31.10).
+## Project structure
 
-Server-side EIP-712 approval recovery and the shared browser-compatible primitives use exactly pinned `viem@2.56.3`. Phase 7 remains vendor-neutral, supports EOA approval only, and does not attempt EIP-1271 or make an RPC request to classify a signer.
+```text
+src/
+  app/          Next.js App Router routes and API endpoints
+  components/   Product UI and execution lifecycle components
+  core/         Deterministic domain logic, normalization, hashing, and plan generation
+  server/       Brickken adapter, Neon persistence, orchestration, and RPC verification
+  shared/       Shared validation schemas and execution contracts
+drizzle/        Drizzle SQL migrations
+tools/          Verification, preflight, and security harness
+docs/           Technical specifications and architectural audits
+```
 
-The isolated Phase 8 TypeScript CLI declares `tsx@4.23.13` directly as a development dependency. That exact package was already locked transitively through `drizzle-kit`; promotion changed no package version, integrity hash, resolved URL or transitive graph and introduced no additional dependency.
+---
 
-**VERIFIED — 2026-09-04:** `npm run db:migrate` completed successfully. The explicitly opted-in `npm run test:database-live` then passed against Neon: it created and read a unique run, completed one atomic compare-and-swap update, refused a stale revision, and deleted the run before emitting its sanitized success result.
+## Limitations and scope
 
-Two controlled Brickken preparation-only requests occurred on 2026-09-09; neither was retried and neither produced a prepared transaction. No wallet prompt, signing, broadcast or blockchain operation occurred in those diagnostics. Current code supports the gated TOKENIZE execution path; live signer, licence, credit, prepared-payload and named-wallet compatibility still require the separately authorized validation transaction.
+- **Brickken Sandbox only**: designed for the Brickken Sandbox environment; not configured for production mainnet deployment.
+- **Ethereum Sepolia**: targeted exclusively to Ethereum Sepolia for this submission.
+- **Single investor allocation**: supports one optional initial investor allocation per mandate.
+- **Human wallet confirmations required**: wallet confirmation is required for each on-chain operation; Edict automatically handles preparation, tracking, reconciliation, and verification around those confirmations. Edict never submits wallet transactions without explicit user confirmation.
+- **Zero custody**: Edict does not manage, hold, or escrow private keys.
 
-The run API remains disabled unless an operator first configures deployment-level preview access or rate limiting and explicitly sets `EDICT_RUN_API_ENABLED=1`, an exact `EDICT_TRUSTED_ORIGIN`, durable database configuration, and the server-only run security secret. The local HTTP cookie exception is limited to explicitly configured loopback origins in development/test; it does not enable Brickken writes or external execution.
+---
+
+## AI-assisted development
+
+Edict was built with AI-assisted development using tools and models from:
+- Google
+- xAI
+
+AI was used for implementation assistance, code review, debugging, testing, and UI iteration. Product direction, architecture decisions, Brickken integration decisions, live wallet validation, transaction execution, failure triage, and final review were human-directed.
+
+---
+
+## Documentation
+
+- [`docs/CORE_DOMAIN_SPEC.md`](docs/CORE_DOMAIN_SPEC.md): Canonical asset manifest, normalization rules, SHA-256 identity derivations, and deterministic execution plan specification.
