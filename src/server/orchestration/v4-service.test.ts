@@ -218,11 +218,15 @@ class FakeBrickkenStatusFetcher implements BrickkenStatusFetcher {
   }
 }
 
-class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo" | "getTokenizerInfo"> {
+class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo" | "getTokenizerInfo" | "getWhitelistStatus" | "getBalanceAndWhitelist"> {
   tokenCalls = 0;
   tokenizerCalls = 0;
+  whitelistCalls = 0;
+  balanceCalls = 0;
   tokenAddress = TOKEN_ADDRESS;
   walletAddress = TOKENIZER_ADDRESS;
+  isWhitelisted = true;
+  tokenBalanceRaw = (25n * 10n ** 18n).toString();
 
   async getTokenInfo(query: { tokenSymbol: string }) {
     this.tokenCalls += 1;
@@ -251,6 +255,35 @@ class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo"
         paymentTokenAddress: null,
         chainId: "11155111",
         email: "licensed-account@example.com",
+      },
+    };
+  }
+
+  async getWhitelistStatus(query: { tokenSymbol: string; address: string }) {
+    this.whitelistCalls += 1;
+    return {
+      ok: true as const,
+      value: {
+        isWhitelisted: this.isWhitelisted,
+        source: "blockchain" as const,
+        tokenSymbol: query.tokenSymbol,
+        address: query.address,
+      },
+    };
+  }
+
+  async getBalanceAndWhitelist(query: { tokenSymbol: string; investorEmail: string }) {
+    this.balanceCalls += 1;
+    void query.investorEmail;
+    return {
+      ok: true as const,
+      value: {
+        isWhitelisted: this.isWhitelisted,
+        balanceSource: "blockchain" as const,
+        walletAddress: "0x2222222222222222222222222222222222222222",
+        tokenAddress: this.tokenAddress,
+        tokenBalanceRaw: this.tokenBalanceRaw,
+        tokenDecimals: 18,
       },
     };
   }
@@ -383,6 +416,158 @@ async function createPreparedV2Run(
       unsignedTransaction: options?.unsignedTransaction ?? UNSIGNED_TOKENIZE_TX,
     },
   );
+}
+
+async function setupFinalizedCorrelatedRun(
+  h: ReturnType<typeof createHarness>,
+  rawStatus: "pending" | "success" | "rejected" = "success",
+  options: Readonly<{
+    receiptStatus?: "0x0" | "0x1";
+    finalizedBlockNumber?: string;
+    observedMaxFeePerGas?: string;
+    correlationHash?: string;
+    implementationAddress?: string;
+  }> = {},
+) {
+  const runV2 = await createPreparedV2Run(h);
+  const v4Run = await h.v4.promotePreparedRunToV4(
+    runV2.id,
+    runV2.revision,
+  );
+  const promptRun = await h.v4.recordWalletPrompt(
+    v4Run.id,
+    v4Run.revision,
+  );
+  const { envelope, run: releasedRun } = await h.v4.releaseSendAuthority(
+    promptRun.id,
+    promptRun.revision,
+  );
+  const broadcastRun = await h.v4.ingestBroadcastHash(releasedRun.id, {
+    expectedRevision: releasedRun.revision,
+    invocationAttemptId: envelope.invocationAttemptId,
+    walletIntentHash: envelope.walletIntentHash,
+    txHash: TX_HASH,
+  });
+
+  h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+    hash: TX_HASH,
+    chainId: "0xaa36a7",
+    from: TOKENIZER_ADDRESS,
+    to: TO,
+    input: VALID_TOKENIZE_CALLDATA,
+    value: "0x0",
+    nonce: "0x5",
+    type: "0x2",
+    gas: "0x100",
+    gasPrice: null,
+    maxFeePerGas: options.observedMaxFeePerGas ?? "0x20",
+    maxPriorityFeePerGas: "0x4",
+    accessList: [],
+    blockHash: FINALIZED_BLOCK_HASH,
+    blockNumber: "0x20",
+    transactionIndex: "0x0",
+  }));
+
+  h.fakeRpcTransport.on("eth_getBlockByNumber", (params) => {
+    const tag = params?.[0];
+    if (tag === "finalized") {
+      return {
+        number: options.finalizedBlockNumber ?? "0x20",
+        hash: options.finalizedBlockNumber === "0x1f" ? BLOCK_HASH : FINALIZED_BLOCK_HASH,
+        parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+        baseFeePerGas: "0x10",
+        timestamp: "0x66e44000",
+      };
+    }
+    if (tag === "0x20") {
+      return {
+        number: "0x20",
+        hash: FINALIZED_BLOCK_HASH,
+        parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+        baseFeePerGas: "0x10",
+        timestamp: "0x66e44000",
+      };
+    }
+    return {
+      number: "0x10",
+      hash: BLOCK_HASH,
+      parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      baseFeePerGas: "0x10",
+      timestamp: "0x66e44000",
+    };
+  });
+
+  h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+    transactionHash: TX_HASH,
+    blockHash: FINALIZED_BLOCK_HASH,
+    blockNumber: "0x20",
+    transactionIndex: "0x0",
+    from: TOKENIZER_ADDRESS,
+    to: TO,
+    cumulativeGasUsed: "0x50",
+    gasUsed: "0x50",
+    effectiveGasPrice: "0x15",
+    contractAddress: null,
+    type: "0x2",
+    status: options.receiptStatus ?? "0x1",
+    logs: [{
+      address: REVIEWED_SEPOLIA_FACTORY,
+      topics: [
+        NEW_TOKENIZATION_EVENT_TOPIC,
+        `0x${"0".repeat(63)}1`,
+        indexedAddress(TOKEN_ADDRESS),
+        indexedAddress(ESCROW_ADDRESS),
+      ],
+      data: "0x",
+      blockNumber: "0x20",
+      transactionHash: TX_HASH,
+      transactionIndex: "0x0",
+      blockHash: FINALIZED_BLOCK_HASH,
+      logIndex: "0x4",
+      removed: false,
+    }],
+  }));
+
+  h.fakeRpcTransport.on("eth_getStorageAt", (params) => {
+    expect(params).toEqual([
+      REVIEWED_SEPOLIA_FACTORY,
+      ERC1967_IMPLEMENTATION_SLOT,
+      "0x20",
+    ]);
+    return `0x${"0".repeat(24)}${(
+      options.implementationAddress ?? REVIEWED_SEPOLIA_IMPLEMENTATION
+    ).slice(2)}`;
+  });
+
+  h.correlationSender.response = {
+    status: 202,
+    data: options.correlationHash === undefined
+      ? CORRELATION_SUCCESS_DATA
+      : {
+          results: [{
+            result: {
+              transactionHash: options.correlationHash,
+              status: "pending",
+              executionMode: "client-broadcast",
+            },
+          }],
+        },
+  };
+
+  h.statusFetcher.response = {
+    status: 200,
+    data: {
+      status: rawStatus,
+      transactionHash: TX_HASH,
+    },
+  };
+
+  const tracked = await h.v4.trackExecution(
+    broadcastRun.id,
+    broadcastRun.revision,
+  );
+
+  return tracked.run;
 }
 
 describe("ExecutionV4Orchestrator", () => {
@@ -2881,155 +3066,6 @@ describe("ExecutionV4Orchestrator", () => {
   });
 
   describe("Part O: Token Read-Back and Terminal Read Protection", () => {
-    async function setupFinalizedCorrelatedRun(
-      h: ReturnType<typeof createHarness>,
-      rawStatus: "pending" | "success" | "rejected" = "success",
-      options: Readonly<{
-        receiptStatus?: "0x0" | "0x1";
-        finalizedBlockNumber?: string;
-        observedMaxFeePerGas?: string;
-        correlationHash?: string;
-        implementationAddress?: string;
-      }> = {},
-    ) {
-      const runV2 = await createPreparedV2Run(h);
-      const v4Run = await h.v4.promotePreparedRunToV4(
-        runV2.id,
-        runV2.revision,
-      );
-      const promptRun = await h.v4.recordWalletPrompt(
-        v4Run.id,
-        v4Run.revision,
-      );
-      const { envelope, run: releasedRun } = await h.v4.releaseSendAuthority(
-        promptRun.id,
-        promptRun.revision,
-      );
-      const broadcastRun = await h.v4.ingestBroadcastHash(releasedRun.id, {
-        expectedRevision: releasedRun.revision,
-        invocationAttemptId: envelope.invocationAttemptId,
-        walletIntentHash: envelope.walletIntentHash,
-        txHash: TX_HASH,
-      });
-
-      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
-        hash: TX_HASH,
-        chainId: "0xaa36a7",
-        from: TOKENIZER_ADDRESS,
-        to: TO,
-        input: VALID_TOKENIZE_CALLDATA,
-        value: "0x0",
-        nonce: "0x5",
-        type: "0x2",
-        gas: "0x100",
-        gasPrice: null,
-        maxFeePerGas: options.observedMaxFeePerGas ?? "0x20",
-        maxPriorityFeePerGas: "0x4",
-        accessList: [],
-        blockHash: FINALIZED_BLOCK_HASH,
-        blockNumber: "0x20",
-        transactionIndex: "0x0",
-      }));
-
-      h.fakeRpcTransport.on("eth_getBlockByNumber", (params) => {
-        const tag = params?.[0];
-        if (tag === "finalized") {
-          return {
-            number: options.finalizedBlockNumber ?? "0x20",
-            hash: options.finalizedBlockNumber === "0x1f" ? BLOCK_HASH : FINALIZED_BLOCK_HASH,
-            parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
-            baseFeePerGas: "0x10",
-          };
-        }
-        if (tag === "0x20") {
-          return {
-            number: "0x20",
-            hash: FINALIZED_BLOCK_HASH,
-            parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
-            baseFeePerGas: "0x10",
-          };
-        }
-        return {
-          number: "0x10",
-          hash: BLOCK_HASH,
-          parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
-          baseFeePerGas: "0x10",
-        };
-      });
-
-      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
-        transactionHash: TX_HASH,
-        blockHash: FINALIZED_BLOCK_HASH,
-        blockNumber: "0x20",
-        transactionIndex: "0x0",
-        from: TOKENIZER_ADDRESS,
-        to: TO,
-        cumulativeGasUsed: "0x50",
-        gasUsed: "0x50",
-        effectiveGasPrice: "0x15",
-        contractAddress: null,
-        type: "0x2",
-        status: options.receiptStatus ?? "0x1",
-        logs: [{
-          address: REVIEWED_SEPOLIA_FACTORY,
-          topics: [
-            NEW_TOKENIZATION_EVENT_TOPIC,
-            `0x${"0".repeat(63)}1`,
-            indexedAddress(TOKEN_ADDRESS),
-            indexedAddress(ESCROW_ADDRESS),
-          ],
-          data: "0x",
-          blockNumber: "0x20",
-          transactionHash: TX_HASH,
-          transactionIndex: "0x0",
-          blockHash: FINALIZED_BLOCK_HASH,
-          logIndex: "0x4",
-          removed: false,
-        }],
-      }));
-
-      h.fakeRpcTransport.on("eth_getStorageAt", (params) => {
-        expect(params).toEqual([
-          REVIEWED_SEPOLIA_FACTORY,
-          ERC1967_IMPLEMENTATION_SLOT,
-          "0x20",
-        ]);
-        return `0x${"0".repeat(24)}${(
-          options.implementationAddress ?? REVIEWED_SEPOLIA_IMPLEMENTATION
-        ).slice(2)}`;
-      });
-
-      h.correlationSender.response = {
-        status: 202,
-        data: options.correlationHash === undefined
-          ? CORRELATION_SUCCESS_DATA
-          : {
-              results: [{
-                result: {
-                  transactionHash: options.correlationHash,
-                  status: "pending",
-                  executionMode: "client-broadcast",
-                },
-              }],
-            },
-      };
-
-      h.statusFetcher.response = {
-        status: 200,
-        data: {
-          status: rawStatus,
-          transactionHash: TX_HASH,
-        },
-      };
-
-      const tracked = await h.v4.trackExecution(
-        broadcastRun.id,
-        broadcastRun.revision,
-      );
-
-      return tracked.run;
-    }
-
     it("rejects untrusted caller-supplied token address and prevents creating TokenIdentityV1", async () => {
       const h = createHarness();
       const run = await setupFinalizedCorrelatedRun(h);
@@ -3062,8 +3098,8 @@ describe("ExecutionV4Orchestrator", () => {
     it("uses server-owned account email for read-back even when the manifest email differs", async () => {
       const h = createHarness({ readBack: true });
       const run = await setupFinalizedCorrelatedRun(h, "rejected");
-      expect(run.phase).toBe("TOKENIZATION");
-      expect(run.status).toBe("SUCCEEDED");
+      expect(run.phase).toBe("WHITELIST");
+      expect(run.status).toBe("PREPARING");
       expect(run.operations[0].stage).toBe("READ_BACK_VERIFIED");
       expect(run.tokenIdentity).toMatchObject({
         tokenAddress: TOKEN_ADDRESS,
@@ -3079,14 +3115,12 @@ describe("ExecutionV4Orchestrator", () => {
     it("cannot replace the receipt-derived token with an older same-symbol Brickken result", async () => {
       const h = createHarness({ readBack: true });
       h.readBack.tokenAddress = "0x7777777777777777777777777777777777777777";
-      await expect(setupFinalizedCorrelatedRun(h)).rejects.toMatchObject({
-        code: "READ_BACK_FAILED",
-      });
-      const run = (await h.repository.getById(
-        "11111111-1111-4111-8111-111111111111",
-      )) as ExecutionRunV4;
+      const run = await setupFinalizedCorrelatedRun(h);
+      expect(run.status).toBe("FAILED");
+      expect(run.terminalOutcome).toBe("VERIFICATION_FAILED");
       expect(run.phase).toBe("TOKENIZATION");
       expect(run.tokenIdentity).toBeNull();
+      expect(run.operations[0].stage).toBe("BRICKKEN_CORRELATED");
     });
 
     it("does not derive identity from an unfinalized receipt", async () => {
@@ -3131,23 +3165,22 @@ describe("ExecutionV4Orchestrator", () => {
 
     it("rejects an implementation mismatch at the exact receipt block", async () => {
       const h = createHarness({ readBack: true });
-      await expect(setupFinalizedCorrelatedRun(h, "success", {
+      const run = await setupFinalizedCorrelatedRun(h, "success", {
         implementationAddress: "0x8888888888888888888888888888888888888888",
-      })).rejects.toMatchObject({ code: "READ_BACK_BINDING_UNRESOLVED" });
-      const run = (await h.repository.getById(
-        "11111111-1111-4111-8111-111111111111",
-      )) as ExecutionRunV4;
+      });
+      expect(run.status).toBe("FAILED");
+      expect(run.terminalOutcome).toBe("VERIFICATION_FAILED");
       expect(run.tokenIdentity).toBeNull();
+      expect(run.operations[0].stage).toBe("BRICKKEN_CORRELATED");
     });
 
     it("fails closed when authoritative tokenizer identity mismatches the approved signer", async () => {
       const h = createHarness({ readBack: true });
       h.readBack.walletAddress = "0x5555555555555555555555555555555555555555";
 
-      await expect(setupFinalizedCorrelatedRun(h)).rejects.toThrow(OrchestrationError);
-      const durable = (await h.repository.getById(
-        "11111111-1111-4111-8111-111111111111",
-      )) as ExecutionRunV4;
+      const durable = await setupFinalizedCorrelatedRun(h);
+      expect(durable.status).toBe("FAILED");
+      expect(durable.terminalOutcome).toBe("VERIFICATION_FAILED");
       expect(durable.phase).toBe("TOKENIZATION");
       expect(durable.tokenIdentity).toBeNull();
       expect(durable.operations[0].stage).toBe("BRICKKEN_CORRELATED");
@@ -3391,6 +3424,381 @@ describe("pre-live audit regressions", () => {
       expect(updated.operations[0].walletPromptAuthorization).toBeNull();
       expect(updated.operations[0].preparationAttempts[0].state).toBe("STALE");
       expect(updated.operations[0].preparationAttempts[0].staleReason).toBe("PRICE_REPORT_EXPIRED");
+    });
+  });
+
+  describe("Part P: WHITELIST and MINT Lifecycle", () => {
+    it("orchestrates full execution through WHITELIST and MINT to final verification", async () => {
+      const brickkenPrepare = {
+        prepareTokenization: vi.fn(),
+        prepareWhitelist: vi.fn(async () => ({
+          ok: true as const,
+          value: {
+            txId: "brickken-wl-1",
+            executionMode: "client-broadcast" as const,
+            transaction: {
+              from: TOKENIZER_ADDRESS,
+              to: TOKEN_ADDRESS,
+              data: "0x11223344",
+              value: "0x0",
+              nonce: "0x5",
+              type: "0x2",
+              gasLimit: "0x100",
+              maxFeePerGas: "0x20",
+              maxPriorityFeePerGas: "0x4",
+              gasPrice: null,
+              normalizedChainId: "11155111" as const,
+              chainId: "0xaa36a7",
+              rawUnsigned: {
+                from: TOKENIZER_ADDRESS,
+                to: TOKEN_ADDRESS,
+                data: "0x11223344",
+                value: "0x0",
+                nonce: "0x5",
+                type: "0x2",
+                gasLimit: "0x100",
+                maxFeePerGas: "0x20",
+                maxPriorityFeePerGas: "0x4",
+                chainId: "0xaa36a7",
+              },
+            },
+          },
+        })),
+        prepareMint: vi.fn(async () => ({
+          ok: true as const,
+          value: {
+            txId: "brickken-mint-1",
+            executionMode: "client-broadcast" as const,
+            transaction: {
+              from: TOKENIZER_ADDRESS,
+              to: TOKEN_ADDRESS,
+              data: "0x55667788",
+              value: "0x0",
+              nonce: "0x5",
+              type: "0x2",
+              gasLimit: "0x100",
+              maxFeePerGas: "0x20",
+              maxPriorityFeePerGas: "0x4",
+              gasPrice: null,
+              normalizedChainId: "11155111" as const,
+              chainId: "0xaa36a7",
+              rawUnsigned: {
+                from: TOKENIZER_ADDRESS,
+                to: TOKEN_ADDRESS,
+                data: "0x55667788",
+                value: "0x0",
+                nonce: "0x5",
+                type: "0x2",
+                gasLimit: "0x100",
+                maxFeePerGas: "0x20",
+                maxPriorityFeePerGas: "0x4",
+                chainId: "0xaa36a7",
+              },
+            },
+          },
+        })),
+      };
+
+      const h = createHarness({ readBack: true, brickkenPrepare });
+      // 1. Complete TOKENIZATION operation
+      const wlPendingRun = await setupFinalizedCorrelatedRun(h, "success");
+      expect(wlPendingRun.phase).toBe("WHITELIST");
+      expect(wlPendingRun.status).toBe("PREPARING");
+      expect(wlPendingRun.operations[0].stage).toBe("READ_BACK_VERIFIED");
+      expect(wlPendingRun.operations[1].stage).toBe("NOT_STARTED");
+
+      // 2. Prepare WHITELIST operation
+      const wlPrepared = await h.v4.prepareOperation(wlPendingRun.id, wlPendingRun.revision);
+      expect(wlPrepared.phase).toBe("WHITELIST");
+      expect(wlPrepared.status).toBe("AWAITING_WALLET");
+      expect(wlPrepared.operations[1].stage).toBe("PREPARED");
+      expect(brickkenPrepare.prepareWhitelist).toHaveBeenCalledOnce();
+
+      // 3. Release authority for WHITELIST
+      const wlAuthority = await h.v4.releaseSendAuthority(wlPrepared.id, wlPrepared.revision);
+      expect(wlAuthority.envelope.requiredSigner).toBe(TOKENIZER_ADDRESS);
+
+      // 4. Record broadcast hash
+      const wlBroadcastHash = "0x" + "a".repeat(64);
+      const wlBroadcast = await h.v4.ingestBroadcastHash(wlAuthority.run.id, {
+        expectedRevision: wlAuthority.run.revision,
+        invocationAttemptId: wlAuthority.envelope.invocationAttemptId,
+        walletIntentHash: wlAuthority.envelope.walletIntentHash,
+        txHash: wlBroadcastHash,
+      });
+      expect(wlBroadcast.operations[1].blockchainTxHash).toBe(wlBroadcastHash);
+
+      // 5. Setup RPC and correlation for WHITELIST tx
+      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+        hash: wlBroadcastHash,
+        chainId: "0xaa36a7",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        input: "0x11223344",
+        value: "0x0",
+        nonce: "0x5",
+        type: "0x2",
+        gas: "0x100",
+        gasPrice: null,
+        maxFeePerGas: "0x20",
+        maxPriorityFeePerGas: "0x4",
+        accessList: [],
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+      }));
+
+      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+        transactionHash: wlBroadcastHash,
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        cumulativeGasUsed: "0x50",
+        gasUsed: "0x50",
+        effectiveGasPrice: "0x15",
+        contractAddress: null,
+        type: "0x2",
+        status: "0x1",
+        logs: [],
+      }));
+
+      h.correlationSender.response = {
+        status: 202,
+        data: {
+          results: [{
+            result: {
+              transactionHash: wlBroadcastHash,
+              status: "pending" as const,
+              executionMode: "client-broadcast" as const,
+            },
+          }],
+        },
+      };
+      h.statusFetcher.response = {
+        status: 200,
+        data: { status: "success", transactionHash: wlBroadcastHash },
+      };
+
+      // 6. Track and read-back WHITELIST
+      const wlTracked = await h.v4.trackExecution(wlBroadcast.id, wlBroadcast.revision);
+      expect(wlTracked.run.phase).toBe("MINT");
+      expect(wlTracked.run.status).toBe("PREPARING");
+      expect(wlTracked.run.operations[1].stage).toBe("READ_BACK_VERIFIED");
+      expect(wlTracked.run.receiptEligible).toBe(false);
+
+      // 7. Prepare MINT operation
+      const mintPrepared = await h.v4.prepareOperation(wlTracked.run.id, wlTracked.run.revision);
+      expect(mintPrepared.phase).toBe("MINT");
+      expect(mintPrepared.status).toBe("AWAITING_WALLET");
+      expect(mintPrepared.operations[2].stage).toBe("PREPARED");
+      expect(brickkenPrepare.prepareMint).toHaveBeenCalledOnce();
+
+      // 8. Release authority for MINT
+      const mintAuthority = await h.v4.releaseSendAuthority(mintPrepared.id, mintPrepared.revision);
+      expect(mintAuthority.envelope.requiredSigner).toBe(TOKENIZER_ADDRESS);
+
+      // 9. Ingest broadcast hash for MINT
+      const mintBroadcastHash = "0x" + "b".repeat(64);
+      const mintBroadcast = await h.v4.ingestBroadcastHash(mintAuthority.run.id, {
+        expectedRevision: mintAuthority.run.revision,
+        invocationAttemptId: mintAuthority.envelope.invocationAttemptId,
+        walletIntentHash: mintAuthority.envelope.walletIntentHash,
+        txHash: mintBroadcastHash,
+      });
+
+      // 10. Setup RPC and correlation for MINT tx
+      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+        hash: mintBroadcastHash,
+        chainId: "0xaa36a7",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        input: "0x55667788",
+        value: "0x0",
+        nonce: "0x5",
+        type: "0x2",
+        gas: "0x100",
+        gasPrice: null,
+        maxFeePerGas: "0x20",
+        maxPriorityFeePerGas: "0x4",
+        accessList: [],
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+      }));
+
+      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+        transactionHash: mintBroadcastHash,
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        cumulativeGasUsed: "0x50",
+        gasUsed: "0x50",
+        effectiveGasPrice: "0x15",
+        contractAddress: null,
+        type: "0x2",
+        status: "0x1",
+        logs: [],
+      }));
+
+      h.correlationSender.response = {
+        status: 202,
+        data: {
+          results: [{
+            result: {
+              transactionHash: mintBroadcastHash,
+              status: "pending" as const,
+              executionMode: "client-broadcast" as const,
+            },
+          }],
+        },
+      };
+      h.statusFetcher.response = {
+        status: 200,
+        data: { status: "success", transactionHash: mintBroadcastHash },
+      };
+
+      // 11. Track and read-back MINT -> SUCCEEDED & receiptEligible: true
+      const mintTracked = await h.v4.trackExecution(mintBroadcast.id, mintBroadcast.revision);
+      expect(mintTracked.run.phase).toBe("VERIFICATION");
+      expect(mintTracked.run.status).toBe("SUCCEEDED");
+      expect(mintTracked.run.operations[2].stage).toBe("READ_BACK_VERIFIED");
+      expect(mintTracked.run.receiptEligible).toBe(true);
+    });
+
+    it("refuses WHITELIST preparation when the approved plan hash no longer matches", async () => {
+      const brickkenPrepare = {
+        prepareTokenization: vi.fn(),
+        prepareWhitelist: vi.fn(),
+        prepareMint: vi.fn(),
+      };
+      const h = createHarness({ readBack: true, brickkenPrepare });
+      const wlPendingRun = await setupFinalizedCorrelatedRun(h, "success");
+      const drifted = await h.repository.update(wlPendingRun.id, wlPendingRun.revision, {
+        ...wlPendingRun,
+        plan: { ...wlPendingRun.plan, executionScope: "TOKENIZE_ONLY" },
+      }) as ExecutionRunV4;
+      await expect(
+        h.v4.prepareOperation(drifted.id, drifted.revision),
+      ).rejects.toMatchObject({ code: "EXECUTION_INVARIANT_FAILED" });
+      expect(brickkenPrepare.prepareWhitelist).not.toHaveBeenCalled();
+    });
+
+    it("fails closed when whitelist read-back returns a different investor address", async () => {
+      const brickkenPrepare = {
+        prepareTokenization: vi.fn(),
+        prepareWhitelist: vi.fn(async () => ({
+          ok: true as const,
+          value: {
+            txId: "brickken-wl-1",
+            executionMode: "client-broadcast" as const,
+            transaction: {
+              from: TOKENIZER_ADDRESS,
+              to: TOKEN_ADDRESS,
+              data: "0x11223344",
+              value: "0x0",
+              nonce: "0x5",
+              type: "0x2",
+              gasLimit: "0x100",
+              maxFeePerGas: "0x20",
+              maxPriorityFeePerGas: "0x4",
+              gasPrice: null,
+              normalizedChainId: "11155111" as const,
+              chainId: "0xaa36a7",
+              rawUnsigned: {
+                from: TOKENIZER_ADDRESS,
+                to: TOKEN_ADDRESS,
+                data: "0x11223344",
+                value: "0x0",
+                nonce: "0x5",
+                type: "0x2",
+                gasLimit: "0x100",
+                maxFeePerGas: "0x20",
+                maxPriorityFeePerGas: "0x4",
+                chainId: "0xaa36a7",
+              },
+            },
+          },
+        })),
+        prepareMint: vi.fn(),
+      };
+      const h = createHarness({ readBack: true, brickkenPrepare });
+      const wlPendingRun = await setupFinalizedCorrelatedRun(h, "success");
+      const wlPrepared = await h.v4.prepareOperation(wlPendingRun.id, wlPendingRun.revision);
+      const wlAuthority = await h.v4.releaseSendAuthority(wlPrepared.id, wlPrepared.revision);
+      const wlBroadcastHash = "0x" + "a".repeat(64);
+      const wlBroadcast = await h.v4.ingestBroadcastHash(wlAuthority.run.id, {
+        expectedRevision: wlAuthority.run.revision,
+        invocationAttemptId: wlAuthority.envelope.invocationAttemptId,
+        walletIntentHash: wlAuthority.envelope.walletIntentHash,
+        txHash: wlBroadcastHash,
+      });
+      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+        hash: wlBroadcastHash,
+        chainId: "0xaa36a7",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        input: "0x11223344",
+        value: "0x0",
+        nonce: "0x5",
+        type: "0x2",
+        gas: "0x100",
+        gasPrice: null,
+        maxFeePerGas: "0x20",
+        maxPriorityFeePerGas: "0x4",
+        accessList: [],
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+      }));
+      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+        transactionHash: wlBroadcastHash,
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        cumulativeGasUsed: "0x50",
+        gasUsed: "0x50",
+        effectiveGasPrice: "0x15",
+        contractAddress: null,
+        type: "0x2",
+        status: "0x1",
+        logs: [],
+      }));
+      h.correlationSender.response = {
+        status: 202,
+        data: {
+          results: [{
+            result: {
+              transactionHash: wlBroadcastHash,
+              status: "pending" as const,
+              executionMode: "client-broadcast" as const,
+            },
+          }],
+        },
+      };
+      h.statusFetcher.response = {
+        status: 200,
+        data: { status: "success", transactionHash: wlBroadcastHash },
+      };
+      h.readBack.getWhitelistStatus = async () => ({
+        ok: true as const,
+        value: {
+          isWhitelisted: true,
+          source: "blockchain" as const,
+          tokenSymbol: "ED1",
+          address: "0x9999999999999999999999999999999999999999",
+        },
+      });
+      const tracked = await h.v4.trackExecution(wlBroadcast.id, wlBroadcast.revision);
+      expect(tracked.run.status).toBe("FAILED");
+      expect(tracked.run.terminalOutcome).toBe("VERIFICATION_FAILED");
+      expect(tracked.run.operations[1].stage).toBe("BRICKKEN_CORRELATED");
+      expect(brickkenPrepare.prepareMint).not.toHaveBeenCalled();
     });
   });
 });

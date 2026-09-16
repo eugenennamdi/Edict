@@ -20,9 +20,12 @@ describe("server capability policy", () => {
     expect(active.operations.map((op) => op.kind)).toEqual(["TOKENIZE", "CONFIRM_TOKENIZATION"]);
     expect(isExecutablePlan(active)).toBe(true);
     const legacy = await buildExecutionPlanV1(manifest, "LEGACY_FULL");
-    expect(() => assertExecutablePlan(legacy)).toThrow();
+    expect(isExecutablePlan(legacy)).toBe(true);
+    expect(() => assertExecutablePlan(legacy)).not.toThrow();
+    const invalid = { ...legacy, operations: legacy.operations.slice(0, 3) } as unknown as Parameters<typeof assertExecutablePlan>[0];
+    expect(() => assertExecutablePlan(invalid)).toThrow();
     expect(Object.isFrozen(EXECUTION_CAPABILITIES)).toBe(true);
-    expect(EXECUTION_CAPABILITIES).toEqual({ TOKENIZE: "ENABLED", WHITELIST: "DISABLED_UNVERIFIED", MINT: "DISABLED_UNVERIFIED" });
+    expect(EXECUTION_CAPABILITIES).toEqual({ TOKENIZE: "ENABLED", WHITELIST: "ENABLED", MINT: "ENABLED" });
   });
 
   it("preserves historical plan truth but rejects approval before any mutation", async () => {

@@ -8,20 +8,41 @@ import { IllegalStateTransitionError } from "./errors";
  * requires a reviewed semantic evaluator and a corresponding policy change. */
 export const EXECUTION_CAPABILITIES = Object.freeze({
   TOKENIZE: "ENABLED",
-  WHITELIST: "DISABLED_UNVERIFIED",
-  MINT: "DISABLED_UNVERIFIED",
+  WHITELIST: "ENABLED",
+  MINT: "ENABLED",
 } as const);
 
-export function activePlanScope(): "TOKENIZE_ONLY" {
+export function activePlanScope(): "TOKENIZE_ONLY" | "LEGACY_FULL" {
   if (EXECUTION_CAPABILITIES.TOKENIZE !== "ENABLED") throw new IllegalStateTransitionError();
   return "TOKENIZE_ONLY";
 }
 
+export function planScopeForManifest(manifest: NormalizedAssetManifestV1): "TOKENIZE_ONLY" | "LEGACY_FULL" {
+  if (EXECUTION_CAPABILITIES.TOKENIZE !== "ENABLED") throw new IllegalStateTransitionError();
+  if (manifest.investor && EXECUTION_CAPABILITIES.WHITELIST === "ENABLED" && EXECUTION_CAPABILITIES.MINT === "ENABLED") {
+    return "LEGACY_FULL";
+  }
+  return "TOKENIZE_ONLY";
+}
+
 export function isExecutablePlan(plan: ExecutionPlanV1 | ExecutionPlanSnapshot): boolean {
-  if (!("operations" in plan)) return plan.executionScope === "TOKENIZE_ONLY";
-  return EXECUTION_CAPABILITIES.TOKENIZE === "ENABLED" &&
-    plan.operations.length === 2 && plan.operations[0].kind === "TOKENIZE" &&
-    plan.operations[1].kind === "CONFIRM_TOKENIZATION";
+  if (!("operations" in plan)) {
+    return plan.executionScope === "TOKENIZE_ONLY" || plan.executionScope === "LEGACY_FULL";
+  }
+  if (EXECUTION_CAPABILITIES.TOKENIZE !== "ENABLED") return false;
+  if (plan.operations.length === 2 && plan.operations[0].kind === "TOKENIZE" && plan.operations[1].kind === "CONFIRM_TOKENIZATION") {
+    return true;
+  }
+  if (
+    EXECUTION_CAPABILITIES.WHITELIST === "ENABLED" && EXECUTION_CAPABILITIES.MINT === "ENABLED" &&
+    plan.operations.length === 7 &&
+    plan.operations[0].kind === "TOKENIZE" &&
+    plan.operations[2].kind === "WHITELIST_INVESTOR" &&
+    plan.operations[4].kind === "MINT"
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function assertExecutablePlan(plan: ExecutionPlanV1 | ExecutionPlanSnapshot): void {
@@ -33,13 +54,19 @@ export function assertCurrentMandate(manifest: NormalizedAssetManifestV1): void 
     BigInt(manifest.asset.supplyCap) * 10n ** 18n > (1n << 224n) - 1n) {
     throw new IllegalStateTransitionError();
   }
+  if (manifest.investor) {
+    if (EXECUTION_CAPABILITIES.WHITELIST !== "ENABLED" || EXECUTION_CAPABILITIES.MINT !== "ENABLED") {
+      throw new IllegalStateTransitionError();
+    }
+  }
 }
 
 export async function assertExecutableRun(run: ExecutionRun): Promise<void> {
   assertExecutablePlan(run.plan);
   const manifest = validateAssetManifestV1(run.manifest);
   if (!manifest.ok) throw new IllegalStateTransitionError();
-  const plan = await buildExecutionPlanV1(manifest.value, activePlanScope());
+  const scope = planScopeForManifest(manifest.value);
+  const plan = await buildExecutionPlanV1(manifest.value, scope);
   if (plan.planHash !== run.planHash || plan.manifestHash !== run.manifestHash) throw new IllegalStateTransitionError();
 }
 

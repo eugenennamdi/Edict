@@ -194,7 +194,7 @@ export interface BrickkenServerAdapter {
         },
   ): Promise<AdapterResult<TransactionStatusView>>;
 
-  getTokenInfo(query: { tokenSymbol: string }): Promise<AdapterResult<TokenInfoView>>;
+  getTokenInfo(query: { tokenSymbol: string; chainId?: string }): Promise<AdapterResult<TokenInfoView>>;
   getTokenizerInfo(query: { tokenSymbol: string }): Promise<AdapterResult<TokenizerInfoView>>;
   getWhitelistStatus(query: {
     tokenSymbol: string;

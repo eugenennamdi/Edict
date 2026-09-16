@@ -240,17 +240,19 @@ export async function getRunHandler(request: Request, runId: string, options?: R
     if (
       api.walletExecution?.reconcileSubmittedRun &&
       run.schemaVersion === "4.0" &&
-      run.phase === "TOKENIZATION" &&
+      ["TOKENIZATION", "WHITELIST", "MINT"].includes(run.phase) &&
       run.terminalOutcome === null &&
-      run.status !== "RECONCILIATION_REQUIRED" &&
-      run.operations[0].blockchainTxHash !== null &&
-      run.operations[0].stage !== "READ_BACK_VERIFIED"
+      run.status !== "RECONCILIATION_REQUIRED"
     ) {
-      try {
-        const reconciled = await api.walletExecution.reconcileSubmittedRun(run.id, run.revision);
-        run = reconciled.run;
-      } catch {
-        // Safe read-only fallback: do not fail GET if upstream reconciliation is temporarily unavailable
+      const phaseIndex = run.phase === "TOKENIZATION" ? 0 : run.phase === "WHITELIST" ? 1 : run.phase === "MINT" ? 2 : 0;
+      const activeOp = run.operations[phaseIndex];
+      if (activeOp.blockchainTxHash !== null && activeOp.stage !== "READ_BACK_VERIFIED") {
+        try {
+          const reconciled = await api.walletExecution.reconcileSubmittedRun(run.id, run.revision);
+          run = reconciled.run;
+        } catch {
+          // Safe read-only fallback: do not fail GET if upstream reconciliation is temporarily unavailable
+        }
       }
     }
     const record = await projectPublicPlanningRecord(run);
@@ -330,12 +332,18 @@ export async function prepareNextOperationHandler(
     );
     const body = revisionBodySchema.parse(await readJson(request, 1024));
     const currentRun = await api.runs.getRun(runId);
-    if (
-      currentRun.schemaVersion === "4.0" &&
-      currentRun.operations[0]?.stage === "PREPARED_STALE"
-    ) {
-      if (!api.walletExecution?.reprepareOperation) throw new BrickkenWritesDisabledError();
-      const prepared = await api.walletExecution.reprepareOperation(runId, body.expectedRevision);
+    if (currentRun.schemaVersion === "4.0") {
+      if (
+        currentRun.operations[0]?.stage === "PREPARED_STALE" ||
+        currentRun.operations[1]?.stage === "PREPARED_STALE" ||
+        currentRun.operations[2]?.stage === "PREPARED_STALE"
+      ) {
+        if (!api.walletExecution?.reprepareOperation) throw new BrickkenWritesDisabledError();
+        const prepared = await api.walletExecution.reprepareOperation(runId, body.expectedRevision);
+        return response(200, { ok: true, run: await projectPublicRun(prepared) });
+      }
+      if (!api.walletExecution?.prepareOperation) throw new BrickkenWritesDisabledError();
+      const prepared = await api.walletExecution.prepareOperation(runId, body.expectedRevision);
       return response(200, { ok: true, run: await projectPublicRun(prepared) });
     }
     if (!api.execution) throw new BrickkenWritesDisabledError();
@@ -391,12 +399,22 @@ export async function executeMandateHandler(
     if (run.revision !== body.expectedRevision) throw new RepositoryRevisionConflictError();
 
     assertExecutablePlan(run.plan);
-    const operation = () => run.operations[0];
+    if (run.phase !== "TOKENIZATION" && run.phase !== "WHITELIST" && run.phase !== "MINT") {
+      throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+    }
+    const phaseIndex: 0 | 1 | 2 = run.phase === "TOKENIZATION" ? 0 : run.phase === "WHITELIST" ? 1 : 2;
+    const operation = () => run.operations[phaseIndex];
+    
     if (
       run.status === "PREPARING" &&
       operation().stage === "NOT_STARTED"
     ) {
-      run = await api.execution.prepareNextOperation(runId, run.revision);
+      if (run.schemaVersion === "4.0") {
+        if (!api.walletExecution?.prepareOperation) throw new BrickkenWritesDisabledError();
+        run = await api.walletExecution.prepareOperation(runId, run.revision);
+      } else {
+        run = await api.execution.prepareNextOperation(runId, run.revision);
+      }
     }
 
     if (

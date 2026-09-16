@@ -125,7 +125,7 @@ describe("offline browser create → immediate read contract", () => {
     const secondBody = await secondRead.json();
     expect(firstBody).toEqual(secondBody);
     expect(firstBody.manifest).toEqual(body.manifest);
-    expect(firstBody.plan.operations).toHaveLength(2);
+    expect(firstBody.plan.operations).toHaveLength(7);
     expect(firstBody.run.revision).toBe(body.run.revision);
     expect(update).not.toHaveBeenCalled();
   });

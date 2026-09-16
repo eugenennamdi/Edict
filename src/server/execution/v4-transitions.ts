@@ -1,5 +1,4 @@
 import "server-only";
-import { isExecutablePlan } from "./capabilities";
 
 import { canonicalizeJson, hashCanonicalJson, sha256Utf8 } from "@/core";
 import {
@@ -1054,15 +1053,178 @@ export function recordTokenIdentityFromReadBackV4(input: {
     stage: "READ_BACK_VERIFIED",
     verifiedAt: readBack.verifiedAt,
   };
+  const isLegacyFull = run.plan.executionScope === "LEGACY_FULL";
   return appendEvent(
     replaceOperation({
       ...run,
-      phase: isExecutablePlan(run.plan) ? "TOKENIZATION" : "WHITELIST",
-      status: isExecutablePlan(run.plan) ? "SUCCEEDED" : "PREPARING",
+      phase: isLegacyFull ? "WHITELIST" : "TOKENIZATION",
+      status: isLegacyFull ? "PREPARING" : "SUCCEEDED",
       tokenIdentity,
     }, "TOKENIZE", nextOperation),
     { id: input.id, at: readBack.verifiedAt, type: "RECORD_TOKEN_IDENTITY_FROM_READ_BACK" },
     "TOKENIZE",
+  );
+}
+
+export async function recordInitialPreparationV4(input: {
+  readonly run: ExecutionRunV4;
+  readonly kind: OperationKind;
+  readonly txId: string;
+  readonly unsignedTransaction: Record<string, unknown>;
+  readonly attemptId: string;
+  readonly freshnessPolicyVersion: string;
+  readonly id: string;
+  readonly at: IsoUtcTimestamp;
+}): Promise<ExecutionRunV4> {
+  const run = clone(input.run);
+  const operation = run.operations[indexFor(input.kind)];
+  if (
+    operation.stage !== "NOT_STARTED" ||
+    operation.preparationAttempts.length !== 0 ||
+    operation.activePreparationAttemptId !== null ||
+    operation.blockchainTxHash !== null
+  ) {
+    throw new IllegalStateTransitionError();
+  }
+  const attempt = await preparedAttempt({
+    run,
+    kind: input.kind,
+    attemptId: input.attemptId,
+    sequence: 1,
+    txId: input.txId,
+    unsignedTransaction: input.unsignedTransaction,
+    preparedAt: input.at,
+    freshnessPolicyVersion: input.freshnessPolicyVersion,
+  });
+  const nextOperation: WriteOperationV4 = {
+    ...operation,
+    stage: "PREPARED",
+    preparedTxId: input.txId,
+    unsignedTransaction: clone(input.unsignedTransaction),
+    preparedAt: input.at,
+    preparationAttempts: [attempt],
+    activePreparationAttemptId: attempt.attemptId,
+  };
+  return appendEvent(
+    replaceOperation({ ...run, status: "AWAITING_WALLET" }, input.kind, nextOperation),
+    { id: input.id, at: input.at, type: "RECORD_PREPARED" },
+    input.kind,
+    "SERVER",
+  );
+}
+
+export function recordLifecycleReadBackV4(input: {
+  readonly run: ExecutionRunV4;
+  readonly kind: "WHITELIST" | "MINT";
+  readonly at: IsoUtcTimestamp;
+  readonly id: string;
+}): ExecutionRunV4 {
+  const run = clone(input.run);
+  const operation = run.operations[indexFor(input.kind)];
+  const active = operation.activePreparationAttemptId === null
+    ? undefined
+    : operation.preparationAttempts.find((attempt) => attempt.attemptId === operation.activePreparationAttemptId);
+  if (
+    run.status === "RECONCILIATION_REQUIRED" ||
+    operation.stage !== "BRICKKEN_CORRELATED" ||
+    operation.brickkenCorrelation?.lifecycle !== "CORRELATED" ||
+    active?.txId === null ||
+    active?.txId === undefined ||
+    operation.brickkenCorrelation.pair.txId !== active.txId ||
+    operation.blockchainTxHash === null ||
+    operation.brickkenCorrelation.pair.txHash !== operation.blockchainTxHash ||
+    operation.transactionReceiptEvidence?.executionStatus !== "SUCCESS" ||
+    operation.transactionReceiptEvidence.finalityStatus !== "FINALIZED" ||
+    operation.transactionReceiptEvidence.identityStatus !== "MATCH" ||
+    operation.transactionReceiptEvidence.reconciliationStatus !== "CLEAR" ||
+    operation.transactionReceiptEvidence.transactionHash !== operation.blockchainTxHash ||
+    operation.rpcTransactionEvidence?.immutableIdentityStatus !== "MATCH" ||
+    operation.rpcTransactionEvidence.feeAuthorizationStatus !== "WITHIN_ENVELOPE" ||
+    operation.rpcTransactionEvidence.transactionHash !== operation.blockchainTxHash
+  ) {
+    throw new IllegalStateTransitionError();
+  }
+
+  const nextOperation: WriteOperationV4 = {
+    ...operation,
+    stage: "READ_BACK_VERIFIED",
+    verifiedAt: input.at,
+  };
+
+  const isWhitelist = input.kind === "WHITELIST";
+  const nextPhase = isWhitelist ? "MINT" : "VERIFICATION";
+  const nextStatus = isWhitelist ? "PREPARING" : "SUCCEEDED";
+  const readObservation = isWhitelist ? "WHITELIST_STATUS" : "TOKENIZER_INFO+BALANCE_AND_WHITELIST";
+
+  const updatedRun: ExecutionRunV4 = {
+    ...replaceOperation(
+      {
+        ...run,
+        phase: nextPhase,
+        status: nextStatus,
+        receiptEligible: !isWhitelist,
+        observations: [
+          ...run.observations,
+          { operationKind: input.kind, read: readObservation, at: input.at },
+        ],
+      },
+      input.kind,
+      nextOperation,
+    ),
+  };
+
+  return appendEvent(
+    updatedRun,
+    { id: input.id, at: input.at, type: "RECORD_READ_BACK_VERIFIED" },
+    input.kind,
+    "SERVER",
+  );
+}
+
+export function recordReadBackMismatchV4(input: {
+  readonly run: ExecutionRunV4;
+  readonly kind: OperationKind;
+  readonly at: IsoUtcTimestamp;
+  readonly id: string;
+}): ExecutionRunV4 {
+  const run = clone(input.run);
+  const operation = run.operations[indexFor(input.kind)];
+  if (
+    run.terminalOutcome !== null ||
+    operation.stage !== "BRICKKEN_CORRELATED" ||
+    operation.blockchainTxHash === null
+  ) {
+    throw new IllegalStateTransitionError();
+  }
+  return appendEvent(
+    { ...run, status: "FAILED", terminalOutcome: "VERIFICATION_FAILED" },
+    { id: input.id, at: input.at, type: "RECORD_READ_BACK_MISMATCH" },
+    input.kind,
+    "SERVER",
+  );
+}
+
+export function recordUnverifiedFinalityExhaustedV4(input: {
+  readonly run: ExecutionRunV4;
+  readonly kind: OperationKind;
+  readonly at: IsoUtcTimestamp;
+  readonly id: string;
+}): ExecutionRunV4 {
+  const run = clone(input.run);
+  const operation = run.operations[indexFor(input.kind)];
+  if (
+    run.terminalOutcome !== null ||
+    run.status === "RECONCILIATION_REQUIRED" ||
+    operation.blockchainTxHash === null ||
+    operation.stage === "READ_BACK_VERIFIED"
+  ) {
+    throw new IllegalStateTransitionError();
+  }
+  return appendEvent(
+    { ...run, status: "RECONCILIATION_REQUIRED" },
+    { id: input.id, at: input.at, type: "RECORD_UNVERIFIED_FINALITY_EXHAUSTED" },
+    input.kind,
+    "SERVER",
   );
 }
 

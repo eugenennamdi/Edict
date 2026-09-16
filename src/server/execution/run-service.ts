@@ -1,4 +1,4 @@
-import { activePlanScope, assertCurrentMandate, assertExecutableRun } from "./capabilities";
+import { assertCurrentMandate, assertExecutableRun, planScopeForManifest } from "./capabilities";
 import {
   buildExecutionPlanV1,
   hashAssetManifestV1,
@@ -68,9 +68,9 @@ function snapshotPlan(plan: {
   chainId: "11155111";
   requiredSigner: { role: "tokenizer"; walletAddress: string };
   planHash: string;
-}): ExecutionPlanSnapshot {
+}, scope: "TOKENIZE_ONLY" | "LEGACY_FULL"): ExecutionPlanSnapshot {
   return jsonClone({
-    executionScope: "TOKENIZE_ONLY",
+    executionScope: scope,
     planVersion: plan.planVersion,
     manifestHash: plan.manifestHash,
     environment: plan.environment,
@@ -117,14 +117,15 @@ export class ExecutionRunService {
   async createRun(manifest: NormalizedAssetManifestV1): Promise<ExecutionRun> {
     assertCurrentMandate(manifest);
     const { hash: manifestHash } = await hashAssetManifestV1(manifest);
-    const plan = await buildExecutionPlanV1(manifest, activePlanScope());
+    const scope = planScopeForManifest(manifest);
+    const plan = await buildExecutionPlanV1(manifest, scope);
     const createdAt = this.#clock.nowIso();
     const run: ExecutionRun = {
       schemaVersion: "2.0",
       id: this.#ids.runId(),
       manifest: snapshotManifest(manifest),
       manifestHash,
-      plan: snapshotPlan(plan),
+      plan: snapshotPlan(plan, scope),
       planHash: plan.planHash,
       environment: "sandbox",
       chainId: "11155111",

@@ -259,7 +259,7 @@ function assertExecutionProjection(run: PublicRunProjection): void {
     (execution === null &&
       run.approved &&
       run.terminalOutcome === null &&
-      run.phase === "TOKENIZATION" &&
+      ["TOKENIZATION"].includes(run.phase) &&
       expectedPreparationStatus !== null)
   ) throw new Error("PUBLIC_RUN_DTO_INVALID");
 }

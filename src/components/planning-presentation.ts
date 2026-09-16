@@ -7,11 +7,14 @@ export const fields = [
   { name: "supplyCap", path: "asset.supplyCap", label: "Supply cap", section: "asset", hint: "Maximum supply, in whole tokens.", placeholder: "0", type: "text", numeric: true },
   { name: "documentationUrl", path: "asset.documentationUrl", label: "Documentation URL", section: "asset", hint: "An HTTPS document URL without embedded credentials.", placeholder: "https://", type: "url", wide: true },
   { name: "tokenizerWallet", path: "tokenizer.walletAddress", label: "Required signer address", section: "authority", hint: "The tokenizer’s public Ethereum address. No wallet connection needed to plan.", placeholder: "0x…", type: "text", wide: true, mono: true },
+  { name: "investorEmail", path: "investor.email", label: "Investor email", section: "allocation", hint: "Must differ from tokenizer email.", placeholder: "investor@example.com", type: "email" },
+  { name: "investorWallet", path: "investor.walletAddress", label: "Investor wallet address", section: "allocation", hint: "The investor's public Ethereum address for whitelist and mint.", placeholder: "0x…", type: "text", mono: true },
+  { name: "mintAmount", path: "investor.mintAmount", label: "Mint amount", section: "allocation", hint: "Whole tokens, up to the supply cap.", placeholder: "0", type: "text", numeric: true },
 ] as const;
 
 export type FieldName = typeof fields[number]["name"];
 export type Draft = Record<FieldName, string>;
-export const emptyDraft: Draft = { assetName: "", symbol: "", supplyCap: "", documentationUrl: "", tokenizerWallet: "" };
+export const emptyDraft: Draft = { assetName: "", symbol: "", supplyCap: "", documentationUrl: "", tokenizerWallet: "", investorEmail: "", investorWallet: "", mintAmount: "" };
 export function draftForm(draft: Draft) { return { get: (name: string) => draft[name as FieldName] ?? "" }; }
 export function draftIssues(draft: Draft): readonly PlanningIssue[] {
   const result = validateAssetManifestV1(creationRequest(draftForm(draft)).manifest);

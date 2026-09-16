@@ -79,7 +79,7 @@ const manifestSchema = z.object({
 }).strict();
 
 const planSchema = z.object({
-  executionScope: z.literal("TOKENIZE_ONLY").optional(),
+  executionScope: z.enum(["TOKENIZE_ONLY", "LEGACY_FULL"]).optional(),
   planVersion: z.literal("1.0"),
   manifestHash: hash,
   environment: z.literal("sandbox"),

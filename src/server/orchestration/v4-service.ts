@@ -2,7 +2,7 @@ import "server-only";
 import { assertExecutablePlan } from "../execution/capabilities";
 import { TokenizeFreshnessError, validateTokenizeProtocol } from "./tokenize-calldata";
 
-import { buildExecutionPlanV1, canonicalizeJson, hashCanonicalJson, validateAssetManifestV1 } from "@/core";
+import { buildExecutionPlanV1, canonicalizeJson, hashCanonicalJson, sha256Utf8, validateAssetManifestV1 } from "@/core";
 import {
   type SemanticAuthorizationV1,
   type WalletExecutionIntentHash,
@@ -54,11 +54,15 @@ import {
   recordBroadcastHashV4,
   recordBroadcastUnknownV4,
   recordCorrelationUncertainV4,
+  recordInitialPreparationV4,
+  recordLifecycleReadBackV4,
+  recordReadBackMismatchV4,
   recordReprepareOutcomeV4,
   recordRepreparedV4,
   recordRpcReceiptEvidenceV4,
   recordRpcTransactionV4,
   recordTokenIdentityFromReadBackV4,
+  recordUnverifiedFinalityExhaustedV4,
   recordWalletPromptAuthorizationV4,
   recordWalletRejectedV4,
   upgradePreparedRunToV4,
@@ -178,7 +182,7 @@ export interface ExecutionV4OrchestratorDependencies {
   readonly brickkenStatusFetcher?: BrickkenStatusFetcher;
   readonly brickkenReadBack?: Pick<
     BrickkenServerAdapter,
-    "getTokenInfo" | "getTokenizerInfo"
+    "getTokenInfo" | "getTokenizerInfo" | "getWhitelistStatus" | "getBalanceAndWhitelist"
   >;
   readonly brickkenTokenizerEmail?: string;
   readonly brickkenPrepare?: Pick<
@@ -288,14 +292,26 @@ function getActiveAttempt(operation: WriteOperationV4): PreparationAttemptV1 {
 async function validatedRunPlan(run: ExecutionRun) {
   const manifest = validateAssetManifestV1(run.manifest);
   if (!manifest.ok) throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
-  const plan = await buildExecutionPlanV1(manifest.value, run.plan.executionScope === "TOKENIZE_ONLY" ? "TOKENIZE_ONLY" : "LEGACY_FULL");
+  const plan = await buildExecutionPlanV1(
+    manifest.value,
+    run.plan.executionScope === "TOKENIZE_ONLY" ? "TOKENIZE_ONLY" : "LEGACY_FULL",
+  );
   if (plan.manifestHash !== run.manifestHash || plan.planHash !== run.planHash) {
     throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
   }
   return { manifest: manifest.value, plan };
 }
 
-function assertPreparedMatchesRun(run: ExecutionRun, prepared: PreparedOperation): void {
+function sameAddress(left: string | null | undefined, right: string | null | undefined): boolean {
+  return left !== null && left !== undefined && right !== null && right !== undefined &&
+    left.toLowerCase() === right.toLowerCase();
+}
+
+function assertPreparedMatchesRun(
+  run: ExecutionRun,
+  prepared: PreparedOperation,
+  kind: OperationKind,
+): void {
   const transaction = prepared.transaction;
   if (
     transaction.normalizedChainId !== run.chainId ||
@@ -303,6 +319,13 @@ function assertPreparedMatchesRun(run: ExecutionRun, prepared: PreparedOperation
     transaction.to === null ||
     transaction.data === null
   ) {
+    throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+  }
+  if (kind === "TOKENIZE") return;
+  if (run.schemaVersion !== "4.0" || run.tokenIdentity === null) {
+    throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+  }
+  if (!sameAddress(transaction.to, run.tokenIdentity.tokenAddress)) {
     throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
   }
 }
@@ -338,6 +361,96 @@ export class ExecutionV4Orchestrator {
     this.#statusFetcher =
       deps.brickkenStatusFetcher ?? new DisabledBrickkenStatusFetcher();
     this.#readBack = deps.brickkenReadBack;
+  }
+
+  async #evaluateLifecycleAuth(
+    run: ExecutionRunV4,
+    kind: "WHITELIST" | "MINT",
+    attempt: PreparationAttemptV1,
+  ): Promise<{ authorized: true; semanticAuthorization: SemanticAuthorizationV1 } | { authorized: false; reason: string }> {
+    if (
+      run.environment !== "sandbox" || run.chainId !== "11155111" ||
+      attempt.immutableIdentity === null || attempt.feeAuthorization === null ||
+      attempt.txId === null || attempt.preparationFingerprint === null ||
+      run.tokenIdentity === null || run.approval === null
+    ) {
+      return { authorized: false, reason: "MALFORMED_DURABLE_STATE" };
+    }
+
+    try {
+      await validatedRunPlan(run);
+    } catch {
+      return { authorized: false, reason: "PLAN_MISMATCH" };
+    }
+
+    if (
+      run.approval.planHash !== run.planHash ||
+      run.approval.approvedByWallet !== run.requiredSigner.walletAddress
+    ) {
+      return { authorized: false, reason: "APPROVAL_MISMATCH" };
+    }
+
+    if (run.operations[0].stage !== "READ_BACK_VERIFIED") {
+      return { authorized: false, reason: "PREPARATION_MISMATCH" };
+    }
+    if (kind === "MINT" && run.operations[1].stage !== "READ_BACK_VERIFIED") {
+      return { authorized: false, reason: "PREPARATION_MISMATCH" };
+    }
+
+    const identity = attempt.immutableIdentity;
+    const destination = identity.to;
+    const selector = identity.data.slice(0, 10);
+    if (
+      !sameAddress(identity.from, run.requiredSigner.walletAddress) ||
+      identity.chainId !== "11155111" ||
+      BigInt(identity.value) !== 0n ||
+      !sameAddress(destination, run.tokenIdentity.tokenAddress) ||
+      !/^0x[0-9a-f]{8}$/.test(selector)
+    ) {
+      return { authorized: false, reason: "DESTINATION_NOT_ALLOWED" };
+    }
+
+    const calldataCommitment = await sha256Utf8(identity.data);
+    const brickkenMethod = kind === "WHITELIST" ? "whitelistUser" : "mintToken";
+    const operation = run.operations[kind === "WHITELIST" ? 1 : 2];
+
+    const authorizationId = (await hashCanonicalJson({
+      domain: `edict.${kind.toLowerCase()}-semantic-authorization.v1`,
+      runId: run.id,
+      runRevision: run.revision,
+      manifestHash: run.manifestHash,
+      planHash: run.planHash,
+      operation: { id: operation.id, kind },
+      preparationAttemptId: attempt.attemptId,
+      preparedTxId: attempt.txId,
+      preparationFingerprint: attempt.preparationFingerprint,
+      calldataCommitment,
+      brickkenMethod,
+      destination,
+      selector,
+    })).hash;
+
+    return {
+      authorized: true,
+      semanticAuthorization: {
+        authorizationVersion: "1.0",
+        policyVersion: `edict-${kind.toLowerCase()}-semantic-v1`,
+        authorizationId,
+        environment: "sandbox",
+        brickkenMethod,
+        executionMode: "client-broadcast",
+        destinationPolicy: {
+          policyId: `edict-${kind.toLowerCase()}-destination-v1`,
+          reviewedDestination: destination,
+        },
+        selectorPolicy: {
+          policyId: `edict-${kind.toLowerCase()}-selector-v1`,
+          reviewedSelector: selector,
+        },
+        calldataCommitment,
+        decision: "ALLOW",
+      },
+    };
   }
 
   async #validateProtocol(run: ExecutionRun, unsigned: Record<string, unknown>): Promise<void> {
@@ -548,6 +661,103 @@ export class ExecutionV4Orchestrator {
     )) as ExecutionRunV4;
   }
 
+  async prepareOperation(
+    runId: string,
+    expectedRevision: number,
+  ): Promise<ExecutionRunV4> {
+    this.#deps.writeGate?.assertEnabled("PREPARE");
+
+    const current = await this.#deps.repository.getById(runId);
+    assertRevision(current, expectedRevision);
+    assertV4(current);
+
+    const { kind, operation: op } = deriveActiveOperation(current);
+    if (
+      current.status !== "PREPARING" ||
+      op.stage !== "NOT_STARTED" ||
+      op.blockchainTxHash !== null
+    ) {
+      throw new IllegalStateTransitionError();
+    }
+
+    assertExecutablePlan(current.plan);
+    const { manifest } = await validatedRunPlan(current);
+
+    if (!this.#deps.brickkenPrepare) {
+      throw new OrchestrationError("BRICKKEN_OPERATION_FAILED");
+    }
+
+    let result: AdapterResult<PreparedOperation>;
+    try {
+      if (kind === "TOKENIZE") {
+        result = await this.#deps.brickkenPrepare.prepareTokenization({
+          signerAddress: current.requiredSigner.walletAddress,
+          name: manifest.asset.name,
+          tokenSymbol: manifest.asset.symbol,
+          supplyCap: manifest.asset.supplyCap,
+          documentationUrl: manifest.asset.documentationUrl,
+        });
+      } else if (kind === "WHITELIST") {
+        if (!manifest.investor) throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+        result = await this.#deps.brickkenPrepare.prepareWhitelist({
+          signerAddress: current.requiredSigner.walletAddress,
+          tokenSymbol: manifest.asset.symbol,
+          investorAddress: manifest.investor.walletAddress,
+          investorEmail: manifest.investor.email,
+        });
+      } else {
+        if (!manifest.investor) throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+        const whitelistOp = current.operations[1];
+        if (whitelistOp.stage !== "READ_BACK_VERIFIED" || whitelistOp.preparedTxId === null) {
+          throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+        }
+        result = await this.#deps.brickkenPrepare.prepareMint(
+          {
+            signerAddress: current.requiredSigner.walletAddress,
+            tokenSymbol: manifest.asset.symbol,
+            investorAddress: manifest.investor.walletAddress,
+            investorEmail: manifest.investor.email,
+            amount: manifest.investor.mintAmount,
+          },
+          {
+            runId: current.id,
+            whitelistTxId: whitelistOp.preparedTxId,
+            stage: "READ_BACK_VERIFIED",
+            investorWalletAddress: manifest.investor.walletAddress,
+            isWhitelisted: true,
+            source: "blockchain",
+          },
+        );
+      }
+    } catch (error) {
+      if (error instanceof OrchestrationError) throw error;
+      throw new OrchestrationError("BRICKKEN_OPERATION_FAILED");
+    }
+
+    if (!result.ok) {
+      throw new OrchestrationError("BRICKKEN_OPERATION_FAILED");
+    }
+
+    assertPreparedMatchesRun(current, result.value, kind);
+    const now = this.#deps.clock.nowIso();
+    const nextRun = await recordInitialPreparationV4({
+      run: current,
+      kind,
+      txId: result.value.txId,
+      unsignedTransaction: result.value.transaction.rawUnsigned,
+      attemptId: this.#deps.ids.operationId(),
+      freshnessPolicyVersion: "edict-freshness-v1",
+      id: this.#deps.ids.eventId(),
+      at: now,
+    });
+
+    return (await this.#deps.repository.update(
+      runId,
+      expectedRevision,
+      nextRun,
+    )) as ExecutionRunV4;
+  }
+
   async reprepareOperation(
     runId: string,
     expectedRevision: number,
@@ -590,9 +800,37 @@ export class ExecutionV4Orchestrator {
           supplyCap: manifest.asset.supplyCap,
           documentationUrl: manifest.asset.documentationUrl,
         });
+      } else if (kind === "WHITELIST") {
+        if (!manifest.investor) throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+        result = await this.#deps.brickkenPrepare.prepareWhitelist({
+          signerAddress: current.requiredSigner.walletAddress,
+          tokenSymbol: manifest.asset.symbol,
+          investorAddress: manifest.investor.walletAddress,
+          investorEmail: manifest.investor.email,
+        });
       } else {
-        await this.recordReprepareOutcome(runId, intentRun.revision, "REFUSED");
-        throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+        if (!manifest.investor) throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+        const whitelistOp = current.operations[1];
+        if (whitelistOp.stage !== "READ_BACK_VERIFIED" || whitelistOp.preparedTxId === null) {
+          throw new OrchestrationError("EXECUTION_INVARIANT_FAILED");
+        }
+        result = await this.#deps.brickkenPrepare.prepareMint(
+          {
+            signerAddress: current.requiredSigner.walletAddress,
+            tokenSymbol: manifest.asset.symbol,
+            investorAddress: manifest.investor.walletAddress,
+            investorEmail: manifest.investor.email,
+            amount: manifest.investor.mintAmount,
+          },
+          {
+            runId: current.id,
+            whitelistTxId: whitelistOp.preparedTxId,
+            stage: "READ_BACK_VERIFIED",
+            investorWalletAddress: manifest.investor.walletAddress,
+            isWhitelisted: true,
+            source: "blockchain",
+          },
+        );
       }
     } catch (error) {
       if (error instanceof OrchestrationError) throw error;
@@ -627,7 +865,7 @@ export class ExecutionV4Orchestrator {
 
     // CAS 2: transition to PREPARED with fresh txId + unsigned transaction
     try {
-      assertPreparedMatchesRun(current, result.value);
+      assertPreparedMatchesRun(current, result.value, kind);
       return await this.recordReprepared(
         runId,
         intentRun.revision,
@@ -706,7 +944,7 @@ export class ExecutionV4Orchestrator {
       });
     }
 
-    if (this.#semanticAuth.requiresProtocolValidation) {
+    if (kind === "TOKENIZE" && this.#semanticAuth.requiresProtocolValidation) {
       try {
         await this.#validateProtocol(current, active.unsignedTransaction!);
       } catch (err) {
@@ -725,11 +963,13 @@ export class ExecutionV4Orchestrator {
         };
       }
     }
-    const semanticResult = await this.#semanticAuth.evaluate({
-      run: current,
-      kind,
-      attempt: active,
-    });
+    
+    let semanticResult: Awaited<ReturnType<SemanticAuthorizationEvaluator['evaluate']>>;
+    if (kind === "TOKENIZE") {
+      semanticResult = await this.#semanticAuth.evaluate({ run: current, kind, attempt: active });
+    } else {
+      semanticResult = await this.#evaluateLifecycleAuth(current, kind, active);
+    }
 
     if (!semanticResult.authorized) {
       return Object.freeze({
@@ -830,10 +1070,9 @@ export class ExecutionV4Orchestrator {
     assertExecutablePlan(current.plan);
 
     let currentRevision = expectedRevision;
-    const activeOp = deriveActiveOperation(current);
-    const { kind } = activeOp;
-    if (kind !== "TOKENIZE") throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
-    let op = activeOp.operation;
+    let derived = deriveActiveOperation(current);
+    const { kind } = derived;
+    let op = derived.operation;
 
     // Sequential CAS: if still in PREPARED, record prompt authorization (CAS 1)
     if (op.stage === "PREPARED") {
@@ -894,7 +1133,7 @@ export class ExecutionV4Orchestrator {
         promptRun,
       )) as ExecutionRunV4;
       currentRevision = current.revision;
-      const derived = deriveActiveOperation(current);
+      derived = deriveActiveOperation(current);
       op = derived.operation;
     }
 
@@ -914,10 +1153,13 @@ export class ExecutionV4Orchestrator {
       const f = releasePreflight.freshness;
       if (f?.nonceEvidence && ["STALE_NONCE", "PRICE_REPORT_EXPIRED", "PRICE_REPORT_TOO_CLOSE_TO_EXPIRY"].includes(f.outcome)) {
         const active = getActiveAttempt(op);
+        const activeIdx = derived.index;
         const noPrompt = {
           ...current,
-          operations: [ { ...current.operations[0], stage: "PREPARED", walletPromptAuthorization: null, walletPromptAt: null }, current.operations[1], current.operations[2] ],
-        } as ExecutionRunV4;
+          operations: current.operations.map((o, i) =>
+            i === activeIdx ? { ...o, stage: "PREPARED", walletPromptAuthorization: null, walletPromptAt: null } : o
+          ),
+        } as unknown as ExecutionRunV4;
         const stale = await markPreparedStaleV4({ run: noPrompt, kind,
           foundation: { attemptId: active.attemptId, freshnessPolicyVersion: active.freshnessPolicyVersion },
           nonceEvidence: f.nonceEvidence, staleReason: f.outcome === "STALE_NONCE" ? "NONCE_MISMATCH" : "PRICE_REPORT_EXPIRED",
@@ -930,8 +1172,14 @@ export class ExecutionV4Orchestrator {
     // This transient projection is never written as PREPARED. One final CAS
     // stores the refreshed evidence and the sole authority winner together.
     const active = getActiveAttempt(op);
+    const activeIdx = derived.index;
     current = await recordWalletPromptAuthorizationV4({
-      run: { ...current, operations: [{ ...current.operations[0], stage: "PREPARED", walletPromptAuthorization: null }, current.operations[1], current.operations[2]] } as ExecutionRunV4,
+      run: {
+        ...current,
+        operations: current.operations.map((o, i) =>
+          i === activeIdx ? { ...o, stage: "PREPARED", walletPromptAuthorization: null } : o
+        ),
+      } as unknown as ExecutionRunV4,
       kind, foundation: { attemptId: active.attemptId, freshnessPolicyVersion: active.freshnessPolicyVersion },
       nonceEvidence: releasePreflight.freshness.nonceEvidence,
       semanticAuthorization: releasePreflight.semanticAuthorization,
@@ -989,6 +1237,15 @@ export class ExecutionV4Orchestrator {
     ) {
       throw new IllegalStateTransitionError();
     }
+    if (
+      kind !== "TOKENIZE" &&
+      (updatedRun.tokenIdentity === null ||
+        !sameAddress(request.to, updatedRun.tokenIdentity.tokenAddress) ||
+        request.value !== "0x0")
+    ) {
+      throw new OrchestrationError("AUTHORIZATION_POLICY_REFUSED");
+    }
+
     const envelope = parseSendAuthorizedEnvelopeV1({
       domain: "edict.send-authorized-envelope.v1",
       expectedRevision: updatedRun.revision,
@@ -1866,12 +2123,18 @@ export class ExecutionV4Orchestrator {
     assertRevision(current, expectedRevision);
     assertV4(current);
 
+    if (
+      current.phase === "VERIFICATION" ||
+      current.terminalOutcome !== null ||
+      current.status === "RECONCILIATION_REQUIRED"
+    ) {
+      return { run: current };
+    }
+
     const { operation: initialOp } = deriveActiveOperation(current);
     if (
       initialOp.blockchainTxHash === null ||
-      initialOp.stage === "READ_BACK_VERIFIED" ||
-      current.terminalOutcome !== null ||
-      current.status === "RECONCILIATION_REQUIRED"
+      initialOp.stage === "READ_BACK_VERIFIED"
     ) {
       return { run: current };
     }
@@ -1887,23 +2150,38 @@ export class ExecutionV4Orchestrator {
     assertRevision(current, expectedRevision);
     assertV4(current);
 
+    if (
+      current.phase === "VERIFICATION" ||
+      current.terminalOutcome !== null ||
+      current.status === "RECONCILIATION_REQUIRED"
+    ) {
+      throw new IllegalStateTransitionError();
+    }
+
     const { operation: initialOp } = deriveActiveOperation(current);
     if (initialOp.blockchainTxHash === null) {
       throw new IllegalStateTransitionError();
     }
 
-    if (
-      current.terminalOutcome !== null ||
-      current.status === "RECONCILIATION_REQUIRED" ||
-      initialOp.stage === "READ_BACK_VERIFIED"
-    ) {
+    if (initialOp.stage === "READ_BACK_VERIFIED") {
       throw new IllegalStateTransitionError();
     }
     const trackingEvents = current.events.filter((event) => event.type === "TRACK_EXECUTION_RESERVED");
     const now = this.#deps.clock.nowIso();
     const last = trackingEvents.at(-1);
     const isFinalized = initialOp.transactionReceiptEvidence?.finalityStatus === "FINALIZED";
-    if (!isFinalized && (trackingEvents.length >= 30 || (last && Date.parse(now) - Date.parse(last.at) < 2000))) {
+    if (trackingEvents.length >= 30 || (!isFinalized && last && Date.parse(now) - Date.parse(last.at) < 2000)) {
+      if (isFinalized) {
+        const exhausted = recordUnverifiedFinalityExhaustedV4({
+          run: current,
+          kind: deriveActiveOperation(current).kind,
+          at: now,
+          id: this.#deps.ids.eventId(),
+        });
+        return {
+          run: (await this.#deps.repository.update(runId, current.revision, exhausted)) as ExecutionRunV4,
+        };
+      }
       throw new OrchestrationError("TRACKING_BUDGET_EXHAUSTED");
     }
     // Reserve before RPC, including failed/missing-transaction polls. Revision
@@ -1911,7 +2189,7 @@ export class ExecutionV4Orchestrator {
     current = await this.#deps.repository.update(runId, current.revision, {
       ...current, updatedAt: now, events: [...current.events, {
         id: this.#deps.ids.eventId(), sequence: current.events.length + 1,
-        type: "TRACK_EXECUTION_RESERVED", at: now, actor: "SERVER", operationKind: "TOKENIZE",
+        type: "TRACK_EXECUTION_RESERVED", at: now, actor: "SERVER", operationKind: deriveActiveOperation(current).kind,
       }],
     }) as ExecutionRunV4;
 
@@ -2017,10 +2295,41 @@ export class ExecutionV4Orchestrator {
       currentOp.rpcTransactionEvidence?.immutableIdentityStatus === "MATCH" &&
       currentOp.rpcTransactionEvidence.feeAuthorizationStatus === "WITHIN_ENVELOPE"
     ) {
-      current = await this.recordTokenIdentityFromReadBack(
-        runId,
-        current.revision,
+      current = await this.#completeReadBackOrFailClosed(
+        current,
+        () => this.recordTokenIdentityFromReadBack(runId, current.revision),
       );
+      if (current.terminalOutcome === null && current.status !== "RECONCILIATION_REQUIRED") {
+        currentOp = deriveActiveOperation(current).operation;
+      }
+    }
+
+    if (
+      this.#readBack !== undefined &&
+      (current.phase === "WHITELIST" || current.phase === "MINT") &&
+      current.status !== "RECONCILIATION_REQUIRED" &&
+      current.terminalOutcome === null &&
+      currentOp.stage === "BRICKKEN_CORRELATED" &&
+      currentOp.transactionReceiptEvidence?.executionStatus === "SUCCESS" &&
+      currentOp.transactionReceiptEvidence.finalityStatus === "FINALIZED" &&
+      currentOp.rpcTransactionEvidence?.immutableIdentityStatus === "MATCH" &&
+      currentOp.rpcTransactionEvidence.feeAuthorizationStatus === "WITHIN_ENVELOPE"
+    ) {
+      current = await this.#completeReadBackOrFailClosed(
+        current,
+        () => this.recordLifecycleReadBack(
+          runId,
+          current.revision,
+          deriveActiveOperation(current).kind as "WHITELIST" | "MINT",
+        ),
+      );
+      if (
+        current.phase !== "VERIFICATION" &&
+        current.terminalOutcome === null &&
+        current.status !== "RECONCILIATION_REQUIRED"
+      ) {
+        currentOp = deriveActiveOperation(current).operation;
+      }
     }
 
     return {
@@ -2030,6 +2339,31 @@ export class ExecutionV4Orchestrator {
       correlationResult,
       statusResult,
     };
+  }
+
+  async #completeReadBackOrFailClosed(
+    current: ExecutionRunV4,
+    verify: () => Promise<ExecutionRunV4>,
+  ): Promise<ExecutionRunV4> {
+    try {
+      return await verify();
+    } catch (error) {
+      const code = error instanceof OrchestrationError ? error.code : null;
+      if (code === "READ_BACK_MISMATCH" || code === "READ_BACK_BINDING_UNRESOLVED") {
+        const failed = recordReadBackMismatchV4({
+          run: current,
+          kind: deriveActiveOperation(current).kind,
+          at: this.#deps.clock.nowIso(),
+          id: this.#deps.ids.eventId(),
+        });
+        return (await this.#deps.repository.update(
+          current.id,
+          current.revision,
+          failed,
+        )) as ExecutionRunV4;
+      }
+      throw error;
+    }
   }
 
   async recordTokenIdentityFromReadBack(
@@ -2174,7 +2508,7 @@ export class ExecutionV4Orchestrator {
       tokenizer.tokenAddress.toLowerCase() ===
         "0x0000000000000000000000000000000000000000"
     ) {
-      throw new OrchestrationError("READ_BACK_FAILED");
+      throw new OrchestrationError("READ_BACK_MISMATCH");
     }
 
     const verifiedAt = this.#deps.clock.nowIso();
@@ -2202,6 +2536,116 @@ export class ExecutionV4Orchestrator {
       },
       id: this.#deps.ids.eventId(),
     });
+    return (await this.#deps.repository.update(
+      runId,
+      expectedRevision,
+      nextRun,
+    )) as ExecutionRunV4;
+  }
+
+  async recordLifecycleReadBack(
+    runId: string,
+    expectedRevision: number,
+    kind: "WHITELIST" | "MINT",
+  ): Promise<ExecutionRunV4> {
+    if (this.#readBack === undefined) {
+      throw new OrchestrationError("READ_BACK_FAILED");
+    }
+
+    const current = await this.#deps.repository.getById(runId);
+    assertRevision(current, expectedRevision);
+    assertV4(current);
+
+    if (current.phase !== kind) {
+      throw new IllegalStateTransitionError();
+    }
+
+    const derived = deriveActiveOperation(current);
+    const op = derived.operation;
+    if (
+      current.status === "RECONCILIATION_REQUIRED" ||
+      op.stage !== "BRICKKEN_CORRELATED" ||
+      op.brickkenCorrelation?.lifecycle !== "CORRELATED" ||
+      op.transactionReceiptEvidence?.executionStatus !== "SUCCESS" ||
+      op.transactionReceiptEvidence.finalityStatus !== "FINALIZED" ||
+      op.rpcTransactionEvidence?.immutableIdentityStatus !== "MATCH" ||
+      op.rpcTransactionEvidence.feeAuthorizationStatus !== "WITHIN_ENVELOPE"
+    ) {
+      throw new IllegalStateTransitionError();
+    }
+
+    assertExecutablePlan(current.plan);
+    const { manifest } = await validatedRunPlan(current);
+    if (!manifest.investor) {
+      throw new OrchestrationError("READ_BACK_FAILED");
+    }
+
+    if (kind === "WHITELIST") {
+      if (!this.#readBack.getWhitelistStatus) {
+        throw new OrchestrationError("READ_BACK_FAILED");
+      }
+      const whitelist = await this.#readBack.getWhitelistStatus({
+        tokenSymbol: manifest.asset.symbol,
+        address: manifest.investor.walletAddress,
+      });
+      if (!whitelist.ok) {
+        throw new OrchestrationError("READ_BACK_FAILED");
+      }
+      if (
+        whitelist.value.source !== "blockchain" ||
+        whitelist.value.tokenSymbol !== manifest.asset.symbol ||
+        !sameAddress(whitelist.value.address, manifest.investor.walletAddress)
+      ) {
+        throw new OrchestrationError("READ_BACK_MISMATCH");
+      }
+      if (!whitelist.value.isWhitelisted) {
+        throw new OrchestrationError("READ_BACK_FAILED");
+      }
+    } else {
+      if (!this.#readBack.getTokenizerInfo || !this.#readBack.getBalanceAndWhitelist) {
+        throw new OrchestrationError("READ_BACK_FAILED");
+      }
+      const [tokenizer, balance] = await Promise.all([
+        this.#readBack.getTokenizerInfo({ tokenSymbol: manifest.asset.symbol }),
+        this.#readBack.getBalanceAndWhitelist({
+          tokenSymbol: manifest.asset.symbol,
+          investorEmail: manifest.investor.email,
+        }),
+      ]);
+      if (!tokenizer.ok || !balance.ok) {
+        throw new OrchestrationError("READ_BACK_FAILED");
+      }
+      if (
+        !sameAddress(balance.value.walletAddress, manifest.investor.walletAddress) ||
+        !sameAddress(balance.value.tokenAddress, tokenizer.value.tokenAddress) ||
+        (current.tokenIdentity !== null &&
+          !sameAddress(balance.value.tokenAddress, current.tokenIdentity.tokenAddress))
+      ) {
+        throw new OrchestrationError("READ_BACK_MISMATCH");
+      }
+      const decimals = balance.value.tokenDecimals;
+      const expectedRaw =
+        Number.isSafeInteger(decimals) && decimals >= 0 && decimals <= 255
+          ? (BigInt(manifest.investor.mintAmount) * 10n ** BigInt(decimals)).toString()
+          : null;
+      if (
+        expectedRaw === null ||
+        balance.value.tokenBalanceRaw !== expectedRaw ||
+        !balance.value.isWhitelisted ||
+        balance.value.balanceSource !== "blockchain"
+      ) {
+        throw new OrchestrationError("READ_BACK_FAILED");
+      }
+    }
+
+    const now = this.#deps.clock.nowIso();
+    const nextRun = recordLifecycleReadBackV4({
+      run: current,
+      kind,
+      at: now,
+      id: this.#deps.ids.eventId(),
+    });
+
     return (await this.#deps.repository.update(
       runId,
       expectedRevision,

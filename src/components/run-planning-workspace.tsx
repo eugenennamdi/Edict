@@ -452,9 +452,10 @@ export default function RunPlanningWorkspace({
                     acceptDurableRun={workspace.acceptDurableRun}
                   />
                   <WalletExecutionSection
-                    key={view.run.id}
+                    key={`${view.run.id}-${view.run.phase}`}
                     run={view.run}
-                    onRefresh={async () => { await workspace.refresh(); }}
+                    onRefresh={() => workspace.pullLatest()}
+                    onTrackedRun={workspace.applyDurableRun}
                   />
                 </div>
               )

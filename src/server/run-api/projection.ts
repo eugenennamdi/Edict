@@ -39,29 +39,41 @@ function operationProjection(operation: ExecutionRun["operations"][number]) {
   };
 }
 
+function activeWriteOperation(run: ExecutionRun) {
+  if (run.phase === "WHITELIST") return run.operations[1];
+  if (run.phase === "MINT") return run.operations[2];
+  return run.operations[0];
+}
+
+function staleReprepareEligible(op: ExecutionRun["operations"][number]): boolean {
+  if (op.stage !== "PREPARED_STALE" || op.blockchainTxHash !== null) return false;
+  if ("walletPromptAuthorization" in op && op.walletPromptAuthorization !== null) return false;
+  if (!("preparationAttempts" in op) || !Array.isArray(op.preparationAttempts)) return false;
+  return op.preparationAttempts.length < 2;
+}
+
 async function projectedRun(run: ExecutionRun): Promise<PublicRunProjection> {
-  const execution = await deriveExecutionPreparationProjection(run);
+  const execution = run.phase === "TOKENIZATION" ? await deriveExecutionPreparationProjection(run) : null;
   return parsePublicRunMutationResponse({
     ok: true,
     run: {
       executablePlan: isExecutablePlan(run.plan),
-      executeEligible: isExecutablePlan(run.plan) && run.approval !== null &&
-        run.phase === "TOKENIZATION" && run.terminalOutcome === null &&
-        ["PREPARING", "AWAITING_WALLET"].includes(run.status) &&
-        run.operations[0].blockchainTxHash === null && (
-          ["NOT_STARTED", "PREPARED"].includes(run.operations[0].stage) ||
-          (run.operations[0].stage === "PREPARED_STALE" && execution?.reprepareEligible === true) ||
-          (run.schemaVersion === "4.0" && run.operations[0].stage === "WALLET_PROMPT_RECORDED" &&
-            run.operations[0].walletPromptAuthorization?.providerInvocation === "PROVEN_NOT_INVOKED")
-        ),
-      trackingRemaining: Math.max(
-        run.schemaVersion === "4.0" &&
-          run.operations[0].transactionReceiptEvidence?.finalityStatus === "FINALIZED" &&
-          run.operations[0].stage !== "READ_BACK_VERIFIED"
-          ? 1
-          : 0,
-        30 - run.events.filter((event) => event.type === "TRACK_EXECUTION_RESERVED").length,
-      ),
+      executeEligible: (() => {
+        if (!isExecutablePlan(run.plan) || run.approval === null || run.terminalOutcome !== null) return false;
+        if (!["PREPARING", "AWAITING_WALLET"].includes(run.status)) return false;
+        if (run.phase !== "TOKENIZATION" && run.phase !== "WHITELIST" && run.phase !== "MINT") return false;
+        const op = activeWriteOperation(run);
+        if (op.blockchainTxHash !== null) return false;
+        const walletPromptAuthorization = "walletPromptAuthorization" in op ? op.walletPromptAuthorization : null;
+        return ["NOT_STARTED", "PREPARED"].includes(op.stage) ||
+          (op.stage === "PREPARED_STALE" && staleReprepareEligible(op)) ||
+          (run.schemaVersion === "4.0" && op.stage === "WALLET_PROMPT_RECORDED" &&
+            walletPromptAuthorization?.providerInvocation === "PROVEN_NOT_INVOKED");
+      })(),
+      trackingRemaining: (() => {
+        if (run.phase !== "TOKENIZATION" && run.phase !== "WHITELIST" && run.phase !== "MINT") return 0;
+        return Math.max(0, 30 - run.events.filter((event) => event.type === "TRACK_EXECUTION_RESERVED").length);
+      })(),
       tokenizationResult: run.schemaVersion === "4.0" && run.tokenIdentity !== null ? {
         tokenAddress: run.tokenIdentity.tokenAddress,
         escrowAddress: run.tokenIdentity.escrowAddress ?? null,

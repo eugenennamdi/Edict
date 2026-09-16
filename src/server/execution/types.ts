@@ -94,7 +94,7 @@ export interface ExecutionManifestSnapshot {
 }
 
 export interface ExecutionPlanSnapshot {
-  readonly executionScope?: "TOKENIZE_ONLY";
+  readonly executionScope?: "TOKENIZE_ONLY" | "LEGACY_FULL";
   readonly planVersion: "1.0";
   readonly manifestHash: string;
   readonly environment: "sandbox";

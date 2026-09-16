@@ -42,6 +42,7 @@ export interface RunApiRuntime {
     | "trackExecution"
     | "reconcileSubmittedRun"
     | "reprepareOperation"
+    | "prepareOperation"
   >;
   readonly nowIso: () => string;
 }
@@ -78,18 +79,20 @@ export function createRunApiRuntime(): RunApiRuntime {
   const preparationEnabled = executionEnabled && getServerEnv().EDICT_TRANSACTION_PREPARATION_ENABLED === "1";
   const ids = cryptoIdGenerator();
   const clock = systemClock();
+  const execution = new ExecutionOrchestrator({
+    repository,
+    runs,
+    brickken,
+    writeGate: createPreparationOnlyBrickkenWriteGate(preparationEnabled),
+    brickkenTokenizerEmail: brickkenConfig.tokenizerEmail ?? "",
+  });
+
   return Object.freeze({
     runs,
     executionEnabled,
     access: new RunAccessService({ mac, clock: systemTokenClock, nonces: cryptoNonceSource }),
     approvals: new WalletApprovalService({ mac, clock: systemTokenClock, nonces: cryptoNonceSource }),
-    execution: new ExecutionOrchestrator({
-      repository,
-      runs,
-      brickken,
-      writeGate: createPreparationOnlyBrickkenWriteGate(preparationEnabled),
-      brickkenTokenizerEmail: brickkenConfig.tokenizerEmail ?? "",
-    }),
+    execution,
     walletExecution: new ExecutionV4Orchestrator({
       repository,
       clock,

@@ -197,3 +197,69 @@ describe("verified tokenization result", () => {
     expect(html).not.toContain("Choose the wallet");
   });
 });
+
+describe("post-submit progress stepper", () => {
+  it("renders real progress stepper with external link and reassurance copy when tracking", () => {
+    const base = fixture();
+    const txHash = `0x${"42".repeat(32)}`;
+    const trackingRun = fixture({
+      schemaVersion: "4.0",
+      status: "CONFIRMING",
+      operations: [
+        { ...base.operations[0], stage: "RPC_TRANSACTION_VERIFIED", blockchainTxHash: txHash },
+        base.operations[1],
+        base.operations[2],
+      ],
+    });
+
+    const html = renderToStaticMarkup(createElement(WalletExecutionSection, { run: trackingRun, onRefresh: async () => undefined }));
+    expect(html).toContain("Transaction submitted");
+    expect(html).toContain("Included on Ethereum Sepolia");
+    expect(html).toContain("Finalizing — 1 / 2 required confirmations");
+    expect(html).toContain("Verifying lifecycle state");
+    expect(html).toContain("No action required. Edict will continue automatically.");
+    expect(html).toContain(`https://sepolia.etherscan.io/tx/${txHash}`);
+  });
+
+  it("transitions active step to read-back verification when finalized", () => {
+    const base = fixture();
+    const txHash = `0x${"42".repeat(32)}`;
+    const finalizedRun = fixture({
+      schemaVersion: "4.0",
+      status: "CONFIRMING",
+      operations: [
+        { ...base.operations[0], stage: "BRICKKEN_CORRELATED", blockchainTxHash: txHash },
+        base.operations[1],
+        base.operations[2],
+      ],
+    });
+
+    const html = renderToStaticMarkup(createElement(WalletExecutionSection, { run: finalizedRun, onRefresh: async () => undefined }));
+    expect(html).toContain("Transaction submitted");
+    expect(html).toContain("Included on Ethereum Sepolia");
+    expect(html).toContain("Finalized on Ethereum Sepolia");
+    expect(html).toContain("Verifying lifecycle state");
+    expect(html).toContain("Waiting for Brickken verification...");
+  });
+
+  it("shows a longer wait message in source and a clear verification-failure attention state", () => {
+    const source = fs.readFileSync(path.resolve(__dirname, "wallet-execution-verification.ts"), "utf8");
+    expect(source).toContain("Waiting for Brickken verification...");
+    expect(source).toContain("Verification is taking longer than expected. Edict is still checking automatically.");
+    const base = fixture();
+    const failed = fixture({
+      schemaVersion: "4.0",
+      status: "FAILED",
+      terminalOutcome: "VERIFICATION_FAILED",
+      operations: [
+        { ...base.operations[0], stage: "BRICKKEN_CORRELATED", blockchainTxHash: `0x${"42".repeat(32)}` },
+        base.operations[1],
+        base.operations[2],
+      ],
+    });
+    const html = renderToStaticMarkup(createElement(WalletExecutionSection, { run: failed, onRefresh: async () => undefined }));
+    expect(html).toContain("Needs attention");
+    expect(html).toContain("contradicted the approved mandate");
+    expect(html).not.toContain("Waiting for Brickken verification...");
+  });
+});

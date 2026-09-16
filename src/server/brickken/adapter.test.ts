@@ -97,7 +97,7 @@ describe("Brickken server adapter", () => {
     }
   });
 
-  it("prepares whitelist without needKyc", async () => {
+  it("prepares whitelist with needKyc: false for sandbox", async () => {
     const bodies: unknown[] = [];
     const adapter = createBrickkenServerAdapter({
       fetch: async (_input, init) => {
@@ -113,10 +113,9 @@ describe("Brickken server adapter", () => {
       investorEmail: "investor@example.com",
     });
     expect(result.ok).toBe(true);
-    expect(JSON.stringify(bodies[0])).not.toContain("needKyc");
     expect(bodies[0]).toMatchObject({
       method: "whitelist",
-      userToWhitelist: [{ whitelistStatus: true, investorEmail: "investor@example.com" }],
+      userToWhitelist: [{ whitelistStatus: true, investorEmail: "investor@example.com", needKyc: false }],
     });
   });
 
@@ -155,7 +154,7 @@ describe("Brickken server adapter", () => {
     expect(allowed.ok).toBe(true);
     expect(bodies[0]).toMatchObject({
       method: "mintToken",
-      userToMint: [{ needWhitelist: false, amount: "25" }],
+      userToMint: [{ needWhitelist: false, needKyc: false, amount: "25" }],
     });
   });
 

@@ -5,6 +5,7 @@ export type OrchestrationErrorCode =
   | "BRICKKEN_OPERATION_FAILED"
   | "EXECUTION_INVARIANT_FAILED"
   | "READ_BACK_FAILED"
+  | "READ_BACK_MISMATCH"
   | "READ_BACK_BINDING_UNRESOLVED"
   | "AUTHORIZATION_DENIED"
   | "AUTHORIZATION_POLICY_REFUSED"
@@ -30,6 +31,7 @@ export class OrchestrationError extends Error {
       BRICKKEN_OPERATION_FAILED: "The sandbox operation did not complete safely.",
       EXECUTION_INVARIANT_FAILED: "The persisted run does not match its approved plan.",
       READ_BACK_FAILED: "The sandbox read-back could not be verified.",
+      READ_BACK_MISMATCH: "Sandbox read-back contradicted the approved mandate.",
       READ_BACK_BINDING_UNRESOLVED:
         "The deployed token address cannot be bound to the finalized tokenization transaction.",
       AUTHORIZATION_DENIED: "Semantic authorization denied execution of the requested operation.",

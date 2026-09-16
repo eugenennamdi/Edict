@@ -108,6 +108,11 @@ describe("run API HTTP boundaries", () => {
     expect(body.plan.operations.map((operation: { id: string }) => operation.id)).toEqual([
       "tokenize",
       "confirm-tokenization",
+      "whitelist-investor",
+      "confirm-whitelist",
+      "mint",
+      "confirm-mint",
+      "verify-deployment",
     ]);
     expect(body.run.revision).toBe(1);
     expect(text).not.toContain("publicSignature");
@@ -349,6 +354,7 @@ describe("V4 browser wallet run routes", () => {
       trackExecution: vi.fn(async () => ({ run: durable as never })),
       reconcileSubmittedRun: vi.fn(async () => ({ run: durable as never })),
       reprepareOperation: vi.fn(async () => durable as never),
+      prepareOperation: vi.fn(async () => durable as never),
     };
     const runtime: RunApiRuntime = { ...api, walletExecution };
     const options = { config, runtime: () => runtime };

@@ -14,7 +14,7 @@ export function creationRequest(form: Pick<FormData, "get">) {
   const investorEmail = text("investorEmail");
   const investorWallet = text("investorWallet");
   const mintAmount = text("mintAmount");
-  const hasInvestor = investorEmail !== "" || investorWallet !== "" || mintAmount !== "";
+  const hasInvestor = investorEmail.trim() !== "" || investorWallet.trim() !== "" || mintAmount.trim() !== "";
 
   return {
     manifest: {
@@ -409,6 +409,41 @@ export function createPlanningWorkspace(
     }
   }
 
+  function applyDurableRun(run: PublicRunProjection): boolean {
+    if (!state.view) return false;
+    try {
+      const view = mergeDurableRun(state.view, run);
+      update({
+        view,
+        error: null,
+        errorCode: null,
+        retrievedAt: new Date().toISOString(),
+        preparationUnconfirmed: false,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function pullLatest(): Promise<void> {
+    const previous = state.view;
+    if (!previous) return;
+    try {
+      const view = readProjection(await request(transport, runPath(previous)), previous);
+      if (state.view?.run.id !== previous.run.id) return;
+      update({
+        view,
+        error: null,
+        errorCode: null,
+        retrievedAt: new Date().toISOString(),
+        preparationUnconfirmed: false,
+      });
+    } catch {
+      // Poller retries; leave the displayed durable run in place.
+    }
+  }
+
   return {
     create: (form: Pick<FormData, "get">) => act("create", form),
     recover,
@@ -416,5 +451,7 @@ export function createPlanningWorkspace(
     cancel: () => act("cancel"),
     prepareNextOperation: () => act("prepare"),
     acceptDurableRun,
+    applyDurableRun,
+    pullLatest,
   };
 }
