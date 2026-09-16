@@ -73,7 +73,8 @@ export function GlobalWalletProvider({ children }: { readonly children: ReactNod
     if (
       !sessionRef.current ||
       sessionRef.current.provider !== rawProvider ||
-      sessionRef.current.connectorId !== connector.id
+      sessionRef.current.connectorId !== connector.id ||
+      !sessionRef.current.session.isAvailable()
     ) {
       if (sessionRef.current) {
         sessionRef.current.session.dispose();

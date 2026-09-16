@@ -232,6 +232,34 @@ describe("wallet execution product surface", () => {
     });
   });
 
+  it("handles pre-submission wallet boundary failures with retryAllowed=true and resets prompt", () => {
+    for (const code of [
+      "PROVIDER_UNAVAILABLE",
+      "SELECTED_PROVIDER_DISAPPEARED",
+      "WALLET_DISCONNECTED",
+      "ATTEMPT_INVALIDATED",
+      "PRE_SEND_ABORTED",
+      "EXECUTION_FAILED",
+    ]) {
+      const detail = classifyWalletExecutionErrorDetail(code);
+      expect(detail.onChainSubmission).toBe("NO");
+      expect(detail.retryAllowed).toBe(true);
+
+      const failure = classifyWalletExecutionFailure(code);
+      expect(failure.refresh).toBe(false);
+      expect(failure.event).toEqual({ type: "RESET_PROMPT" });
+    }
+
+    const ready = reduceWalletExecutionUi(
+      initialWalletExecutionUiModel,
+      { type: "LOCAL_STATE", state: "READY" },
+    );
+    const inProgress = reduceWalletExecutionUi(ready, { type: "START" });
+    expect(inProgress.inProgress).toBe(true);
+    const reset = reduceWalletExecutionUi(inProgress, { type: "RESET_PROMPT" });
+    expect(reset).toEqual({ state: "READY", locked: false, inProgress: false });
+  });
+
   it("projects budget exhausted stale run as Needs attention and forbids execution", () => {
     const base = fixture();
     const exhaustedRun = fixture({

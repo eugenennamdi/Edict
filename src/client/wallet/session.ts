@@ -296,6 +296,23 @@ export class SelectedWalletSession {
     return () => this.#listeners.delete(listener);
   }
 
+  get isDisposed(): boolean {
+    return this.#disposed;
+  }
+
+  isAvailable(): boolean {
+    if (this.#disposed) return false;
+    try {
+      return (
+        dataMethod(this.#provider, "request") === this.#requestReference &&
+        dataMethod(this.#provider, "on") === this.#onReference &&
+        dataMethod(this.#provider, "removeListener") === this.#removeListenerReference
+      );
+    } catch {
+      return false;
+    }
+  }
+
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
@@ -311,16 +328,7 @@ export class SelectedWalletSession {
   }
 
   #assertAvailable(): void {
-    if (this.#disposed) {
-      throw new WalletBoundaryError("SELECTED_PROVIDER_DISAPPEARED");
-    }
-    try {
-      if (
-        dataMethod(this.#provider, "request") !== this.#requestReference ||
-        dataMethod(this.#provider, "on") !== this.#onReference ||
-        dataMethod(this.#provider, "removeListener") !== this.#removeListenerReference
-      ) throw new Error("provider mutated");
-    } catch {
+    if (this.#disposed || !this.isAvailable()) {
       throw new WalletBoundaryError("SELECTED_PROVIDER_DISAPPEARED");
     }
   }

@@ -98,6 +98,18 @@ describe("selected wallet account and chain session", () => {
     await expect(session.inspect(SIGNER)).rejects.toMatchObject({
       code: "SELECTED_PROVIDER_DISAPPEARED",
     });
+    expect(session.isAvailable()).toBe(false);
+  });
+
+  it("reports availability correctly across lifecycle and disposal", () => {
+    const provider = new Provider();
+    const session = new SelectedWalletSession("wallet-1", "EIP6963", provider);
+    expect(session.isDisposed).toBe(false);
+    expect(session.isAvailable()).toBe(true);
+
+    session.dispose();
+    expect(session.isDisposed).toBe(true);
+    expect(session.isAvailable()).toBe(false);
   });
 
   it("rolls back listeners when registration fails partway", () => {

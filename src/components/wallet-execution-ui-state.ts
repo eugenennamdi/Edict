@@ -23,6 +23,7 @@ export interface WalletExecutionUiModel {
 export type WalletExecutionUiEvent =
   | Readonly<{ type: "LOCAL_STATE"; state: WalletExecutionViewState }>
   | Readonly<{ type: "START" }>
+  | Readonly<{ type: "RESET_PROMPT" }>
   | Readonly<{ type: "AUTHORIZATION_UNAVAILABLE" }>
   | Readonly<{ type: "AUTHORIZATION_POLICY_REFUSED" }>
   | Readonly<{ type: "FRESHNESS_CHECK_FAILED" }>
@@ -149,6 +150,42 @@ export function classifyWalletExecutionErrorDetail(
       retryAllowed: false,
     });
   }
+  if (code === "PROVIDER_UNAVAILABLE" || code === "SELECTED_PROVIDER_DISAPPEARED") {
+    return Object.freeze({
+      title: "Wallet provider unavailable",
+      description: "The connected wallet provider was disconnected or modified by the browser. No on-chain transaction was submitted.",
+      onChainSubmission: "NO",
+      nextStep: "Ensure your wallet extension is unlocked and on Sepolia, then click Confirm in wallet to try again.",
+      retryAllowed: true,
+    });
+  }
+  if (code === "WALLET_DISCONNECTED") {
+    return Object.freeze({
+      title: "Wallet disconnected",
+      description: "Your wallet disconnected before transaction confirmation could be completed. No on-chain transaction was submitted.",
+      onChainSubmission: "NO",
+      nextStep: "Reconnect your wallet and click Confirm in wallet.",
+      retryAllowed: true,
+    });
+  }
+  if (code === "ATTEMPT_INVALIDATED" || code === "PRE_SEND_ABORTED") {
+    return Object.freeze({
+      title: "Confirmation interrupted",
+      description: "Wallet state changed or confirmation timed out before submission. No on-chain transaction was submitted.",
+      onChainSubmission: "NO",
+      nextStep: "Click Confirm in wallet to try again.",
+      retryAllowed: true,
+    });
+  }
+  if (code === "EXECUTION_FAILED") {
+    return Object.freeze({
+      title: "Wallet prompt failed",
+      description: "The wallet interaction failed before an on-chain transaction could be submitted.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction was submitted to the network. Click Confirm in wallet to try again.",
+      retryAllowed: true,
+    });
+  }
   return Object.freeze({
     title: "Execution halted",
     description: "Edict stopped before submitting an on-chain transaction because an invariant or response could not be verified.",
@@ -193,6 +230,25 @@ export function classifyWalletExecutionFailure(code: string): Readonly<{
   ].includes(code)) {
     return Object.freeze({ event: Object.freeze({ type: "REFRESH_REQUIRED" }), refresh: true });
   }
+  if ([
+    "TRANSACTION_REJECTED",
+    "PROVIDER_UNAVAILABLE",
+    "SELECTED_PROVIDER_DISAPPEARED",
+    "WALLET_DISCONNECTED",
+    "ATTEMPT_INVALIDATED",
+    "PRE_SEND_ABORTED",
+    "REQUIRED_ACCOUNT_UNAVAILABLE",
+    "ACCOUNT_AUTHORIZATION_REJECTED",
+    "WRONG_CHAIN",
+    "CHAIN_SWITCH_REJECTED",
+    "CHAIN_SWITCH_UNSUPPORTED",
+    "EXECUTION_FAILED",
+  ].includes(code)) {
+    return Object.freeze({
+      event: Object.freeze({ type: "RESET_PROMPT" }),
+      refresh: false,
+    });
+  }
   return Object.freeze({
     event: Object.freeze({ type: "LOCAL_STATE", state: "REQUIRED_SIGNER_UNAVAILABLE" }),
     refresh: false,
@@ -209,6 +265,9 @@ export function reduceWalletExecutionUi(
   current: WalletExecutionUiModel,
   event: WalletExecutionUiEvent,
 ): WalletExecutionUiModel {
+  if (event.type === "RESET_PROMPT") {
+    return Object.freeze({ state: "READY", locked: false, inProgress: false });
+  }
   if (event.type === "LOCAL_STATE") {
     return current.locked || current.inProgress
       ? current
