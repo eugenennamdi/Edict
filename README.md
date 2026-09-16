@@ -297,3 +297,9 @@ AI was used for implementation assistance, code review, debugging, testing, and 
 ## Documentation
 
 - [`docs/CORE_DOMAIN_SPEC.md`](docs/CORE_DOMAIN_SPEC.md): Canonical asset manifest, normalization rules, SHA-256 identity derivations, and deterministic execution plan specification.
+
+---
+
+## License
+
+Licensed under the Apache License 2.0. See [LICENSE](./LICENSE).
