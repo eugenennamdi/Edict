@@ -37,9 +37,17 @@ import {
 } from "./v4-service";
 import {
   BRICKKEN_NONCE_MISMATCH_STRING,
+  BrickkenAdapterError,
   type BrickkenServerAdapter,
   type BrickkenTransactionLocator,
 } from "../brickken";
+import type {
+  AdapterResult,
+  BalanceWhitelistView,
+  TokenInfoView,
+  TokenizerInfoView,
+  WhitelistStatusView,
+} from "../brickken/types";
 import {
   ERC1967_IMPLEMENTATION_SLOT,
   NEW_TOKENIZATION_EVENT_TOPIC,
@@ -228,7 +236,7 @@ class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo"
   isWhitelisted = true;
   tokenBalanceRaw = (25n * 10n ** 18n).toString();
 
-  async getTokenInfo(query: { tokenSymbol: string }) {
+  async getTokenInfo(query: { tokenSymbol: string }): Promise<AdapterResult<TokenInfoView>> {
     this.tokenCalls += 1;
     return {
       ok: true as const,
@@ -245,7 +253,7 @@ class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo"
     };
   }
 
-  async getTokenizerInfo() {
+  async getTokenizerInfo(): Promise<AdapterResult<TokenizerInfoView>> {
     this.tokenizerCalls += 1;
     return {
       ok: true as const,
@@ -259,7 +267,7 @@ class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo"
     };
   }
 
-  async getWhitelistStatus(query: { tokenSymbol: string; address: string }) {
+  async getWhitelistStatus(query: { tokenSymbol: string; address: string }): Promise<AdapterResult<WhitelistStatusView>> {
     this.whitelistCalls += 1;
     return {
       ok: true as const,
@@ -272,7 +280,7 @@ class FakeBrickkenReadBack implements Pick<BrickkenServerAdapter, "getTokenInfo"
     };
   }
 
-  async getBalanceAndWhitelist(query: { tokenSymbol: string; investorEmail: string }) {
+  async getBalanceAndWhitelist(query: { tokenSymbol: string; investorEmail: string }): Promise<AdapterResult<BalanceWhitelistView>> {
     this.balanceCalls += 1;
     void query.investorEmail;
     return {
@@ -345,6 +353,8 @@ function createHarness(options: {
       return "0x0000000000000000000000003333333333333333333333333333333333333333";
     }
     if (data.startsWith("0x313ce567")) return `0x${"0".repeat(62)}12`;
+    if (data.startsWith("0x91d14854")) return `0x${"0".repeat(63)}1`;
+    if (data.startsWith("0x70a08231")) return `0x${(BigInt(25) * 10n ** 18n).toString(16).padStart(64, "0")}`;
     if (data.startsWith("0xf3d02cfd")) return "0x";
     if (data.startsWith("0x7ecebe00")) return `0x${"0".repeat(63)}1`;
     return "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000003333333333333333333333333333333333333333";
@@ -3799,6 +3809,354 @@ describe("pre-live audit regressions", () => {
       expect(tracked.run.terminalOutcome).toBe("VERIFICATION_FAILED");
       expect(tracked.run.operations[1].stage).toBe("BRICKKEN_CORRELATED");
       expect(brickkenPrepare.prepareMint).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Part P: Fast On-Chain Verification with Decoupled Brickken Corroboration", () => {
+    it("advances TOKENIZE to WHITELIST immediately when Brickken indexing is delayed or unavailable", async () => {
+      const h = createHarness({ readBack: true });
+      // Brickken indexing is delayed / returns not found
+      h.readBack.getTokenInfo = async () => ({
+        ok: false as const,
+        error: new BrickkenAdapterError("UPSTREAM_SERVER_ERROR", "Not found"),
+      });
+      h.readBack.getTokenizerInfo = async () => ({
+        ok: false as const,
+        error: new BrickkenAdapterError("UPSTREAM_SERVER_ERROR", "Not found"),
+      });
+
+      const run = await setupFinalizedCorrelatedRun(h, "success");
+      expect(run.phase).toBe("WHITELIST");
+      expect(run.status).toBe("PREPARING");
+      expect(run.operations[0].stage).toBe("READ_BACK_VERIFIED");
+      expect(run.tokenIdentity).toMatchObject({
+        tokenAddress: TOKEN_ADDRESS,
+        tokenizationTxHash: TX_HASH,
+        tokenizerWalletAddress: TOKENIZER_ADDRESS,
+      });
+      expect(run.tokenIdentity?.readBackEvidenceHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    });
+
+    it("advances WHITELIST to MINT immediately when Brickken whitelist status is delayed", async () => {
+      const brickkenPrepare = {
+        prepareTokenization: vi.fn(),
+        prepareWhitelist: vi.fn(async () => ({
+          ok: true as const,
+          value: {
+            txId: "brickken-wl-1",
+            executionMode: "client-broadcast" as const,
+            transaction: {
+              from: TOKENIZER_ADDRESS,
+              to: TOKEN_ADDRESS,
+              data: "0x11223344",
+              value: "0x0",
+              nonce: "0x5",
+              type: "0x2",
+              gasLimit: "0x100",
+              maxFeePerGas: "0x20",
+              maxPriorityFeePerGas: "0x4",
+              gasPrice: null,
+              normalizedChainId: "11155111" as const,
+              chainId: "0xaa36a7",
+              rawUnsigned: {
+                from: TOKENIZER_ADDRESS,
+                to: TOKEN_ADDRESS,
+                data: "0x11223344",
+                value: "0x0",
+                nonce: "0x5",
+                type: "0x2",
+                gasLimit: "0x100",
+                maxFeePerGas: "0x20",
+                maxPriorityFeePerGas: "0x4",
+                chainId: "0xaa36a7",
+              },
+            },
+          },
+        })),
+        prepareMint: vi.fn(),
+      };
+      const h = createHarness({ readBack: true, brickkenPrepare });
+      const wlPendingRun = await setupFinalizedCorrelatedRun(h, "success");
+      const wlPrepared = await h.v4.prepareOperation(wlPendingRun.id, wlPendingRun.revision);
+      const wlAuthority = await h.v4.releaseSendAuthority(wlPrepared.id, wlPrepared.revision);
+      const wlBroadcastHash = "0x" + "a".repeat(64);
+      const wlBroadcast = await h.v4.ingestBroadcastHash(wlAuthority.run.id, {
+        expectedRevision: wlAuthority.run.revision,
+        invocationAttemptId: wlAuthority.envelope.invocationAttemptId,
+        walletIntentHash: wlAuthority.envelope.walletIntentHash,
+        txHash: wlBroadcastHash,
+      });
+
+      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+        hash: wlBroadcastHash,
+        chainId: "0xaa36a7",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        input: "0x11223344",
+        value: "0x0",
+        nonce: "0x5",
+        type: "0x2",
+        gas: "0x100",
+        gasPrice: null,
+        maxFeePerGas: "0x20",
+        maxPriorityFeePerGas: "0x4",
+        accessList: [],
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+      }));
+      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+        transactionHash: wlBroadcastHash,
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        cumulativeGasUsed: "0x50",
+        gasUsed: "0x50",
+        effectiveGasPrice: "0x15",
+        contractAddress: null,
+        type: "0x2",
+        status: "0x1",
+        logs: [],
+      }));
+      h.correlationSender.response = {
+        status: 202,
+        data: {
+          results: [{
+            result: {
+              transactionHash: wlBroadcastHash,
+              status: "pending" as const,
+              executionMode: "client-broadcast" as const,
+            },
+          }],
+        },
+      };
+      h.statusFetcher.response = {
+        status: 200,
+        data: { status: "success", transactionHash: wlBroadcastHash },
+      };
+
+      // Brickken whitelist read-back is delayed / fails
+      h.readBack.getWhitelistStatus = async () => ({
+        ok: false as const,
+        error: new BrickkenAdapterError("UPSTREAM_SERVER_ERROR", "Upstream server error"),
+      });
+
+      const tracked = await h.v4.trackExecution(wlBroadcast.id, wlBroadcast.revision);
+      expect(tracked.run.phase).toBe("MINT");
+      expect(tracked.run.status).toBe("PREPARING");
+      expect(tracked.run.operations[1].stage).toBe("READ_BACK_VERIFIED");
+      expect(tracked.run.receiptEligible).toBe(false);
+    });
+
+    it("completes lifecycle (MINT to SUCCEEDED) immediately when Brickken balance indexing is delayed", async () => {
+      const brickkenPrepare = {
+        prepareTokenization: vi.fn(),
+        prepareWhitelist: vi.fn(async () => ({
+          ok: true as const,
+          value: {
+            txId: "brickken-wl-1",
+            executionMode: "client-broadcast" as const,
+            transaction: {
+              from: TOKENIZER_ADDRESS,
+              to: TOKEN_ADDRESS,
+              data: "0x11223344",
+              value: "0x0",
+              nonce: "0x5",
+              type: "0x2",
+              gasLimit: "0x100",
+              maxFeePerGas: "0x20",
+              maxPriorityFeePerGas: "0x4",
+              gasPrice: null,
+              normalizedChainId: "11155111" as const,
+              chainId: "0xaa36a7",
+              rawUnsigned: {
+                from: TOKENIZER_ADDRESS,
+                to: TOKEN_ADDRESS,
+                data: "0x11223344",
+                value: "0x0",
+                nonce: "0x5",
+                type: "0x2",
+                gasLimit: "0x100",
+                maxFeePerGas: "0x20",
+                maxPriorityFeePerGas: "0x4",
+                chainId: "0xaa36a7",
+              },
+            },
+          },
+        })),
+        prepareMint: vi.fn(async () => ({
+          ok: true as const,
+          value: {
+            txId: "brickken-mint-1",
+            executionMode: "client-broadcast" as const,
+            transaction: {
+              from: TOKENIZER_ADDRESS,
+              to: TOKEN_ADDRESS,
+              data: "0x55667788",
+              value: "0x0",
+              nonce: "0x5",
+              type: "0x2",
+              gasLimit: "0x100",
+              maxFeePerGas: "0x20",
+              maxPriorityFeePerGas: "0x4",
+              gasPrice: null,
+              normalizedChainId: "11155111" as const,
+              chainId: "0xaa36a7",
+              rawUnsigned: {
+                from: TOKENIZER_ADDRESS,
+                to: TOKEN_ADDRESS,
+                data: "0x55667788",
+                value: "0x0",
+                nonce: "0x5",
+                type: "0x2",
+                gasLimit: "0x100",
+                maxFeePerGas: "0x20",
+                maxPriorityFeePerGas: "0x4",
+                chainId: "0xaa36a7",
+              },
+            },
+          },
+        })),
+      };
+
+      const h = createHarness({ readBack: true, brickkenPrepare });
+      const wlPendingRun = await setupFinalizedCorrelatedRun(h, "success");
+      const wlPrepared = await h.v4.prepareOperation(wlPendingRun.id, wlPendingRun.revision);
+      const wlAuthority = await h.v4.releaseSendAuthority(wlPrepared.id, wlPrepared.revision);
+      const wlBroadcastHash = "0x" + "a".repeat(64);
+      const wlBroadcast = await h.v4.ingestBroadcastHash(wlAuthority.run.id, {
+        expectedRevision: wlAuthority.run.revision,
+        invocationAttemptId: wlAuthority.envelope.invocationAttemptId,
+        walletIntentHash: wlAuthority.envelope.walletIntentHash,
+        txHash: wlBroadcastHash,
+      });
+
+      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+        hash: wlBroadcastHash,
+        chainId: "0xaa36a7",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        input: "0x11223344",
+        value: "0x0",
+        nonce: "0x5",
+        type: "0x2",
+        gas: "0x100",
+        gasPrice: null,
+        maxFeePerGas: "0x20",
+        maxPriorityFeePerGas: "0x4",
+        accessList: [],
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+      }));
+      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+        transactionHash: wlBroadcastHash,
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        cumulativeGasUsed: "0x50",
+        gasUsed: "0x50",
+        effectiveGasPrice: "0x15",
+        contractAddress: null,
+        type: "0x2",
+        status: "0x1",
+        logs: [],
+      }));
+      h.correlationSender.response = {
+        status: 202,
+        data: {
+          results: [{
+            result: {
+              transactionHash: wlBroadcastHash,
+              status: "pending" as const,
+              executionMode: "client-broadcast" as const,
+            },
+          }],
+        },
+      };
+      h.statusFetcher.response = {
+        status: 200,
+        data: { status: "success", transactionHash: wlBroadcastHash },
+      };
+
+      const wlTracked = await h.v4.trackExecution(wlBroadcast.id, wlBroadcast.revision);
+      expect(wlTracked.run.phase).toBe("MINT");
+
+      const mintPrepared = await h.v4.prepareOperation(wlTracked.run.id, wlTracked.run.revision);
+      const mintAuthority = await h.v4.releaseSendAuthority(mintPrepared.id, mintPrepared.revision);
+      const mintBroadcastHash = "0x" + "b".repeat(64);
+      const mintBroadcast = await h.v4.ingestBroadcastHash(mintAuthority.run.id, {
+        expectedRevision: mintAuthority.run.revision,
+        invocationAttemptId: mintAuthority.envelope.invocationAttemptId,
+        walletIntentHash: mintAuthority.envelope.walletIntentHash,
+        txHash: mintBroadcastHash,
+      });
+
+      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+        hash: mintBroadcastHash,
+        chainId: "0xaa36a7",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        input: "0x55667788",
+        value: "0x0",
+        nonce: "0x5",
+        type: "0x2",
+        gas: "0x100",
+        gasPrice: null,
+        maxFeePerGas: "0x20",
+        maxPriorityFeePerGas: "0x4",
+        accessList: [],
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+      }));
+      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+        transactionHash: mintBroadcastHash,
+        blockHash: FINALIZED_BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+        from: TOKENIZER_ADDRESS,
+        to: TOKEN_ADDRESS,
+        cumulativeGasUsed: "0x50",
+        gasUsed: "0x50",
+        effectiveGasPrice: "0x15",
+        contractAddress: null,
+        type: "0x2",
+        status: "0x1",
+        logs: [],
+      }));
+      h.correlationSender.response = {
+        status: 202,
+        data: {
+          results: [{
+            result: {
+              transactionHash: mintBroadcastHash,
+              status: "pending" as const,
+              executionMode: "client-broadcast" as const,
+            },
+          }],
+        },
+      };
+      h.statusFetcher.response = {
+        status: 200,
+        data: { status: "success", transactionHash: mintBroadcastHash },
+      };
+
+      // Brickken balance read-back is delayed / fails
+      h.readBack.getBalanceAndWhitelist = async () => ({
+        ok: false as const,
+        error: new BrickkenAdapterError("UPSTREAM_SERVER_ERROR", "Upstream server error"),
+      });
+
+      const mintTracked = await h.v4.trackExecution(mintBroadcast.id, mintBroadcast.revision);
+      expect(mintTracked.run.phase).toBe("VERIFICATION");
+      expect(mintTracked.run.status).toBe("SUCCEEDED");
+      expect(mintTracked.run.operations[2].stage).toBe("READ_BACK_VERIFIED");
+      expect(mintTracked.run.receiptEligible).toBe(true);
     });
   });
 });

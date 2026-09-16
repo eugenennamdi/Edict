@@ -147,6 +147,76 @@ describe("FeeAuthorizationV1", () => {
     }).accepted).toBe(true);
   });
 
+  it("enforces bounded 3 gwei priority-fee ceiling and total network fee ceiling", () => {
+    // Normal Brickken prepared transaction with typical low priority fee (~0.00115 gwei)
+    const bounded = createServerBoundedFeeAuthorizationV1({
+      gasLimit: "0x4a6f7",
+      maxFeePerGas: "0xa284b18c",
+      maxPriorityFeePerGas: "0x118c30",
+    });
+
+    // 3 gwei is 3_000_000_000 wei = 0xb2d05e00
+    expect(bounded.authorizedCaps.maxPriorityFeePerGas).toBe("0xb2d05e00");
+
+    // 1. <= 3 gwei accepted when all other envelope limits pass:
+    // - Sepolia wallet adjustment (~2.159 gwei = 0x80b14f63)
+    const walletAdjusted = evaluateFeeAuthorizationV1(bounded, {
+      transactionType: "0x2",
+      gasLimit: "0x43ab2",
+      gasPrice: "0x110a73b30",
+      maxFeePerGas: "0x14fd7a882",
+      maxPriorityFeePerGas: "0x80b14f63", // ~2.159 gwei
+      accessList: [],
+    });
+    expect(walletAdjusted.accepted).toBe(true);
+
+    // - Exactly 3 gwei (0xb2d05e00)
+    const exact3Gwei = evaluateFeeAuthorizationV1(bounded, {
+      transactionType: "0x2",
+      gasLimit: "0x43ab2",
+      gasPrice: "0x110a73b30",
+      maxFeePerGas: "0x14fd7a882",
+      maxPriorityFeePerGas: "0xb2d05e00", // 3.0 gwei
+      accessList: [],
+    });
+    expect(exact3Gwei.accepted).toBe(true);
+
+    // 2. > 3 gwei still rejected:
+    // - 3 gwei + 1 wei (0xb2d05e01)
+    const aboveCap = evaluateFeeAuthorizationV1(bounded, {
+      transactionType: "0x2",
+      gasLimit: "0x43ab2",
+      gasPrice: "0x110a73b30",
+      maxFeePerGas: "0x14fd7a882",
+      maxPriorityFeePerGas: "0xb2d05e01", // 3 gwei + 1 wei
+      accessList: [],
+    });
+    expect(aboveCap).toEqual({ accepted: false, code: "PRIORITY_FEE_CAP_EXCEEDED" });
+
+    // - 3.1 gwei (0xb8d77e00)
+    const farAboveCap = evaluateFeeAuthorizationV1(bounded, {
+      transactionType: "0x2",
+      gasLimit: "0x43ab2",
+      gasPrice: "0x110a73b30",
+      maxFeePerGas: "0x14fd7a882",
+      maxPriorityFeePerGas: "0xb8d77e00", // 3.1 gwei
+      accessList: [],
+    });
+    expect(farAboveCap).toEqual({ accepted: false, code: "PRIORITY_FEE_CAP_EXCEEDED" });
+
+    // 3. Total network fee ceiling still enforced:
+    // If gasLimit * maxFeePerGas > authorizedCaps.maximumNetworkFeeWei
+    const feeCeilingExceeded = evaluateFeeAuthorizationV1(bounded, {
+      transactionType: "0x2",
+      gasLimit: bounded.authorizedCaps.gasLimit,
+      gasPrice: "0x110a73b30",
+      maxFeePerGas: `0x${(BigInt(bounded.authorizedCaps.maxFeePerGas) + 1n).toString(16)}`,
+      maxPriorityFeePerGas: "0xb2d05e00",
+      accessList: [],
+    });
+    expect(feeCeilingExceeded.accepted).toBe(false);
+  });
+
   it("classifies the exact mined OKX type-0x2 shape by bounded caps, never by gasPrice", () => {
     const historical = feeAuthorizationV1Schema.parse({
       authorizationVersion: "1.0",

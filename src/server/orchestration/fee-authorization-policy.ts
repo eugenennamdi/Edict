@@ -12,7 +12,7 @@ export const SERVER_FEE_AUTHORIZATION_POLICY_V1 = Object.freeze({
   gasLimitAbsoluteCeiling: 8_000_000n,
   maxFeePerGasFloor: 3_000_000_000n,
   maxFeePerGasAbsoluteCeiling: 10_000_000_000n,
-  maxPriorityFeePerGasFloor: 2_000_000_000n,
+  maxPriorityFeePerGasFloor: 3_000_000_000n,
   maxPriorityFeePerGasAbsoluteCeiling: 3_000_000_000n,
   maximumNetworkFeeAbsoluteCeiling: 100_000_000_000_000_000n,
 });

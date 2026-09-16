@@ -1,6 +1,7 @@
 "use client";
 
-import type { Dispatch, SetStateAction } from "react";
+import { useEffect, type Dispatch, type SetStateAction } from "react";
+import { useGlobalWallet } from "@/client/wallet/global-wallet-context";
 import type { PlanningIssue } from "./run-planning";
 import { fields, issueMessage, type Draft, type FieldName } from "./planning-presentation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,13 +26,13 @@ const sections = [
     id: "asset",
     number: "01",
     title: "Asset Intent",
-    description: "Define the underlying real-world asset and token economics.",
+    description: "Define the asset and token parameters Edict will execute.",
   },
   {
     id: "authority",
     number: "02",
     title: "Signing Authority",
-    description: "Identify the cryptographic signing address for this tokenization run.",
+    description: "Choose the address authorized to execute this mandate.",
   },
 ] as const;
 
@@ -71,6 +72,16 @@ export function MandateForm({
   unavailable: boolean;
   onSubmit: () => void;
 }) {
+  const wallet = useGlobalWallet();
+
+  useEffect(() => {
+    if (wallet.isConnected && wallet.address && !draft.tokenizerWallet) {
+      setDraft((prev) => (prev.tokenizerWallet ? prev : { ...prev, tokenizerWallet: wallet.address ?? "" }));
+    }
+  }, [wallet.isConnected, wallet.address, draft.tokenizerWallet, setDraft]);
+
+  const hasAnyAllocation = draft.investorEmail.trim() !== "" || draft.investorWallet.trim() !== "" || draft.mintAmount.trim() !== "";
+
   return (
     <form
       id="mandate-form"
@@ -83,29 +94,29 @@ export function MandateForm({
       aria-busy={pending}
       className="space-y-6"
     >
-      <div className="flex items-center justify-between px-1 text-xs">
-        <div className="flex items-center gap-1.5">
+      <div className="flex items-center justify-between px-0.5 text-xs">
+        <div className="flex items-center gap-2">
           <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-foreground">
-            MANDATE
+            MANDATE SPECIFICATION
           </span>
-          <span className="text-muted-foreground/60">-</span>
-          <span className="text-muted-foreground font-medium">Specification Stage</span>
+          <span className="text-muted-foreground/40">/</span>
+          <span className="text-xs text-muted-foreground">Asset and allocation parameters</span>
         </div>
-        <span className="text-xs text-muted-foreground font-mono">All 5 fields required</span>
+        <span className="text-[11px] text-muted-foreground font-mono">5 required</span>
       </div>
 
       {sections.map((section) => (
-        <Card key={section.id} id={`section-${section.id}`} className="shadow-xs">
-          <CardHeader className="pb-4">
+        <Card key={section.id} id={`section-${section.id}`} className="border-border/70 bg-card/90 shadow-2xs">
+          <CardHeader className="pb-3 pt-5 px-5">
             <div className="flex items-center gap-2.5">
-              <Badge variant="secondary" className="font-mono text-xs font-semibold px-2 py-0.5">
+              <Badge variant="secondary" className="font-mono text-[11px] font-semibold px-2 py-0.5 border-border/60">
                 {section.number}
               </Badge>
-              <CardTitle className="text-base font-semibold">{section.title}</CardTitle>
+              <CardTitle className="text-sm font-semibold tracking-tight">{section.title}</CardTitle>
             </div>
-            <CardDescription className="text-xs pt-1">{section.description}</CardDescription>
+            <CardDescription className="text-xs text-muted-foreground/80 pt-0.5">{section.description}</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4 pt-0">
+          <CardContent className="space-y-4 pt-1 px-5 pb-5">
             <fieldset disabled={pending} className="border-0 p-0 m-0 space-y-4">
               <legend className="sr-only">{section.title}</legend>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -190,21 +201,31 @@ export function MandateForm({
         </Card>
       ))}
 
-      <Card id="section-allocation" className="shadow-xs">
-        <CardHeader className="pb-4">
+      <Card id="section-allocation" className="border-border/70 bg-card/90 shadow-2xs">
+        <CardHeader className="pb-3 pt-5 px-5">
           <div className="flex items-center gap-2.5">
-            <Badge variant="secondary" className="font-mono text-xs font-semibold px-2 py-0.5">
+            <Badge variant={hasAnyAllocation ? "default" : "secondary"} className="font-mono text-[11px] font-semibold px-2 py-0.5 border-border/60">
               03
             </Badge>
-            <CardTitle className="text-base font-semibold">Initial Allocation · Optional</CardTitle>
+            <CardTitle className="text-sm font-semibold tracking-tight">
+              Initial Allocation · {hasAnyAllocation ? (
+                <span className="text-amber-600 dark:text-amber-400 font-medium text-xs">
+                  All 3 fields required
+                </span>
+              ) : (
+                <span className="text-muted-foreground font-normal text-xs">
+                  Optional
+                </span>
+              )}
+            </CardTitle>
           </div>
-          <CardDescription className="text-xs pt-1">
-            Optionally whitelist an investor and mint tokens to their address. Leave blank for token creation only.
+          <CardDescription className="text-xs text-muted-foreground/80 pt-0.5">
+            Authorize an investor and issue an initial allocation after token creation. Leave empty to create the asset only.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4 pt-0">
+        <CardContent className="space-y-4 pt-1 px-5 pb-5">
           <fieldset disabled={pending} className="border-0 p-0 m-0 space-y-4">
-            <legend className="sr-only">Initial Allocation</legend>
+            <legend className="sr-only">Initial Allocation · Optional</legend>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {fields
                 .filter((field) => field.section === "allocation")
@@ -221,6 +242,9 @@ export function MandateForm({
                       <div className="flex items-center justify-between">
                         <Label htmlFor={field.name} className="text-xs font-medium">
                           {field.label}
+                          {hasAnyAllocation && (
+                            <span className="text-destructive font-normal text-[11px] ml-1">*</span>
+                          )}
                         </Label>
                         {"numeric" in field && (
                           <span className="text-[10px] text-muted-foreground font-mono uppercase">
@@ -238,6 +262,7 @@ export function MandateForm({
                         data-1p-ignore="true"
                         data-lpignore="true"
                         data-form-type="other"
+                        required={hasAnyAllocation}
                         value={draft[field.name]}
                         onChange={(e) =>
                           setDraft((prev) => ({ ...prev, [field.name]: e.target.value }))
@@ -285,27 +310,27 @@ export function MandateForm({
         </CardContent>
       </Card>
 
-      <Card className="bg-muted/40 border-dashed">
+      <Card className="bg-card/70 border-border/80 shadow-2xs">
         <CardContent className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="space-y-1">
-            <p className="text-sm font-semibold">Ready to record mandate</p>
+            <p className="text-sm font-semibold text-foreground">Ready to generate your plan</p>
             <p className="text-xs text-muted-foreground max-w-md leading-relaxed">
-              Generating a plan verifies parameters against runtime schemas and computes an immutable execution graph. No wallet signature is triggered during planning.
+              Edict will validate this mandate and build the execution steps for your review. No transaction will be submitted.
             </p>
           </div>
           <Button
             type="submit"
             disabled={pending || unavailable}
-            className="sm:self-center shrink-0 font-medium text-xs h-10 px-5 gap-2 shadow-sm"
+            className="sm:self-center shrink-0 font-medium text-xs h-9 px-4.5 gap-2 shadow-xs"
           >
             {pending ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Computing plan…</span>
+                <span>Generating plan…</span>
               </>
             ) : (
               <>
-                <span>Create execution plan</span>
+                <span>Review execution plan</span>
                 <ArrowRight className="h-4 w-4" />
               </>
             )}

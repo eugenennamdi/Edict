@@ -39,6 +39,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "server-only": "0.0.1",
+    "sonner": "^2.0.8",
     "tailwind-merge": "^3.6.0",
     "viem": "2.56.3",
     "wagmi": "^2.19.5",

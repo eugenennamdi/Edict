@@ -37,6 +37,7 @@ import {
   ChevronRight,
   ArrowLeft,
 } from "lucide-react";
+import { toast } from "sonner";
 
 export default function RunPlanningWorkspace({
   initialRunId,
@@ -50,7 +51,14 @@ export default function RunPlanningWorkspace({
   const [workspace] = useState(() => createPlanningWorkspace(
     setState,
     undefined,
-    { onCreated: (createdRunId) => router.replace(`/records/${createdRunId}`) },
+    {
+      onCreated: (createdRunId) => {
+        toast.success("Mandate recorded", {
+          description: "Deterministic execution plan generated.",
+        });
+        router.replace(`/records/${createdRunId}`);
+      },
+    },
   ));
   const [draft, setDraft] = useState(emptyDraft);
   const [touched, setTouched] = useState<ReadonlySet<FieldName>>(new Set());
@@ -92,7 +100,10 @@ export default function RunPlanningWorkspace({
   const requestError =
     state.error && (state.errorCode !== "BAD_REQUEST" || submittedDraft === draft);
   const showError = validationErrors || requestError || invalidRunRoute;
-  const filled = fields.filter((field) => draft[field.name].trim().length > 0).length;
+  const mandateFields = fields.filter((field) => field.section !== "allocation");
+  const filled = mandateFields.filter((field) => draft[field.name].trim().length > 0).length;
+  const mandateIssues = issues.filter((issue) => !issue.path?.startsWith("investor"));
+  const mandateReady = mandateIssues.length === 0 && filled === mandateFields.length;
   const cancelOpen = view?.run.canCancel && cancelRevision === view.run.revision;
 
   async function create() {
@@ -114,6 +125,9 @@ export default function RunPlanningWorkspace({
   async function refresh() {
     setCancelRevision(null);
     await workspace.refresh();
+    toast.success("Record refreshed", {
+      description: "Durable state synchronized.",
+    });
     requestAnimationFrame(() => error.current?.focus());
   }
 
@@ -188,7 +202,7 @@ export default function RunPlanningWorkspace({
               ? "A recorded mandate. A deterministic plan. Ready for your review."
               : durableRoute
               ? "Edict is checking this browser's authority before reconstructing the durable record."
-              : "Set the intent. Inspect the structure. Make it an immutable record."}
+              : "Describe the tokenization outcome. Edict turns it into an executable plan."}
           </p>
         </div>
 
@@ -325,65 +339,42 @@ export default function RunPlanningWorkspace({
 
         {/* Recorded Run Action Toolbar */}
         {view && (
-          <Card className="border-border/80 bg-card/60 shadow-xs" aria-busy={state.pending !== null}>
-            <CardContent className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5 text-xs">
-                <span className="relative flex h-2 w-2">
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                </span>
-                <span className="font-medium text-foreground">
-                  {canceled
-                    ? "Closed record"
-                    : view.run.approved
-                    ? "Plan approval recorded"
-                    : "Plan approval not recorded"}
-                </span>
-                <Separator orientation="vertical" className="h-3 bg-border" />
-                <span className="text-muted-foreground">
-                  {view.plan.operations.length === 2
-                    ? "Token creation available · Investor access and minting unavailable"
-                    : "Historical plan · Current execution unavailable"}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void refresh()}
-                  disabled={!!state.pending || state.unavailable}
-                  className="h-8 gap-1.5 text-xs"
-                >
-                  <RotateCw
-                    className={cn(
-                      "h-3.5 w-3.5",
-                      state.pending === "refresh" && "animate-spin"
-                    )}
-                  />
-                  <span>{state.pending === "refresh" ? "Refreshing…" : "Refresh record"}</span>
-                </Button>
-
-                {view.run.canCancel && (
-                  <Button
-                    ref={cancelButton}
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={!!state.pending || state.unavailable}
-                    onClick={() => {
-                      setCancelRevision(view.run.revision);
-                      requestAnimationFrame(() => confirmButton.current?.focus());
-                    }}
-                    className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                  >
-                    <XCircle className="h-3.5 w-3.5" />
-                    <span>Cancel run</span>
-                  </Button>
+          <div className="flex items-center justify-end gap-2" aria-busy={state.pending !== null}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void refresh()}
+              disabled={!!state.pending || state.unavailable}
+              className="h-8 gap-1.5 text-xs shadow-xs"
+            >
+              <RotateCw
+                className={cn(
+                  "h-3.5 w-3.5",
+                  state.pending === "refresh" && "animate-spin"
                 )}
-              </div>
-            </CardContent>
-          </Card>
+              />
+              <span>{state.pending === "refresh" ? "Refreshing…" : "Refresh Record"}</span>
+            </Button>
+
+            {view.run.canCancel && (
+              <Button
+                ref={cancelButton}
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={!!state.pending || state.unavailable}
+                onClick={() => {
+                  setCancelRevision(view.run.revision);
+                  requestAnimationFrame(() => confirmButton.current?.focus());
+                }}
+                className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+              >
+                <XCircle className="h-3.5 w-3.5" />
+                <span>Cancel run</span>
+              </Button>
+            )}
+          </div>
         )}
 
         {/* Cancel Confirmation Dialog Card */}
@@ -454,6 +445,7 @@ export default function RunPlanningWorkspace({
                   <WalletExecutionSection
                     key={`${view.run.id}-${view.run.phase}`}
                     run={view.run}
+                    manifest={view.manifest}
                     onRefresh={() => workspace.pullLatest()}
                     onTrackedRun={workspace.applyDurableRun}
                   />
@@ -502,7 +494,7 @@ export default function RunPlanningWorkspace({
           {/* Artifact Panel (Sticky on desktop) */}
           <aside
             id="artifact-panel"
-            aria-label={view ? "Recorded manifest" : "Provisional draft summary"}
+            aria-label={view ? "Recorded manifest" : "Mandate preview"}
             className={cn(
               "lg:col-span-5 xl:col-span-4 lg:sticky lg:top-20 space-y-4",
               durableRoute && !view && "hidden",
@@ -515,7 +507,7 @@ export default function RunPlanningWorkspace({
             ) : (
               <DraftSummary
                 draft={draft}
-                ready={issues.length === 0}
+                ready={mandateReady}
                 filled={filled}
               />
             )}
@@ -548,14 +540,14 @@ export default function RunPlanningWorkspace({
               className="h-4 w-auto object-contain dark:invert opacity-90"
             />
             <Separator orientation="vertical" className="h-3.5 bg-border" />
-            <span>Tokenization Planning Workspace</span>
+            <span>Tokenization, as code</span>
           </div>
           <div className="font-mono text-[11px]">
             {view
               ? "Durable record · Authorized browser access"
               : durableRoute
               ? "Run locator · Capability required"
-              : "Intent first. Authority follows."}
+              : "Ethereum Sepolia · Sandbox"}
           </div>
         </div>
       </footer>

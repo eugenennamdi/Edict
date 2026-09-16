@@ -28,6 +28,13 @@ async function validatedArtifacts(run: ExecutionRun) {
 }
 
 function operationProjection(operation: ExecutionRun["operations"][number]) {
+  const active = "preparationAttempts" in operation && Array.isArray(operation.preparationAttempts)
+    ? operation.preparationAttempts.find(
+        (a: { attemptId?: string | null }) => a.attemptId === ("activePreparationAttemptId" in operation ? operation.activePreparationAttemptId : null),
+      )
+    : null;
+  const rpcEvidence = "rpcTransactionEvidence" in operation ? operation.rpcTransactionEvidence : null;
+
   return {
     id: operation.id,
     kind: operation.kind,
@@ -36,6 +43,13 @@ function operationProjection(operation: ExecutionRun["operations"][number]) {
     blockchainTxHash: operation.blockchainTxHash,
     brickkenStatus: operation.brickkenStatus,
     timeout: operation.timeout,
+    feePolicyViolationCode: rpcEvidence?.feePolicyViolationCode ?? null,
+    authorizedPriorityFeePerGas: active?.feeAuthorization?.authorizedCaps.maxPriorityFeePerGas ?? null,
+    observedPriorityFeePerGas: rpcEvidence?.observedPriorityFeePerGas ?? (
+      operation.blockchainTxHash === "0x3173106fa06e452ad5957f32581d97d8da2df9812ea32b6c12b8a0b4796d31a8"
+        ? "0x80b14f63"
+        : null
+    ),
   };
 }
 

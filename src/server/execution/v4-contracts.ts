@@ -155,6 +155,7 @@ export const rpcTransactionAuthorizationEvidenceV1Schema = z.strictObject({
     "INVALID_FEE_EVIDENCE",
   ]).nullable(),
   observedMaximumNetworkFeeWei: quantity.nullable(),
+  observedPriorityFeePerGas: quantity.nullable().optional(),
 }).superRefine((evidence, context) => {
   const feeCompliant = evidence.feeAuthorizationStatus === "WITHIN_ENVELOPE";
   const feeViolation = evidence.feeAuthorizationStatus === "POLICY_VIOLATION";

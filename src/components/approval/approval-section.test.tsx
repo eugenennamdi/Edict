@@ -49,7 +49,7 @@ describe("approval readiness UI", () => {
     vi.stubGlobal("fetch", fetch);
     const current = await view();
     const html = renderToStaticMarkup(createElement(ApprovalReadinessSection, { view: current }));
-    expect(html).toContain("Approve mandate");
+    expect(html).toContain("Mandate Approval");
     expect(html).toContain("Café Receivables · ED1");
     expect(html).toContain(current.run.planHash);
     expect(html).toContain(current.run.requiredSigner.walletAddress);
@@ -57,7 +57,10 @@ describe("approval readiness UI", () => {
     expect(html).toContain("25 tokens");
     expect(html).toContain("Ethereum Sepolia");
     expect(html).toContain("Approving this plan does not submit an on-chain transaction");
-    expect(html).toContain("Use legacy injected provider");
+    expect(html).toContain("Connect wallet");
+    expect(html).toContain("Connect your browser wallet to approve this mandate");
+    expect(html).not.toContain("Use legacy injected provider");
+    expect(html).not.toContain("Available injected wallets");
     expect(html).not.toContain("Approve this plan");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -95,7 +98,7 @@ describe("approval readiness UI", () => {
       },
     };
     const html = renderToStaticMarkup(createElement(ApprovalReadinessSection, { view: tokenizeOnlyView }));
-    expect(html).toContain("Approve mandate");
+    expect(html).toContain("Mandate Approval");
     expect(html).toContain("Test Asset · TST");
     expect(html).toContain(plan.planHash);
     expect(html).toContain("0x1111111111111111111111111111111111111111");
@@ -124,22 +127,23 @@ describe("approval readiness UI", () => {
     const html = renderToStaticMarkup(createElement(ApprovalReadinessSection, { view: approved }));
     expect(html).toContain("Plan approval recorded");
     expect(html).toContain("You can now execute the mandate");
-    expect(html).not.toContain("Select wallet");
-    expect(html).not.toContain("Allow account access");
-    expect(html).not.toContain("Check wallet again");
+    expect(html).not.toContain("Connect wallet");
+    expect(html).not.toContain("Approve this plan");
     expect(html).not.toContain("Use legacy injected provider");
+    expect(html).not.toContain("Available injected wallets");
   });
 
-  it("uses semantic provider selection and keeps signing details outside React", () => {
+  it("keeps signing details outside React and relies on global wallet readiness", () => {
     const source = readFileSync(new URL("approval-section.tsx", import.meta.url), "utf8");
-    expect(source).toContain("<fieldset");
-    expect(source).toContain('type="radio"');
-    expect(source).toContain("Select wallet");
-    expect(source).toContain("Allow account access");
-    expect(source).toContain("Check wallet again");
+    expect(source).toContain("Connect wallet");
     expect(source).toContain("Switch to Ethereum Sepolia");
+    expect(source).toContain("Switch account / wallet");
     expect(source).toContain("Approve this plan");
     expect(source).toContain("Refresh approval status");
+    expect(source).not.toContain("<fieldset");
+    expect(source).not.toContain('type="radio"');
+    expect(source).not.toContain("Use legacy injected provider");
+    expect(source).not.toContain("Available injected wallets");
     expect(source).not.toMatch(/eth_sign|approval-challenges|submitApproval|eth_sendTransaction/u);
   });
 });
