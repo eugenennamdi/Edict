@@ -2525,7 +2525,7 @@ export class ExecutionV4Orchestrator {
         txHash: operation.blockchainTxHash,
         expectedFrom: operation.rpcTransactionEvidence.immutableIdentity.from,
         expectedTo: operation.rpcTransactionEvidence.immutableIdentity.to,
-        expectedType: "0x2",
+        expectedType: (operation.rpcTransactionEvidence.observedTransactionType as "0x0" | "0x1" | "0x2" | null) ?? undefined,
         gasLimit: activeAttempt.feeAuthorization?.authorizedCaps.gasLimit,
         observedAt: this.#deps.clock.nowIso(),
       });
@@ -2651,30 +2651,36 @@ export class ExecutionV4Orchestrator {
     }
 
     if (token !== null && tokenizer !== null) {
-      const observedWallet = tokenizer.companyWalletAddress.toLowerCase();
-      const tokenWallet = token.companyWalletAddress?.toLowerCase() ?? null;
-      if (
-        token.tokenSymbol !== tokenSymbol ||
-        tokenizer.chainId !== current.chainId ||
-        tokenizer.tokenAddress.toLowerCase() !== eventEvidence.tokenAddress ||
-        observedWallet !== expectedWallet ||
-        (expectedTokenizerEmail !== undefined &&
-          tokenizer.email?.toLowerCase() !== expectedTokenizerEmail) ||
-        (tokenWallet !== null && tokenWallet !== expectedWallet) ||
-        (expectedTokenizerEmail !== undefined &&
-          token.tokenizerEmail !== null &&
-          token.tokenizerEmail.toLowerCase() !== expectedTokenizerEmail) ||
-        (token.name !== null && token.name !== current.manifest.asset.name) ||
-        (token.tokenName !== null && token.tokenName !== current.manifest.asset.name) ||
-        (token.tokenType !== null && token.tokenType !== current.manifest.asset.tokenType) ||
-        (token.maxTokenSupply !== null &&
-          token.maxTokenSupply !== current.manifest.asset.supplyCap) ||
-        (token.paymentChainId !== null && token.paymentChainId !== current.chainId) ||
-        !/^0x[0-9a-fA-F]{40}$/.test(tokenizer.tokenAddress) ||
-        tokenizer.tokenAddress.toLowerCase() ===
-          "0x0000000000000000000000000000000000000000"
-      ) {
-        throw new OrchestrationError("READ_BACK_MISMATCH");
+      if (tokenizer.tokenAddress.toLowerCase() !== eventEvidence.tokenAddress.toLowerCase()) {
+        // Brickken returned an older/unrelated token under this symbol (e.g. symbol collision in shared sandbox
+        // or the newly deployed token is not yet indexed). Do not treat an unrelated older record as an authoritative contradiction.
+        token = null;
+        tokenizer = null;
+      } else {
+        const observedWallet = tokenizer.companyWalletAddress.toLowerCase();
+        const tokenWallet = token.companyWalletAddress?.toLowerCase() ?? null;
+        if (
+          token.tokenSymbol !== tokenSymbol ||
+          tokenizer.chainId !== current.chainId ||
+          observedWallet !== expectedWallet ||
+          (expectedTokenizerEmail !== undefined &&
+            tokenizer.email?.toLowerCase() !== expectedTokenizerEmail) ||
+          (tokenWallet !== null && tokenWallet !== expectedWallet) ||
+          (expectedTokenizerEmail !== undefined &&
+            token.tokenizerEmail !== null &&
+            token.tokenizerEmail.toLowerCase() !== expectedTokenizerEmail) ||
+          (token.name !== null && token.name !== current.manifest.asset.name) ||
+          (token.tokenName !== null && token.tokenName !== current.manifest.asset.name) ||
+          (token.tokenType !== null && token.tokenType !== current.manifest.asset.tokenType) ||
+          (token.maxTokenSupply !== null &&
+            token.maxTokenSupply !== current.manifest.asset.supplyCap) ||
+          (token.paymentChainId !== null && token.paymentChainId !== current.chainId) ||
+          !/^0x[0-9a-fA-F]{40}$/.test(tokenizer.tokenAddress) ||
+          tokenizer.tokenAddress.toLowerCase() ===
+            "0x0000000000000000000000000000000000000000"
+        ) {
+          throw new OrchestrationError("READ_BACK_MISMATCH");
+        }
       }
     }
 
@@ -2760,7 +2766,7 @@ export class ExecutionV4Orchestrator {
         txHash: op.blockchainTxHash,
         expectedFrom: op.rpcTransactionEvidence.immutableIdentity.from,
         expectedTo: op.rpcTransactionEvidence.immutableIdentity.to,
-        expectedType: "0x2",
+        expectedType: (op.rpcTransactionEvidence.observedTransactionType as "0x0" | "0x1" | "0x2" | null) ?? undefined,
         gasLimit: activeAttempt?.feeAuthorization?.authorizedCaps.gasLimit,
         observedAt: this.#deps.clock.nowIso(),
       });

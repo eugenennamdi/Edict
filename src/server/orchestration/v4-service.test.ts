@@ -437,6 +437,7 @@ async function setupFinalizedCorrelatedRun(
     observedMaxFeePerGas?: string;
     correlationHash?: string;
     implementationAddress?: string;
+    transactionType?: "0x0" | "0x1" | "0x2";
   }> = {},
 ) {
   const runV2 = await createPreparedV2Run(h);
@@ -459,6 +460,9 @@ async function setupFinalizedCorrelatedRun(
     txHash: TX_HASH,
   });
 
+  const txType = options.transactionType ?? "0x2";
+  const isLegacy = txType === "0x0";
+
   h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
     hash: TX_HASH,
     chainId: "0xaa36a7",
@@ -467,11 +471,11 @@ async function setupFinalizedCorrelatedRun(
     input: VALID_TOKENIZE_CALLDATA,
     value: "0x0",
     nonce: "0x5",
-    type: "0x2",
+    type: txType,
     gas: "0x100",
-    gasPrice: null,
-    maxFeePerGas: options.observedMaxFeePerGas ?? "0x20",
-    maxPriorityFeePerGas: "0x4",
+    gasPrice: isLegacy ? (options.observedMaxFeePerGas ?? "0x20") : null,
+    maxFeePerGas: isLegacy ? null : (options.observedMaxFeePerGas ?? "0x20"),
+    maxPriorityFeePerGas: isLegacy ? null : "0x4",
     accessList: [],
     blockHash: FINALIZED_BLOCK_HASH,
     blockNumber: "0x20",
@@ -518,7 +522,7 @@ async function setupFinalizedCorrelatedRun(
     gasUsed: "0x50",
     effectiveGasPrice: "0x15",
     contractAddress: null,
-    type: "0x2",
+    type: txType,
     status: options.receiptStatus ?? "0x1",
     logs: [{
       address: REVIEWED_SEPOLIA_FACTORY,
@@ -3126,11 +3130,26 @@ describe("ExecutionV4Orchestrator", () => {
       const h = createHarness({ readBack: true });
       h.readBack.tokenAddress = "0x7777777777777777777777777777777777777777";
       const run = await setupFinalizedCorrelatedRun(h);
-      expect(run.status).toBe("FAILED");
-      expect(run.terminalOutcome).toBe("VERIFICATION_FAILED");
-      expect(run.phase).toBe("TOKENIZATION");
-      expect(run.tokenIdentity).toBeNull();
-      expect(run.operations[0].stage).toBe("BRICKKEN_CORRELATED");
+      // Older same-symbol Brickken record does not replace the receipt-derived token
+      // and does not falsely fail the run: secondary corroboration is ignored as pending/unavailable.
+      expect(run.status).toBe("PREPARING");
+      expect(run.terminalOutcome).toBeNull();
+      expect(run.phase).toBe("WHITELIST");
+      expect(run.operations[0].stage).toBe("READ_BACK_VERIFIED");
+      expect(run.tokenIdentity?.tokenAddress).toBe(TOKEN_ADDRESS);
+      expect(run.tokenIdentity?.tokenAddress).not.toBe("0x7777777777777777777777777777777777777777");
+    });
+
+    it("successfully finalizes and derives token identity when wallet submits legacy 0x0 transaction", async () => {
+      const h = createHarness({ readBack: true });
+      const run = await setupFinalizedCorrelatedRun(h, "success", {
+        transactionType: "0x0",
+      });
+      expect(run.status).toBe("PREPARING");
+      expect(run.terminalOutcome).toBeNull();
+      expect(run.phase).toBe("WHITELIST");
+      expect(run.operations[0].stage).toBe("READ_BACK_VERIFIED");
+      expect(run.tokenIdentity?.tokenAddress).toBe(TOKEN_ADDRESS);
     });
 
     it("does not derive identity from an unfinalized receipt", async () => {
