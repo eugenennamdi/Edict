@@ -552,8 +552,8 @@ function parseSnapshot(value: unknown): ExecutionRun {
           rpcEvidence === null || operation.blockchainTxHash === null ||
           operation.transactionReceiptEvidence.transactionHash !== operation.blockchainTxHash ||
           operation.transactionReceiptEvidence.from !== rpcEvidence.immutableIdentity.from ||
-          operation.transactionReceiptEvidence.to !== rpcEvidence.immutableIdentity.to ||
-          operation.transactionReceiptEvidence.type !== "0x2"
+          (operation.transactionReceiptEvidence.type !== "0x2" &&
+            operation.transactionReceiptEvidence.type !== "0x0")
         ))
       ) return true;
       return operation.brickkenStatusEvidence.some((evidence) =>

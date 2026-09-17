@@ -3291,6 +3291,199 @@ describe("pre-live audit regressions", () => {
     expect((await projectPublicRun(current)).trackingRemaining).toBe(0);
   });
 
+  describe("Passive finality tracking (consensus finality wait)", () => {
+    async function setupIncludedAwaitingFinality(h: ReturnType<typeof createHarness>) {
+      const prompt = await promptFixture(h);
+      const released = await h.v4.releaseSendAuthority(prompt.id, prompt.revision);
+      const broadcastRun = await h.v4.ingestBroadcastHash(prompt.id, {
+        expectedRevision: released.run.revision,
+        invocationAttemptId: released.envelope.invocationAttemptId,
+        walletIntentHash: released.envelope.walletIntentHash,
+        txHash: TX_HASH,
+      });
+
+      h.fakeRpcTransport.on("eth_getTransactionByHash", () => ({
+        hash: TX_HASH,
+        chainId: "0xaa36a7",
+        from: TOKENIZER_ADDRESS,
+        to: TO,
+        input: VALID_TOKENIZE_CALLDATA,
+        value: "0x0",
+        nonce: "0x5",
+        type: "0x2",
+        gas: "0x100",
+        gasPrice: null,
+        maxFeePerGas: "0x20",
+        maxPriorityFeePerGas: "0x4",
+        accessList: [],
+        blockHash: BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+      }));
+
+      // Receipt is mined at block 0x20, but finalized head is only at 0x10
+      h.fakeRpcTransport.on("eth_getBlockByNumber", (params) => {
+        const tag = params?.[0];
+        if (tag === "finalized") {
+          return {
+            number: "0x10",
+            hash: "0x1111111111111111111111111111111111111111111111111111111111111110",
+            parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+            baseFeePerGas: "0x10",
+          };
+        }
+        return {
+          number: "0x20",
+          hash: BLOCK_HASH,
+          parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+          baseFeePerGas: "0x10",
+        };
+      });
+
+      h.fakeRpcTransport.on("eth_getTransactionReceipt", () => ({
+        transactionHash: TX_HASH,
+        blockHash: BLOCK_HASH,
+        blockNumber: "0x20",
+        transactionIndex: "0x0",
+        from: TOKENIZER_ADDRESS,
+        to: TO,
+        cumulativeGasUsed: "0x50",
+        gasUsed: "0x50",
+        effectiveGasPrice: "0x15",
+        contractAddress: null,
+        type: "0x2",
+        status: "0x1",
+        logs: [],
+      }));
+
+      h.correlationSender.response = {
+        status: 202,
+        data: CORRELATION_SUCCESS_DATA,
+      };
+
+      h.statusFetcher.response = {
+        status: 200,
+        data: {
+          status: "success",
+          transactionHash: TX_HASH,
+        },
+      };
+
+      // Poll once to verify onchain, record receipt (INCLUDED), and correlate
+      const initial = await h.v4.trackExecution(broadcastRun.id, broadcastRun.revision);
+      return { broadcastRun, initial };
+    }
+
+    it("30+ passive finality polls do not exhaust the tracking budget when INCLUDED", async () => {
+      const h = createHarness();
+      const { initial } = await setupIncludedAwaitingFinality(h);
+
+      expect(initial.run.operations[0].stage).toBe("BRICKKEN_CORRELATED");
+      expect(initial.run.operations[0].transactionReceiptEvidence?.finalityStatus).toBe("INCLUDED");
+      const reservationCountBefore = initial.run.events.filter(e => e.type === "TRACK_EXECUTION_RESERVED").length;
+      expect(reservationCountBefore).toBe(1);
+
+      let current = initial.run;
+      // Perform 35 passive polls
+      for (let i = 0; i < 35; i++) {
+        h.clock.nowIso();
+        const res = await h.v4.trackExecution(current.id, current.revision);
+        current = res.run;
+      }
+
+      // Assert zero reservation churn and budget not exhausted
+      const reservationCountAfter = current.events.filter(e => e.type === "TRACK_EXECUTION_RESERVED").length;
+      expect(reservationCountAfter).toBe(1);
+      expect((await projectPublicRun(current)).trackingRemaining).toBe(29);
+      expect(current.operations[0].transactionReceiptEvidence?.finalityStatus).toBe("INCLUDED");
+    });
+
+    it("an INCLUDED transaction can wait >20 minutes without dying and transitions to FINALIZED + READ_BACK_VERIFIED automatically once finality arrives", async () => {
+      const h = createHarness({ readBack: true });
+      const initialRun = await setupFinalizedCorrelatedRun(h, "success", {
+        finalizedBlockNumber: "0x1f",
+      });
+
+      expect(initialRun.operations[0].stage).toBe("BRICKKEN_CORRELATED");
+      expect(initialRun.operations[0].transactionReceiptEvidence?.finalityStatus).toBe("INCLUDED");
+
+      let current = initialRun;
+      // 35 polls over >20 minutes (advancing clock by 40 seconds on each poll = 1400 seconds)
+      for (let i = 0; i < 35; i++) {
+        const t = Date.parse(h.clock.nowIso()) + 40_000;
+        h.clock.nowIso = () => new Date(t).toISOString();
+        const res = await h.v4.trackExecution(current.id, current.revision);
+        current = res.run;
+      }
+
+      expect(current.operations[0].transactionReceiptEvidence?.finalityStatus).toBe("INCLUDED");
+      expect(current.events.filter(e => e.type === "TRACK_EXECUTION_RESERVED")).toHaveLength(1);
+
+      // Finality arrives: consensus head reaches block 0x20 >= receipt block 0x20
+      h.fakeRpcTransport.on("eth_getBlockByNumber", (params) => {
+        const tag = params?.[0];
+        if (tag === "finalized" || tag === "0x20") {
+          return {
+            number: "0x20",
+            hash: FINALIZED_BLOCK_HASH,
+            parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+            baseFeePerGas: "0x10",
+            timestamp: "0x66e44000",
+          };
+        }
+        return {
+          number: "0x10",
+          hash: BLOCK_HASH,
+          parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+          baseFeePerGas: "0x10",
+          timestamp: "0x66e44000",
+        };
+      });
+
+      // Next poll automatically finalizes and completes read-back
+      const finalizedResult = await h.v4.trackExecution(current.id, current.revision);
+      const finalizedRun = finalizedResult.run;
+
+      expect(finalizedRun.operations[0].transactionReceiptEvidence?.finalityStatus).toBe("FINALIZED");
+      expect(finalizedRun.operations[0].stage).toBe("READ_BACK_VERIFIED");
+      expect(finalizedRun.phase).toBe("WHITELIST");
+      expect(finalizedRun.tokenIdentity).not.toBeNull();
+
+      // Finality transition was recorded exactly once
+      const receiptEvents = finalizedRun.events.filter(e => e.type === "RECORD_V4_RPC_RECEIPT_EVIDENCE");
+      expect(receiptEvents).toHaveLength(2); // 1 for INCLUDED, 1 for FINALIZED
+    });
+
+    it("detects reorg during passive finality polling and records RECONCILIATION_REQUIRED", async () => {
+      const h = createHarness();
+      const { initial } = await setupIncludedAwaitingFinality(h);
+
+      // Reorg occurs: canonical block for receipt blockNumber 0x20 now has a different hash
+      h.fakeRpcTransport.on("eth_getBlockByNumber", (params) => {
+        const tag = params?.[0];
+        if (tag === "finalized") {
+          return {
+            number: "0x10",
+            hash: "0x1111111111111111111111111111111111111111111111111111111111111110",
+            parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+            baseFeePerGas: "0x10",
+          };
+        }
+        // Different block hash -> reorg!
+        return {
+          number: "0x20",
+          hash: "0x9999999999999999999999999999999999999999999999999999999999999999",
+          parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+          baseFeePerGas: "0x10",
+        };
+      });
+
+      const reorgResult = await h.v4.trackExecution(initial.run.id, initial.run.revision);
+      expect(reorgResult.run.status).toBe("RECONCILIATION_REQUIRED");
+      expect(reorgResult.run.operations[0].transactionReceiptEvidence?.reconciliationStatus).toBe("REQUIRED");
+    });
+  });
+
   describe("Price-report expiry routing and error taxonomy regressions (A-H)", () => {
     it("A: static invalidity (changed name/symbol/supply/destination) throws AUTHORIZATION_POLICY_REFUSED and cannot reprepare", async () => {
       const h = createHarness();

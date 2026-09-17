@@ -158,6 +158,7 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
   const isStageIncluded = isIncludedOnChain(operation.stage);
   const isStageFinalized = isLifecycleFinalized(operation.stage);
   const isMinDepthSatisfied = confirmations !== null && confirmations >= 2;
+  const isAwaitingFinality = isStageIncluded && !isStageFinalized && isMinDepthSatisfied;
 
   const isConnected = wallet.isConnected && wallet.address !== null;
   const isSignerMismatch = isConnected && (wallet.address?.toLowerCase() !== run.requiredSigner.walletAddress.toLowerCase());
@@ -265,7 +266,7 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
       setConfirmations(initialConfirmations ?? null);
     }
     let cancelled = false;
-    const delay = verificationPollDelayMs(trackingPolls.current, isFinalized);
+    const delay = verificationPollDelayMs(trackingPolls.current, isFinalized, isAwaitingFinality);
     const timer = window.setTimeout(() => {
       trackingPolls.current += 1;
       void pollVerificationOnce({
@@ -278,7 +279,7 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
       });
     }, delay);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [canTrack, initialConfirmations, isFinalized, onRefresh, onTrackedRun, operation.blockchainTxHash, run, trackingTick]);
+  }, [canTrack, initialConfirmations, isAwaitingFinality, isFinalized, onRefresh, onTrackedRun, operation.blockchainTxHash, run, trackingTick]);
 
   const prevStage = useRef(operation.stage);
   useEffect(() => {

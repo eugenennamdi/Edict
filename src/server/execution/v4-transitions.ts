@@ -1019,15 +1019,17 @@ export function recordRpcReceiptEvidenceV4(input: {
     operation.blockchainTxHash === null || rpcTransaction === null ||
     evidence.transactionHash !== operation.blockchainTxHash ||
     evidence.from !== rpcTransaction.immutableIdentity.from ||
-    evidence.to !== rpcTransaction.immutableIdentity.to || evidence.type !== "0x2"
+    evidence.to !== rpcTransaction.immutableIdentity.to || (evidence.type !== "0x2" && evidence.type !== "0x0")
   ) throw new IllegalStateTransitionError();
   const prior = operation.transactionReceiptEvidence;
   if (prior !== null) {
     const sameInclusion = prior.transactionHash === evidence.transactionHash &&
       prior.blockHash === evidence.blockHash && prior.blockNumber === evidence.blockNumber &&
       prior.transactionIndex === evidence.transactionIndex;
-    if (!sameInclusion || prior.finalityStatus === "FINALIZED" ||
-      evidence.finalityStatus !== "FINALIZED") throw new IllegalStateTransitionError();
+    const isContradiction = evidence.reconciliationStatus !== "CLEAR" || evidence.identityStatus !== "MATCH";
+    if (prior.finalityStatus === "FINALIZED" || (!isContradiction && (!sameInclusion || evidence.finalityStatus !== "FINALIZED"))) {
+      throw new IllegalStateTransitionError();
+    }
   }
   const requiresReconciliation =
     rpcTransaction.immutableIdentityStatus !== "MATCH" ||

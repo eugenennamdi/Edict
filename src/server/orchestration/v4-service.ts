@@ -1570,7 +1570,11 @@ export class ExecutionV4Orchestrator {
         prior.blockHash === evaluation.evidence.blockHash &&
         prior.blockNumber === evaluation.evidence.blockNumber &&
         prior.transactionIndex === evaluation.evidence.transactionIndex;
-      if (sameInclusion && evaluation.evidence.finalityStatus !== "FINALIZED") {
+      const isMaterialChange =
+        evaluation.evidence.finalityStatus === "FINALIZED" ||
+        evaluation.evidence.reconciliationStatus !== "CLEAR" ||
+        evaluation.evidence.identityStatus !== "MATCH";
+      if (sameInclusion && !isMaterialChange) {
         return { evaluation, run: current };
       }
     }
@@ -2223,6 +2227,20 @@ export class ExecutionV4Orchestrator {
     if (initialOp.stage === "READ_BACK_VERIFIED") {
       throw new IllegalStateTransitionError();
     }
+
+    const receipt = initialOp.transactionReceiptEvidence;
+    // ponytail: passive finality polling does not consume the bounded mutation budget
+    // once the transaction is included on-chain, waiting only for consensus finality.
+    const isAwaitingFinality =
+      receipt !== null &&
+      receipt.executionStatus === "SUCCESS" &&
+      receipt.reconciliationStatus === "CLEAR" &&
+      receipt.finalityStatus === "INCLUDED";
+
+    if (isAwaitingFinality) {
+      return this.#reconcilePipeline(current);
+    }
+
     const trackingEvents = current.events.filter((event) => event.type === "TRACK_EXECUTION_RESERVED");
     const now = this.#deps.clock.nowIso();
     const last = trackingEvents.at(-1);

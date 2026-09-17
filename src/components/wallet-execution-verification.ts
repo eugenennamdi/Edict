@@ -28,7 +28,12 @@ export function isLifecycleFinalized(stage: string): boolean {
   return stage === "BRICKKEN_CORRELATED" || stage === "READ_BACK_VERIFIED";
 }
 
-export function verificationPollDelayMs(pollCount: number, finalized: boolean): number {
+export function verificationPollDelayMs(
+  pollCount: number,
+  finalized: boolean,
+  awaitingFinality = false,
+): number {
+  if (awaitingFinality) return 35_000;
   if (pollCount <= 0) return 400;
   if (finalized) return Math.min(3_000 * (2 ** Math.min(pollCount - 1, 2)), 15_000);
   return Math.min(2_000 * (2 ** Math.min(pollCount - 1, 4)), 30_000);

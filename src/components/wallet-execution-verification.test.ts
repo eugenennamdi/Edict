@@ -5,6 +5,7 @@ import {
   pollVerificationOnce,
   shouldPollVerification,
   verificationFailureCopy,
+  verificationPollDelayMs,
 } from "./wallet-execution-verification";
 
 const TX = `0x${"ab".repeat(32)}`;
@@ -134,5 +135,16 @@ describe("verification polling", () => {
     expect(brickkenVerificationCopy(true, 6)).toBe(
       "Verification is taking longer than expected. Edict is still checking automatically.",
     );
+  });
+
+  it("returns 35s polling delay when awaiting finality regardless of poll count", () => {
+    expect(verificationPollDelayMs(0, false, true)).toBe(35_000);
+    expect(verificationPollDelayMs(1, false, true)).toBe(35_000);
+    expect(verificationPollDelayMs(30, false, true)).toBe(35_000);
+    expect(verificationPollDelayMs(0, false, false)).toBe(400);
+    expect(verificationPollDelayMs(1, false, false)).toBe(2_000);
+    expect(verificationPollDelayMs(5, false, false)).toBe(30_000);
+    expect(verificationPollDelayMs(1, true, false)).toBe(3_000);
+    expect(verificationPollDelayMs(5, true, false)).toBe(12_000);
   });
 });
