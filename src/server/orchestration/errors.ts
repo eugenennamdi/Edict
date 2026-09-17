@@ -24,8 +24,9 @@ export type OrchestrationErrorCode =
 
 export class OrchestrationError extends Error {
   readonly code: OrchestrationErrorCode;
+  readonly retryAfterSeconds?: number;
 
-  constructor(code: OrchestrationErrorCode) {
+  constructor(code: OrchestrationErrorCode, options?: { readonly retryAfterSeconds?: number }) {
     const messages: Record<OrchestrationErrorCode, string> = {
       TRACKING_BUDGET_EXHAUSTED: "Automatic tracking is paused. This run has reached its server tracking limit.",
       BRICKKEN_OPERATION_FAILED: "The sandbox operation did not complete safely.",
@@ -52,5 +53,6 @@ export class OrchestrationError extends Error {
     super(messages[code]);
     this.name = "OrchestrationError";
     this.code = code;
+    this.retryAfterSeconds = options?.retryAfterSeconds;
   }
 }

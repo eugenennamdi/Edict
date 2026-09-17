@@ -46,18 +46,20 @@ export function ExecutionReviewSection({
             {failed ? "Operation outcome" : "Next operation"}
           </Badge>
           <Badge
-            variant={review ? "success" : blocked || failed || stale ? "destructive" : "secondary"}
+            variant={review ? "success" : blocked || failed || stale || execution.preparationFailureCode ? "destructive" : "secondary"}
             className="w-fit text-[10px] uppercase"
           >
             {review
               ? "Prepared for review"
               : failed
-                ? "Preparation failed"
+                ? (execution.preparationFailureCode === "INVALID_REQUEST" ? "Mandate needs changes" : "Preparation failed")
                 : stale
                   ? "Prepared transaction stale"
-                  : blocked
-                    ? "Preparation unresolved"
-                    : "Ready for preparation"}
+                  : execution.preparationFailureCode
+                    ? "Preparation interrupted"
+                    : blocked
+                      ? "Preparation unresolved"
+                      : "Ready for preparation"}
           </Badge>
         </div>
         <CardTitle className="text-xl font-bold tracking-tight">
@@ -65,10 +67,14 @@ export function ExecutionReviewSection({
         </CardTitle>
         <CardDescription className="text-xs leading-relaxed max-w-2xl">
           {failed
-            ? "The durable run records a terminal TOKENIZE preparation refusal."
+            ? (execution.preparationFailureCode === "INVALID_REQUEST"
+                ? "Brickken rejected the mandate parameters (e.g. asset name or symbol already exists). No transaction submitted; no gas spent."
+                : "The durable run records a terminal TOKENIZE preparation refusal.")
             : stale
               ? "The prepared transaction expired before execution. Refreshing the transaction is required before wallet submission."
-              : "The durable run—not the browser—identified TOKENIZE as the next legal operation."}
+              : execution.preparationFailureCode
+                ? "Preparation was interrupted before transaction authorization. No transaction submitted; no gas spent."
+                : "The durable run—not the browser—identified TOKENIZE as the next legal operation."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -87,7 +93,9 @@ export function ExecutionReviewSection({
         {ready && (
           <>
             <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-800 dark:text-amber-300">
-              Preparing makes one server-authorized Brickken sandbox request and durably records its outcome. It does not request wallet confirmation or submit an on-chain transaction.
+              {execution.preparationFailureCode
+                ? "Preparation interrupted. No transaction submitted; no gas spent. Click Reprepare to retry preparation."
+                : "Preparing makes one server-authorized Brickken sandbox request and durably records its outcome. It does not request wallet confirmation or submit an on-chain transaction."}
             </div>
             <Button
               type="button"
@@ -97,7 +105,11 @@ export function ExecutionReviewSection({
               onClick={onPrepare}
               className="min-w-52"
             >
-              {pending ? "Preparation request in progress" : "Prepare transaction for review"}
+              {pending
+                ? "Preparation request in progress"
+                : execution.preparationFailureCode
+                  ? "Reprepare transaction for review"
+                  : "Prepare transaction for review"}
             </Button>
           </>
         )}
@@ -121,9 +133,18 @@ export function ExecutionReviewSection({
             <span className="flex items-start gap-2">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
               <span>
-                Brickken refused preparation. No prepared transaction or wallet action was recorded. This run is terminal; do not retry preparation or promote it.
-                {execution.preparationFailureCode && (
-                  <code className="mt-2 block font-semibold">{execution.preparationFailureCode}</code>
+                {execution.preparationFailureCode === "INVALID_REQUEST" ? (
+                  <>
+                    <strong className="block font-semibold">Mandate needs changes</strong>
+                    <span>No transaction submitted; no gas spent. Create a new mandate with a unique asset name and symbol.</span>
+                  </>
+                ) : (
+                  <>
+                    Brickken refused preparation. No prepared transaction or wallet action was recorded. This run is terminal; do not retry preparation or promote it.
+                    {execution.preparationFailureCode && (
+                      <code className="mt-2 block font-semibold">{execution.preparationFailureCode}</code>
+                    )}
+                  </>
                 )}
               </span>
             </span>

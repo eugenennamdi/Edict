@@ -109,6 +109,9 @@ export async function deriveExecutionPreparationProjection(
 
   if (run.status === "PREPARING" && operation.stage === "NOT_STARTED") {
     preparationStatus = "READY_FOR_PREPARATION";
+    if (operation.brickkenError) {
+      preparationFailureCode = safePreparationFailureCode(operation.brickkenError);
+    }
   } else if (
     run.status === "PREPARING" &&
     (operation.stage === "PREPARE_INTENT" || operation.stage === "REPREPARE_INTENT")

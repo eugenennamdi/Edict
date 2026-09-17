@@ -16,11 +16,21 @@ export type BrickkenAdapterErrorCode =
 
 export class BrickkenAdapterError extends Error {
   readonly code: BrickkenAdapterErrorCode;
+  readonly upstreamStatus?: number;
+  readonly upstreamReason?: string;
+  readonly retryAfterSeconds?: number;
 
-  constructor(code: BrickkenAdapterErrorCode, message: string) {
+  constructor(
+    code: BrickkenAdapterErrorCode,
+    message: string,
+    options?: { readonly upstreamStatus?: number; readonly upstreamReason?: string; readonly retryAfterSeconds?: number },
+  ) {
     super(message);
     this.name = "BrickkenAdapterError";
     this.code = code;
+    this.upstreamStatus = options?.upstreamStatus;
+    this.upstreamReason = options?.upstreamReason;
+    this.retryAfterSeconds = options?.retryAfterSeconds;
   }
 }
 
@@ -51,6 +61,8 @@ export function redactValue(value: unknown, secret?: string): unknown {
 export function safeErrorMessage(
   code: BrickkenAdapterErrorCode,
   secret?: string,
+  customMessage?: string,
+  options?: { readonly upstreamStatus?: number; readonly upstreamReason?: string; readonly retryAfterSeconds?: number },
 ): BrickkenAdapterError {
   const messages: Record<BrickkenAdapterErrorCode, string> = {
     CONFIGURATION_MISSING: "Brickken sandbox configuration is missing or not allowlisted.",
@@ -71,7 +83,18 @@ export function safeErrorMessage(
     MINT_POLICY_VIOLATION:
       "Mint requires confirmed standalone whitelist evidence and needWhitelist false.",
   };
-  const error = new BrickkenAdapterError(code, messages[code]);
+  let message = messages[code];
+  if (customMessage && customMessage.trim().length > 0 && !containsSecret(customMessage, secret)) {
+    message = customMessage.trim();
+  }
+  const cleanReason = options?.upstreamReason && !containsSecret(options.upstreamReason, secret)
+    ? options.upstreamReason
+    : undefined;
+  const error = new BrickkenAdapterError(code, message, {
+    upstreamStatus: options?.upstreamStatus,
+    upstreamReason: cleanReason,
+    retryAfterSeconds: options?.retryAfterSeconds,
+  });
   if (containsSecret(error.message, secret)) {
     return new BrickkenAdapterError(code, messages.CONFIGURATION_MISSING);
   }

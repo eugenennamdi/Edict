@@ -71,8 +71,8 @@ function response(status: number, body: unknown, extraHeaders?: HeadersInit): Re
   });
 }
 
-function failure(status: number, code: ErrorCode): Response {
-  return response(status, { ok: false, error: { code } });
+function failure(status: number, code: ErrorCode, extraHeaders?: HeadersInit): Response {
+  return response(status, { ok: false, error: { code } }, extraHeaders);
 }
 
 function deployment(options?: RunApiHandlerOptions): RunApiDeploymentConfig {
@@ -163,13 +163,18 @@ function mapError(error: unknown): Response {
     if (error.code === "READ_BACK_BINDING_UNRESOLVED") {
       return failure(503, "READ_BACK_BINDING_UNRESOLVED");
     }
+    if (error.code === "INVALID_REQUEST") return failure(400, "INVALID_REQUEST");
+    if (error.code === "UPSTREAM_RATE_LIMITED") {
+      const headers = error.retryAfterSeconds !== undefined
+        ? { "retry-after": String(error.retryAfterSeconds) }
+        : undefined;
+      return failure(429, "UPSTREAM_RATE_LIMITED", headers);
+    }
     if ([
       "AUTHENTICATION_REJECTED",
       "ENTITLEMENT_REJECTED",
       "CREDITS_EXHAUSTED",
-      "INVALID_REQUEST",
       "SIGNER_NOT_APPROVED",
-      "UPSTREAM_RATE_LIMITED",
       "UPSTREAM_SERVER_ERROR",
       "PREPARATION_REFUSED",
       "PREPARATION_UNCONFIRMED",

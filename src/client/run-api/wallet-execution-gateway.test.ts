@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { SendAuthorizedEnvelopeV1 } from "@/shared/wallet";
 import {
   createWalletExecutionHttpGateway,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  PREPARE_REQUEST_TIMEOUT_MS,
   WalletExecutionGatewayError,
   type WalletExecutionHttpTransport,
 } from "./wallet-execution-gateway";
@@ -129,5 +131,45 @@ describe("wallet execution HTTP gateway", () => {
       txHash: `0x${"Ab".repeat(32)}`,
     })).rejects.toMatchObject({ code: "MALFORMED_REQUEST" });
     expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("configures prepare request timeout at 70s and default request timeout at 15s", () => {
+    expect(PREPARE_REQUEST_TIMEOUT_MS).toBe(70_000);
+    expect(DEFAULT_REQUEST_TIMEOUT_MS).toBe(15_000);
+    expect(PREPARE_REQUEST_TIMEOUT_MS).toBeGreaterThan(60_000);
+  });
+
+  it("maps HTTP 400 INVALID_REQUEST to WalletExecutionGatewayError", async () => {
+    const transport = vi.fn(async () => json({ ok: false, error: { code: "INVALID_REQUEST" } }, 400));
+    const gateway = createWalletExecutionHttpGateway(transport);
+    await expect(gateway.reprepare(RUN_ID, 8)).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+    });
+  });
+
+  it("maps HTTP 503 UPSTREAM_SERVER_ERROR to WalletExecutionGatewayError", async () => {
+    const transport = vi.fn(async () => json({ ok: false, error: { code: "UPSTREAM_SERVER_ERROR" } }, 503));
+    const gateway = createWalletExecutionHttpGateway(transport);
+    await expect(gateway.reprepare(RUN_ID, 8)).rejects.toMatchObject({
+      code: "UPSTREAM_SERVER_ERROR",
+    });
+  });
+
+  it("maps HTTP 429 UPSTREAM_RATE_LIMITED and extracts retry-after header", async () => {
+    const transport = vi.fn(async () => json(
+      { ok: false, error: { code: "UPSTREAM_RATE_LIMITED" } },
+      429,
+      { "retry-after": "30" },
+    ));
+    const gateway = createWalletExecutionHttpGateway(transport);
+    let caught: WalletExecutionGatewayError | null = null;
+    try {
+      await gateway.reprepare(RUN_ID, 8);
+    } catch (err) {
+      if (err instanceof WalletExecutionGatewayError) caught = err;
+    }
+    expect(caught).not.toBe(null);
+    expect(caught?.code).toBe("UPSTREAM_RATE_LIMITED");
+    expect(caught?.retryAfterSeconds).toBe(30);
   });
 });

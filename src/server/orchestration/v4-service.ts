@@ -46,6 +46,7 @@ import type {
   IsoUtcTimestamp,
   OperationKind,
   PreparationAttemptV1,
+  PreparationFailureCode,
   WriteOperationV4,
 } from "../execution/types";
 import {
@@ -361,10 +362,24 @@ function definitePrepareRefusal<T>(result: AdapterResult<T>): boolean {
       "ENTITLEMENT_REJECTED",
       "INVALID_REQUEST",
       "SIGNER_NOT_APPROVED",
-      "UPSTREAM_RATE_LIMITED",
       "MINT_POLICY_VIOLATION",
     ].includes(result.error.code)
   );
+}
+
+function preparationFailureCode(errorCode: string): PreparationFailureCode {
+  switch (errorCode) {
+    case "AUTHENTICATION_REJECTED":
+    case "ENTITLEMENT_REJECTED":
+    case "CREDITS_EXHAUSTED":
+    case "INVALID_REQUEST":
+    case "SIGNER_NOT_APPROVED":
+    case "UPSTREAM_RATE_LIMITED":
+    case "UPSTREAM_SERVER_ERROR":
+      return errorCode;
+    default:
+      return "PREPARATION_UNCONFIRMED";
+  }
 }
 
 export class ExecutionV4Orchestrator {
@@ -757,7 +772,9 @@ export class ExecutionV4Orchestrator {
     }
 
     if (!result.ok) {
-      throw new OrchestrationError("BRICKKEN_OPERATION_FAILED");
+      throw new OrchestrationError(preparationFailureCode(result.error.code), {
+        retryAfterSeconds: result.error.retryAfterSeconds,
+      });
     }
 
     assertPreparedMatchesRun(current, result.value, kind);
@@ -879,9 +896,13 @@ export class ExecutionV4Orchestrator {
         case "INVALID_REQUEST":
         case "SIGNER_NOT_APPROVED":
         case "UPSTREAM_RATE_LIMITED":
-          throw new OrchestrationError(result.error.code);
+          throw new OrchestrationError(result.error.code, {
+            retryAfterSeconds: result.error.retryAfterSeconds,
+          });
         default:
-          throw new OrchestrationError("PREPARATION_REFUSED");
+          throw new OrchestrationError("PREPARATION_REFUSED", {
+            retryAfterSeconds: result.error.retryAfterSeconds,
+          });
       }
     }
 

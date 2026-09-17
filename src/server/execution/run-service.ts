@@ -231,6 +231,21 @@ export class ExecutionRunService {
     }));
   }
 
+  async recordPrepareInterrupted(
+    runId: string,
+    expectedRevision: number,
+    operationKind: OperationKind,
+    failureCode: PreparationFailureCode = "PREPARATION_REFUSED",
+  ): Promise<ExecutionRunV1> {
+    return this.#apply(runId, expectedRevision, (at, id) => ({
+      type: "RECORD_PREPARE_INTERRUPTED",
+      id,
+      at,
+      operationKind,
+      failureCode,
+    }));
+  }
+
   async recordWalletPrompt(runId: string, expectedRevision: number, operationKind: OperationKind): Promise<ExecutionRunV1> {
     return this.#apply(runId, expectedRevision, (at, id) => ({
       type: "RECORD_WALLET_PROMPT",

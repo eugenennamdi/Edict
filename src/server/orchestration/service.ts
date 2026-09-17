@@ -96,8 +96,17 @@ function definitePrepareRefusal<T>(result: AdapterResult<T>): boolean {
       "ENTITLEMENT_REJECTED",
       "INVALID_REQUEST",
       "SIGNER_NOT_APPROVED",
-      "UPSTREAM_RATE_LIMITED",
       "MINT_POLICY_VIOLATION",
+    ].includes(result.error.code)
+  );
+}
+
+function isInterruptedPreparation<T>(result: AdapterResult<T>): boolean {
+  return (
+    !result.ok &&
+    [
+      "UPSTREAM_SERVER_ERROR",
+      "UPSTREAM_RATE_LIMITED",
     ].includes(result.error.code)
   );
 }
@@ -205,10 +214,12 @@ export class ExecutionOrchestrator {
       const failureCode = preparationFailureCode(result.error.code);
       if (definitePrepareRefusal(result)) {
         await this.#deps.runs.recordPrepareFailure(runId, intent.revision, kind, failureCode);
+      } else if (isInterruptedPreparation(result)) {
+        await this.#deps.runs.recordPrepareInterrupted(runId, intent.revision, kind, failureCode);
       } else {
         await this.#deps.runs.recordPrepareUnknown(runId, intent.revision, kind, failureCode);
       }
-      throw new OrchestrationError(failureCode);
+      throw new OrchestrationError(failureCode, { retryAfterSeconds: result.error.retryAfterSeconds });
     }
 
     try {

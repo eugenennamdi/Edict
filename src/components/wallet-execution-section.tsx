@@ -147,6 +147,7 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
   const [errorDetail, setErrorDetail] = useState<WalletExecutionErrorDetail | null>(null);
   const [executing, setExecuting] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  const [cooldownRemaining, setCooldownRemaining] = useState<number>(0);
   const [trackingTick, setTrackingTick] = useState(0);
   const [confirmations, setConfirmations] = useState<number | null>(initialConfirmations ?? null);
   const busy = useRef(false);
@@ -154,6 +155,14 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
   const trackedHash = useRef<string | null>(null);
   const blockObservationRef = useRef<TrackedBlockObservation | null>(null);
   const checkSeqRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (cooldownRemaining <= 0) return;
+    const timer = setInterval(() => {
+      setCooldownRemaining((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldownRemaining]);
 
   const isStageIncluded = isIncludedOnChain(operation.stage);
   const isStageFinalized = isLifecycleFinalized(operation.stage);
@@ -314,8 +323,13 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
         : error instanceof WalletExecutionGatewayError
           ? error.code
           : "PREPARATION_FAILED";
+      const retryAfterSeconds = error instanceof WalletExecutionGatewayError ? error.retryAfterSeconds : undefined;
+      if (typeof retryAfterSeconds === "number" && retryAfterSeconds > 0) {
+        setCooldownRemaining(retryAfterSeconds);
+      }
       setErrorDetail(classifyWalletExecutionErrorDetail(code, {
         reprepareEligible: run.execution?.reprepareEligible,
+        retryAfterSeconds,
       }));
       await onRefresh().catch(() => undefined);
     } finally {
@@ -349,6 +363,10 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
         : error instanceof WalletExecutionGatewayError
           ? error.code
           : "EXECUTION_FAILED";
+      const retryAfterSeconds = error instanceof WalletExecutionGatewayError ? error.retryAfterSeconds : undefined;
+      if (typeof retryAfterSeconds === "number" && retryAfterSeconds > 0) {
+        setCooldownRemaining(retryAfterSeconds);
+      }
       if (code === "TRANSACTION_REJECTED") {
         toast.error("Transaction declined", { id: "wallet-prompt", description: "No on-chain transaction was submitted. You may try again." });
       } else {
@@ -358,6 +376,7 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
       setModel((current) => reduceWalletExecutionUi(current, failure.event));
       setErrorDetail(classifyWalletExecutionErrorDetail(code, {
         reprepareEligible: run.execution?.reprepareEligible,
+        retryAfterSeconds,
       }));
       if (failure.refresh) await onRefresh().catch(() => undefined);
     } finally {
@@ -801,27 +820,38 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
                     Transaction prepared and verified. Click below to open your wallet and confirm the on-chain transaction.
                   </p>
                 )}
-                {operation.stage === "PREPARED_STALE" && (
-                  <p className="text-xs text-muted-foreground">
-                    The transaction price report has expired on-chain. Click below to reprepare with Brickken before confirming.
-                  </p>
+                {errorDetail?.retryAllowed === false ? (
+                  <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-xs space-y-1">
+                    <p className="font-semibold text-destructive">{errorDetail.title}</p>
+                    <p className="text-muted-foreground">{errorDetail.nextStep}</p>
+                  </div>
+                ) : (
+                  <>
+                    {(operation.stage === "PREPARED_STALE" || (operation.stage === "NOT_STARTED" && (errorDetail !== null || Boolean(run.execution?.preparationFailureCode)))) && (
+                      <p className="text-xs text-muted-foreground">
+                        {operation.stage === "PREPARED_STALE"
+                          ? "The transaction price report has expired on-chain. Click below to reprepare with Brickken before confirming."
+                          : "Preparation was interrupted before transaction authorization. Click below to reprepare with Brickken."}
+                      </p>
+                    )}
+                    <Button
+                      size="sm"
+                      disabled={isLocked || executing || preparing || cooldownRemaining > 0}
+                      onClick={() => void (operation.stage === "PREPARED" ? execute() : prepare())}
+                      className="h-9 px-4 text-xs font-semibold shadow-xs"
+                    >
+                      {executing || model.state === "PROMPT_IN_PROGRESS"
+                        ? "Opening wallet…"
+                        : preparing
+                        ? "Preparing with Brickken…"
+                        : operation.stage === "PREPARED"
+                        ? "Confirm in wallet"
+                        : (operation.stage === "PREPARED_STALE" || (operation.stage === "NOT_STARTED" && (errorDetail !== null || Boolean(run.execution?.preparationFailureCode))))
+                        ? (cooldownRemaining > 0 ? `Wait ${cooldownRemaining}s` : (run.phase === "TOKENIZATION" ? "Reprepare tokenization" : `Reprepare ${phaseLabel}`))
+                        : `Execute ${phaseLabel}`}
+                    </Button>
+                  </>
                 )}
-                <Button
-                  size="sm"
-                  disabled={isLocked || executing || preparing}
-                  onClick={() => void (operation.stage === "PREPARED" ? execute() : prepare())}
-                  className="h-9 px-4 text-xs font-semibold shadow-xs"
-                >
-                  {executing || model.state === "PROMPT_IN_PROGRESS"
-                    ? "Opening wallet…"
-                    : preparing
-                    ? "Preparing with Brickken…"
-                    : operation.stage === "PREPARED"
-                    ? "Confirm in wallet"
-                    : operation.stage === "PREPARED_STALE"
-                    ? (run.phase === "TOKENIZATION" ? "Reprepare tokenization" : `Reprepare ${phaseLabel}`)
-                    : `Execute ${phaseLabel}`}
-                </Button>
                 {(isLocked || executing) && !preparing && (
                   <p className="text-[11px] text-muted-foreground">
                     {executing || model.state === "PROMPT_IN_PROGRESS"
@@ -840,6 +870,8 @@ export function WalletExecutionSection({ run, manifest, onRefresh, onTrackedRun,
               <p className="text-xs text-muted-foreground">
                 {run.status === "PREPARING"
                   ? "Edict is preparing this operation with Brickken."
+                  : run.status === "FAILED" && run.execution?.preparationFailureCode === "INVALID_REQUEST"
+                  ? "Mandate needs changes. Create a new mandate with a unique asset name and symbol."
                   : "Operation is not ready for execution. Refresh the record to sync status."}
               </p>
             )}

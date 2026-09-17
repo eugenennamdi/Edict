@@ -305,6 +305,30 @@ function recordPrepareFailure(
   );
 }
 
+function recordPrepareInterrupted(
+  run: ExecutionRunV1,
+  event: Extract<ExecutionRunEvent, { type: "RECORD_PREPARE_INTERRUPTED" }>,
+): ExecutionRunV1 {
+  assertNotBlocked(run);
+  const kind = event.operationKind;
+  if (op(run, kind).stage !== "PREPARE_INTENT") {
+    throw new IllegalStateTransitionError();
+  }
+  return appendEvent(
+    replaceOperation(
+      { ...run, status: "PREPARING" },
+      kind,
+      {
+        stage: "NOT_STARTED",
+        prepareIntentAt: null,
+        brickkenError: event.failureCode ?? "PREPARATION_REFUSED",
+      },
+    ),
+    event,
+    kind,
+  );
+}
+
 function recordWalletPrompt(
   run: ExecutionRunV1,
   event: Extract<ExecutionRunEvent, { type: "RECORD_WALLET_PROMPT" }>,
@@ -784,6 +808,8 @@ export function applyRunEvent(run: ExecutionRun, event: ExecutionRunEvent): Exec
       return recordPrepareUnknown(current, event);
     case "RECORD_PREPARE_FAILURE":
       return recordPrepareFailure(current, event);
+    case "RECORD_PREPARE_INTERRUPTED":
+      return recordPrepareInterrupted(current, event);
     case "RECORD_WALLET_PROMPT":
       return recordWalletPrompt(current, event);
     case "RECORD_WALLET_REJECTION":

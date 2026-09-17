@@ -10,7 +10,7 @@ import {
 import { BrickkenAdapterError, safeErrorMessage } from "./errors";
 
 export const MAX_BRICKKEN_RESPONSE_BYTES = 1_048_576; // 1 MiB stream / body limit
-export const DEFAULT_BRICKKEN_DEADLINE_MS = 10_000; // 10s default timeout
+export const DEFAULT_BRICKKEN_DEADLINE_MS = 60_000; // 60s bounded timeout
 
 export interface BrickkenDirectRequestInput {
   readonly path: string;

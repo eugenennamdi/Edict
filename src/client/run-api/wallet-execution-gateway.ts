@@ -14,7 +14,8 @@ import {
 import { z } from "zod";
 
 const MAX_RESPONSE_BYTES = 128 * 1024;
-const REQUEST_TIMEOUT_MS = 60_000;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+export const PREPARE_REQUEST_TIMEOUT_MS = 70_000;
 const revisionSchema = z.number().int().safe().positive();
 const bindingSchema = z.strictObject({
   expectedRevision: revisionSchema,
@@ -41,12 +42,23 @@ export type WalletExecutionGatewayErrorCode =
   | "AUTHORIZATION_RESPONSE_UNKNOWN"
   | "MALFORMED_RESPONSE"
   | "SERVER_REJECTION"
-  | "MALFORMED_REQUEST";
+  | "MALFORMED_REQUEST"
+  | "INVALID_REQUEST"
+  | "UPSTREAM_RATE_LIMITED"
+  | "UPSTREAM_SERVER_ERROR";
 
 export class WalletExecutionGatewayError extends Error {
-  constructor(readonly code: WalletExecutionGatewayErrorCode) {
+  readonly code: WalletExecutionGatewayErrorCode;
+  readonly retryAfterSeconds?: number;
+
+  constructor(
+    code: WalletExecutionGatewayErrorCode,
+    options?: { readonly retryAfterSeconds?: number },
+  ) {
     super(code);
     this.name = "WalletExecutionGatewayError";
+    this.code = code;
+    this.retryAfterSeconds = options?.retryAfterSeconds;
   }
 }
 
@@ -120,8 +132,10 @@ async function post(
   transport: WalletExecutionHttpTransport,
   path: string,
   body: unknown,
-  authorizationRequest = false,
+  options?: { readonly authorizationRequest?: boolean; readonly timeoutMs?: number },
 ): Promise<unknown> {
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const authorizationRequest = options?.authorizationRequest ?? false;
   let response: Response;
   try {
     response = await transport(path, {
@@ -131,7 +145,7 @@ async function post(
       body: JSON.stringify(body),
       cache: "no-store",
       redirect: "error",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     throw new WalletExecutionGatewayError(
@@ -157,6 +171,17 @@ async function post(
     ) throw new WalletExecutionGatewayError("FRESHNESS_CHECK_FAILED");
     if (response.status === 409 && isErrorCode(raw, "REVISION_CONFLICT")) {
       throw new WalletExecutionGatewayError("REVISION_CONFLICT");
+    }
+    if (response.status === 400 && isErrorCode(raw, "INVALID_REQUEST")) {
+      throw new WalletExecutionGatewayError("INVALID_REQUEST");
+    }
+    if (response.status === 429 && isErrorCode(raw, "UPSTREAM_RATE_LIMITED")) {
+      const retryHeader = response.headers.get("retry-after");
+      const retryAfterSeconds = retryHeader && /^\d+$/.test(retryHeader) ? Number(retryHeader) : undefined;
+      throw new WalletExecutionGatewayError("UPSTREAM_RATE_LIMITED", { retryAfterSeconds });
+    }
+    if (response.status === 503 && isErrorCode(raw, "UPSTREAM_SERVER_ERROR")) {
+      throw new WalletExecutionGatewayError("UPSTREAM_SERVER_ERROR");
     }
     throw new WalletExecutionGatewayError("SERVER_REJECTION");
   }
@@ -210,7 +235,7 @@ export function createWalletExecutionHttpGateway(
         transport,
         `/api/runs/${parsedRunId.data}/execute`,
         { expectedRevision: revision.data },
-        true,
+        { authorizationRequest: true, timeoutMs: PREPARE_REQUEST_TIMEOUT_MS },
       ));
     },
     async promote(runId: string, expectedRevision: number) {
@@ -232,7 +257,7 @@ export function createWalletExecutionHttpGateway(
         transport,
         `/api/runs/${parsedRunId.data}/wallet-authorization`,
         { expectedRevision: revision.data },
-        true,
+        { authorizationRequest: true },
       ));
     },
     async ingestHash(runId: string, input: Parameters<WalletExecutionHttpGateway["ingestHash"]>[1]) {
@@ -276,9 +301,11 @@ async function mutateRevision(
   if (!parsedRunId.success || !revision.success) {
     throw new WalletExecutionGatewayError("MALFORMED_REQUEST");
   }
+  const timeoutMs = action === "prepare" ? PREPARE_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS;
   return runFromResponse(await post(
     transport,
     `/api/runs/${parsedRunId.data}/${action}`,
     { expectedRevision: revision.data },
+    { timeoutMs },
   ));
 }

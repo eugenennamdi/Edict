@@ -38,11 +38,15 @@ export interface WalletExecutionErrorDetail {
   readonly onChainSubmission: "NO" | "YES" | "UNKNOWN";
   readonly nextStep: string;
   readonly retryAllowed: boolean;
+  readonly retryAfterSeconds?: number | null;
 }
 
 export function classifyWalletExecutionErrorDetail(
   code: string,
-  options?: { readonly reprepareEligible?: boolean | null },
+  options?: {
+    readonly reprepareEligible?: boolean | null;
+    readonly retryAfterSeconds?: number | null;
+  },
 ): WalletExecutionErrorDetail {
   if (code === "REPREPARE_EXHAUSTED" || options?.reprepareEligible === false) {
     return Object.freeze({
@@ -132,12 +136,46 @@ export function classifyWalletExecutionErrorDetail(
       retryAllowed: true,
     });
   }
+  if (code === "INVALID_REQUEST") {
+    return Object.freeze({
+      title: "Mandate needs changes",
+      description: "Brickken rejected the token parameters (e.g. asset name or symbol already exists).",
+      onChainSubmission: "NO",
+      nextStep: "No transaction submitted; no gas spent. Create a new mandate with a unique asset name and symbol.",
+      retryAllowed: false,
+      retryAfterSeconds: null,
+    });
+  }
+  if (code === "UPSTREAM_RATE_LIMITED") {
+    const retryAfter = options?.retryAfterSeconds;
+    const retryMsg = typeof retryAfter === "number" && retryAfter > 0
+      ? `Wait ${retryAfter}s before retrying. Click Reprepare to retry.`
+      : "Click Reprepare to retry after waiting.";
+    return Object.freeze({
+      title: "Preparation rate limited",
+      description: "Brickken rate limit reached. The preparation request was not processed.",
+      onChainSubmission: "NO",
+      nextStep: `No transaction submitted; no gas spent. ${retryMsg}`,
+      retryAllowed: true,
+      retryAfterSeconds: typeof retryAfter === "number" && retryAfter > 0 ? retryAfter : null,
+    });
+  }
+  if (code === "PREPARATION_INTERRUPTED" || code === "UPSTREAM_SERVER_ERROR") {
+    return Object.freeze({
+      title: "Preparation interrupted",
+      description: "The preparation request to Brickken timed out or could not be completed by the server.",
+      onChainSubmission: "NO",
+      nextStep: "No transaction submitted; no gas spent. Click Reprepare to retry preparation.",
+      retryAllowed: true,
+      retryAfterSeconds: null,
+    });
+  }
   if (code === "PREPARATION_FAILED" || code === "SERVER_REJECTION") {
     return Object.freeze({
       title: "Preparation request failed",
       description: "The preparation request to Brickken timed out or could not be completed by the server.",
       onChainSubmission: "NO",
-      nextStep: "No transaction was submitted to the network. Click Reprepare to request fresh preparation parameters from Brickken.",
+      nextStep: "No transaction submitted; no gas spent. Click Reprepare to retry preparation.",
       retryAllowed: true,
     });
   }

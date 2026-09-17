@@ -392,6 +392,13 @@ export type ExecutionRunEvent =
       readonly failureCode?: PreparationFailureCode;
     }
   | {
+      readonly type: "RECORD_PREPARE_INTERRUPTED";
+      readonly id: string;
+      readonly at: IsoUtcTimestamp;
+      readonly operationKind: OperationKind;
+      readonly failureCode?: PreparationFailureCode;
+    }
+  | {
       readonly type: "RECORD_WALLET_PROMPT";
       readonly id: string;
       readonly at: IsoUtcTimestamp;

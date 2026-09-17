@@ -5,6 +5,7 @@ import {
   AuthError,
   Brickken,
   CreditsExhaustedError,
+  NetworkError,
   RateLimitError,
   UnauthorizedTokenSymbolError,
   ValidationError,
@@ -54,6 +55,7 @@ import {
 export interface AdapterDependencies {
   readonly fetch?: typeof fetch;
   readonly runtimeConfig?: BrickkenRuntimeConfig;
+  readonly timeoutMs?: number;
 }
 
 const RETRY = { attempts: 1, baseDelayMs: 500, jitter: false };
@@ -71,6 +73,12 @@ function mapCaughtError(error: unknown, secret?: string): BrickkenAdapterError {
   if (error instanceof Error && error.message.includes("STATUS_CONTRADICTION")) {
     return safeErrorMessage("STATUS_CONTRADICTION", secret);
   }
+  if (
+    (error instanceof NetworkError && (/timed out/i.test(error.message) || (error.cause instanceof Error && (error.cause.name === "TimeoutError" || error.cause.name === "AbortError")))) ||
+    (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError" || /timed out/i.test(error.message)))
+  ) {
+    return safeErrorMessage("UPSTREAM_SERVER_ERROR", secret, "Brickken prepare request timed out after 60s.");
+  }
   if (error instanceof AuthError) {
     if (/signer/i.test(error.message) && /approv|allow|authoriz/i.test(error.message)) {
       return safeErrorMessage("SIGNER_NOT_APPROVED", secret);
@@ -82,7 +90,12 @@ function mapCaughtError(error: unknown, secret?: string): BrickkenAdapterError {
     return safeErrorMessage("ENTITLEMENT_REJECTED", secret);
   }
   if (error instanceof ValidationError) return safeErrorMessage("INVALID_REQUEST", secret);
-  if (error instanceof RateLimitError) return safeErrorMessage("UPSTREAM_RATE_LIMITED", secret);
+  if (error instanceof RateLimitError) {
+    return safeErrorMessage("UPSTREAM_RATE_LIMITED", secret, undefined, {
+      upstreamStatus: 429,
+      retryAfterSeconds: error.retryAfterSeconds,
+    });
+  }
   if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
     if (/signer/i.test(error.message) && /approv|allow|authoriz/i.test(error.message)) {
       return safeErrorMessage("SIGNER_NOT_APPROVED", secret);
@@ -96,7 +109,13 @@ function mapCaughtError(error: unknown, secret?: string): BrickkenAdapterError {
     if (/licen[cs]e|subscription|entitlement/i.test(error.message)) {
       return safeErrorMessage("ENTITLEMENT_REJECTED", secret);
     }
-    return safeErrorMessage("INVALID_REQUEST", secret);
+    const cleanMessage = typeof error.message === "string" && error.message.trim().length > 0
+      ? error.message.trim()
+      : undefined;
+    return safeErrorMessage("INVALID_REQUEST", secret, cleanMessage, {
+      upstreamStatus: error.status,
+      upstreamReason: cleanMessage,
+    });
   }
   if (error instanceof ApiError && error.status !== undefined && error.status >= 500) {
     return safeErrorMessage("UPSTREAM_SERVER_ERROR", secret);
@@ -140,6 +159,7 @@ export function createBrickkenServerAdapter(
       apiKey: config.apiKey,
       fetch: injectedFetch,
       retry: RETRY,
+      timeoutMs: deps.timeoutMs ?? 60_000,
     });
     return { ok: true, value: client };
   };
